@@ -1,0 +1,15 @@
+[Unit]
+Description=KDE Connect phone media playback logger
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+ExecStart=/usr/bin/python3 %h/.local/bin/kdeconnect_media_logger.py
+Restart=on-failure
+RestartSec=5
+Environment="KMV_TZ=Asia/Bangkok"
+
+[Install]
+WantedBy=graphical-session.target

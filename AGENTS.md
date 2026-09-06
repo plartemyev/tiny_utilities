@@ -21,6 +21,14 @@
   directory in the current project.
 - For long-running commands (e.g. `docker compose up --build`), detach with `setsid ... </dev/null >path/tmp/run.log 2>&1 & disown` and poll the log in separate tool calls; do not pipe through `tail` (it buffers until EOF, so a hanging build shows no output and times out the tool).
 - When investigating network/services unavailability use `nc -zvw 1 TARGET TARGET_PORT`, `curl -vkL TARGET >/dev/null`, `mtr --json --aslookup --mpls --timeout 30 TARGET`. Check from multiple sources (check public IP availability both from Ansible managed host and from the DEV computer);
+- KDE Connect DBus (session bus) peculiarities (discovered on Arch, Xlibre/Sonic DE, kdeconnectd):
+    - Each phone media player gets its own MPRIS bus name `org.mpris.MediaPlayer2.kdeconnect.mpris_<hash>` (NOT the device id); the phone-side app name is in `Identity` on `/org/mpris/MediaPlayer2` (e.g. `Fennec - Raptor LTD`), not in `Metadata`;
+    - `mpris:trackid` is always the constant `/org/mpris/MediaPlayer2` for phone players — use `xesam:title` for track identity; `Position` is always `-1000` (unknown); `mpris:length` (µs) and `xesam:url` are present only for some apps; metadata keys differ per app;
+    - `org.kde.kdeconnect.device.notifications.notificationPosted` signal payload is just the numeric notification id (not JSON); content must be fetched afterwards via the `activeNotifications` method;
+    - Some remote MPRIS `Play` calls are refused by the phone app itself (e.g. a background browser tab stays `Paused` after a remote `Play`);
+    - PyGObject `DBusProxy` `g-properties-changed`: the `changed` dict is a `GLib.Variant` — plain `in`/`[]` access raises `KeyError: 0`; call `.unpack()` first;
+    - PyGObject `GLibUnix.signal_add` invokes the handler with zero args, while `GLib.unix_signal_add` passes `(user_data)`; the former is the non-deprecated variant;
+    - Existing tooling for this: `kdeconnect-media-logger/` (service) and `tmp/kdeconnect_media_probe.py` (exploratory probe).
 
 
 ## 1. Think Before Coding
