@@ -21,6 +21,17 @@
   directory in the current project.
 - For long-running commands (e.g. `docker compose up --build`), detach with `setsid ... </dev/null >path/tmp/run.log 2>&1 & disown` and poll the log in separate tool calls; do not pipe through `tail` (it buffers until EOF, so a hanging build shows no output and times out the tool).
 - When investigating network/services unavailability use `nc -zvw 1 TARGET TARGET_PORT`, `curl -vkL TARGET >/dev/null`, `mtr --json --aslookup --mpls --timeout 30 TARGET`. Check from multiple sources (check public IP availability both from Ansible managed host and from the DEV computer);
+- The 172.17.172.0/24 VM network (archinstaller targets) drops TLS connections
+  intermittently mid-transfer (`Recv failure: Connection reset by peer`, ~50% of
+  connections) toward `packages.xlibre.net` and occasionally resets other TLS
+  hosts; the same URLs are stable from the dev box. DNS there is also flaky
+  (`geomirror.archlinux.org` may not resolve; `archlinux.org` may resolve to
+  IPv6 only). archinstaller compensates with a bash `retry` wrapper around
+  `pacman`/`curl` and pacman `XferCommand` = curl `--retry`/`-C -` (see
+  `archinstaller/`). Password-auth SSH to these targets works via paramiko
+  (`sshpass`/`expect` are not installed on the dev box and `sudo` needs a
+  password); pacman v7 has NO `Retries` pacman.conf directive — use
+  `XferCommand` instead (`Retries` produces "unknown directive" warnings);
 - KDE Connect DBus (session bus) peculiarities (discovered on Arch, Xlibre/Sonic DE, kdeconnectd):
     - Each phone media player gets its own MPRIS bus name `org.mpris.MediaPlayer2.kdeconnect.mpris_<hash>` (NOT the device id); the phone-side app name is in `Identity` on `/org/mpris/MediaPlayer2` (e.g. `Fennec - Raptor LTD`), not in `Metadata`;
     - `mpris:trackid` is always the constant `/org/mpris/MediaPlayer2` for phone players — use `xesam:title` for track identity; `Position` is always `-1000` (unknown); `mpris:length` (µs) and `xesam:url` are present only for some apps; metadata keys differ per app;

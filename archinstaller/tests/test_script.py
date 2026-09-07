@@ -63,12 +63,17 @@ def test_pacman_tuning_and_repos_present():
     script = build_install_script(make_cfg())
     assert "IgnorePkg = kweather kweathercore akonadi kmix kalarm kget ktorrent kalk" in script
     assert "ParallelDownloads = 10" in script
+    assert "XferCommand = /usr/bin/curl -L -C - -f --retry 3 --retry-delay 5 --retry-all-errors -o %o %u" in script
     assert "sed -i 's/^#\\[multilib\\]/[multilib]/' /etc/pacman.conf" in script
-    assert "[xlibre]" in script
+    assert "sed -i '/^\\[multilib\\]$/,/^$/ s/^#Include/Include/' /etc/pacman.conf" in script
+    assert "'s/^#Include/Include/'" not in script
+    assert "[xlibre-stable]" in script
     assert "[sonicde]" in script
     assert "pacman-key --lsign-key B97F7C613F359424" in script
-    assert "pacman-key --recv-keys 73580DE2EDDFA6D6" in script
-    assert "pacman-key --lsign-key 3B87898C73F11DF5" in script
+    assert "recv-keys" not in script
+    assert "3B87898C73F11DF5" in script
+    assert "retry pacman -Sy --needed --noconfirm" in script
+    assert "retry curl -O https://xlibre-arch.github.io/xlibre-archlinux.asc" in script
 
 
 def test_locale_line_is_escaped_for_sed():

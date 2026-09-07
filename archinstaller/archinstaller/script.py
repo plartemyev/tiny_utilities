@@ -159,7 +159,7 @@ spice-vdagent systray-x-common telegram-desktop texlive-latexextra
 texlive-latexrecommended thunderbird thunderbird-i18n-en-us thunderbird-i18n-ru
 virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all vulkan-broadcom
 vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-intel vulkan-radeon
-vulkan-tools wacomtablet-xlibre wine wine-gecko xarchiver xcb-proto
+vulkan-tools vulkan-virtio wine wine-gecko xarchiver xcb-proto
 virtualbox-guest-utils
 xfce4-clipman-plugin xlibre-input-evdev xlibre-input-libinput
 xlibre-input-wacom xlibre-meta xlibre-video-amdgpu xlibre-video-ati
@@ -170,7 +170,6 @@ xreader zed zvbi
 IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"
 XLIBRE_KEY_ID = "B97F7C613F359424"
 SONICDE_KEY_ID = "3B87898C73F11DF5"
-MAINTAINER_KEY_ID = "73580DE2EDDFA6D6"
 USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games,docker"
 
 
@@ -204,20 +203,6 @@ def _header() -> str:
         "set -euo pipefail\n"
         "\n"
         "log() { printf '\\n===== %s =====\\n' \"$*\"; }\n"
-        "curl_retry() {\n"
-        "    local attempt=1\n"
-        "    while true; do\n"
-        "        if curl \"$@\"; then\n"
-        "            return 0\n"
-        "        fi\n"
-        "        if [ \"$attempt\" -ge 3 ]; then\n"
-        "            return 1\n"
-        "        fi\n"
-        "        echo \"curl failed (attempt $attempt/3), retrying in 5s...\"\n"
-        "        attempt=$((attempt + 1))\n"
-        "        sleep 5\n"
-        "    done\n"
-        "}\n"
     )
 
 
@@ -267,16 +252,16 @@ def _chroot(cfg: InstallConfig) -> str:
         "set -euo pipefail",
         "log() { printf '\\n===== %s =====\\n' \"$*\"; }",
         "",
-        "curl_retry() {",
+        "retry() {",
         "    local attempt=1",
         "    while true; do",
-        "        if curl \"$@\"; then",
+        "        if \"$@\"; then",
         "            return 0",
         "        fi",
         "        if [ \"$attempt\" -ge 3 ]; then",
         "            return 1",
         "        fi",
-        "        echo \"curl failed (attempt $attempt/3), retrying in 5s...\"",
+        "        echo \"attempt $attempt/3 failed: $*; retrying in 5s...\"",
         "        attempt=$((attempt + 1))",
         "        sleep 5",
         "    done",
@@ -300,12 +285,13 @@ def _chroot(cfg: InstallConfig) -> str:
         "log 'Tuning /etc/pacman.conf'",
         "sed -i 's/^#Color/Color/' /etc/pacman.conf",
         "sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf",
+        # "sed -i 's|^#XferCommand = /usr/bin/curl.*|XferCommand = /usr/bin/curl -L -C - -f --retry 3 --retry-delay 5 --retry-all-errors -o %o %u|' /etc/pacman.conf",
         f"sed -i '/^\\[options\\]$/a IgnorePkg = {IGNORE_PKG}' /etc/pacman.conf",
         "sed -i 's/^#\\[multilib\\]/[multilib]/' /etc/pacman.conf",
-        "sed -i 's/^#Include/Include/' /etc/pacman.conf",
+        "sed -i '/^\\[multilib\\]$/,/^$/ s/^#Include/Include/' /etc/pacman.conf",
         "cat >> /etc/pacman.conf <<'REPOS'",
         "",
-        "[xlibre]",
+        "[xlibre-stable]",
         "Server = https://packages.xlibre.net/arch/stable/$arch",
         "",
         "[sonicde]",
@@ -313,14 +299,11 @@ def _chroot(cfg: InstallConfig) -> str:
         "REPOS",
         "",
         "log 'Fetching and signing third-party repository keys'",
-        "curl_retry -O https://xlibre-arch.github.io/xlibre-archlinux.asc",
+        "retry curl -O https://xlibre-arch.github.io/xlibre-archlinux.asc",
         "pacman-key --add xlibre-archlinux.asc",
         f"pacman-key --finger {XLIBRE_KEY_ID}",
         f"pacman-key --lsign-key {XLIBRE_KEY_ID}",
-        f"pacman-key --recv-keys {MAINTAINER_KEY_ID}",
-        f"pacman-key --finger {MAINTAINER_KEY_ID}",
-        f"pacman-key --lsign-key {MAINTAINER_KEY_ID}",
-        "curl_retry -O https://sonicde-arch.github.io/sonicde-archlinux.asc",
+        "retry curl -O https://sonicde-arch.github.io/sonicde-archlinux.asc",
         "pacman-key --add sonicde-archlinux.asc",
         f"pacman-key --finger {SONICDE_KEY_ID}",
         f"pacman-key --lsign-key {SONICDE_KEY_ID}",
@@ -335,14 +318,14 @@ def _chroot(cfg: InstallConfig) -> str:
         "printf '%s\\n' '/swapfile none swap defaults 0 0' >> /etc/fstab",
         "",
         "log 'Installing console packages (long step)'",
-        "pacman -Sy --needed --noconfirm \\",
+        "retry pacman -Sy --needed --noconfirm \\",
         f"    {_wrapped(CONSOLE_PACKAGES)}",
     ]
     if cfg.graphical:
         lines += [
             "",
             "log 'Installing graphical packages and desktop (long step)'",
-            "pacman -S --needed --noconfirm \\",
+            "retry pacman -S --needed --noconfirm \\",
             f"    {_wrapped(GRAPHICAL_PACKAGES)}",
             "",
             "log 'Enabling SDDM display manager'",

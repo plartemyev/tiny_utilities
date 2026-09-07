@@ -89,9 +89,19 @@ the key passed via `--ssh-pubkey` is only used for initial access).
   `/etc/sudoers.d/10-wheel` (mode `0440`) plus a passwordless-sudo rule
   for the created user (`/etc/sudoers.d/20-archinstaller`, mode `0440`).
 * `/etc/pacman.conf` edits (Color, `ParallelDownloads = 10`, `IgnorePkg`,
-  Multilib, `[xlibre]` + `[sonicde]` repos, key signing) done with `sed`
-  and heredocs; the `73580DE2EDDFA6D6` key is fetched from the default
-  keyserver — outbound keyserver access is required, a failure aborts.
+  Multilib, `[xlibre-stable]` + `[sonicde]` repos, key signing) done with
+  `sed` and heredocs; only the repo signing keys (`B97F7C613F359424`,
+  `3B87898C73F11DF5`) are imported from the `.asc` files over HTTPS —
+  no keyserver access is needed (the old `73580DE2EDDFA6D6` maintainer
+  key was revoked and removed from keyservers; upstream docs no longer
+  reference it). The `#Include` uncommenting for Multilib is scoped to
+  the `[multilib]` section so no stray `mirrorlist` include lands inside
+  `[options]`. The `.asc` key fetches and the `pacman` package installs
+  run through a generic 3-attempt / 5-second-pause `retry` wrapper to
+  ride out transient network resets; additionally `XferCommand` is set
+  to curl with `--retry 3 --retry-delay 5 --retry-all-errors -C -` so
+  every individual file download (databases and packages) retries and
+  resumes inside a single pacman run.
 * `locale-gen` needs the locale uncommented in `/etc/locale.gen`
   (the draft missed this); it is done automatically.
 * `systemctl enable --now sshd` in chroot → `systemctl enable sshd`
