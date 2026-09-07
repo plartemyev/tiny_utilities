@@ -160,6 +160,7 @@ texlive-latexrecommended thunderbird thunderbird-i18n-en-us thunderbird-i18n-ru
 virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all vulkan-broadcom
 vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-intel vulkan-radeon
 vulkan-tools wacomtablet-xlibre wine wine-gecko xarchiver xcb-proto
+virtualbox-guest-utils
 xfce4-clipman-plugin xlibre-input-evdev xlibre-input-libinput
 xlibre-input-wacom xlibre-meta xlibre-video-amdgpu xlibre-video-ati
 xlibre-video-qxl xlibre-xserver xorg-xprop xorg-xrandr xorg-xset xorgproto
@@ -328,7 +329,11 @@ def _chroot(cfg: InstallConfig) -> str:
         f"chmod 600 {home}/.ssh/authorized_keys",
         f"chown {user}:{user} {home}/.ssh/authorized_keys",
         "",
-        "log 'Enabling network services'",
+        "log 'Disabling sshd password authentication'",
+        "mkdir -p /etc/ssh/sshd_config.d",
+        ("printf '%s\\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no'"
+         " > /etc/ssh/sshd_config.d/10-archinstaller.conf"),
+        "",        "log 'Enabling network services'",
         "systemctl disable systemd-networkd",
         "systemctl enable systemd-resolved",
         "systemctl enable NetworkManager",

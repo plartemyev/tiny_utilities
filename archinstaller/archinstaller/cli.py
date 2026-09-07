@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import re
+import secrets
 import shlex
+import string
 import sys
 from datetime import date
 
@@ -14,6 +17,7 @@ from archinstaller.script import InstallConfig, build_install_script
 from archinstaller.ssh import (
     JumpConfig,
     SshConnection,
+    clear_stale_host_key,
     connect_target,
     run_capture,
     run_streaming,
@@ -22,6 +26,8 @@ from archinstaller.ssh import (
 )
 
 INSTALL_SCRIPT_PATH = "/root/archinstaller.sh"
+DEFAULT_LOGIN_PASSWORD = "local0instaLl"
+GENERATED_PASSWORD_LENGTH = 10
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -30,15 +36,19 @@ def main(argv: list[str] | None = None) -> None:
     hostname = args.hostname or default_hostname()
     login_password, root_password, user_password = _resolve_passwords(args)
     jump = _resolve_jump(args)
+    private_key = _private_key_path(args.ssh_pubkey)
 
+    clear_stale_host_key(args.target, args.target_port)
     _run_installation(args, hostname, login_password, root_password, user_password, public_key, jump)
 
     print(f"\nTarget is rebooting; waiting up to {args.reboot_timeout}s for SSH ...")
-    if not wait_for_ssh(args.target, args.target_port, args.username, user_password, args.reboot_timeout, jump):
+    clear_stale_host_key(args.target, args.target_port)
+    if not wait_for_ssh(args.target, args.target_port, args.username, None, args.reboot_timeout, jump,
+                        key_filename=private_key):
         sys.exit(f"target did not come back within {args.reboot_timeout}s; connect manually and inspect")
-    conn = connect_target(args.target, args.target_port, args.username, user_password, jump)
+    conn = connect_target(args.target, args.target_port, args.username, None, jump, key_filename=private_key)
     try:
-        _post_boot(conn, user_password, args.username, hostname)
+        _post_boot(conn, user_password, args.username, hostname, args.timezone)
         _print_summary(conn, args, hostname)
     finally:
         conn.close()
@@ -56,7 +66,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target", required=True, help="host running the Arch ISO live environment")
     parser.add_argument("--target-port", type=int, default=22)
     parser.add_argument("--login-user", default="root", help="user on the live ISO (default: root)")
-    parser.add_argument("--login-password", help="live ISO password (prompted if omitted)")
+    parser.add_argument("--login-password", default=DEFAULT_LOGIN_PASSWORD,
+                        help=f"live ISO password (default: {DEFAULT_LOGIN_PASSWORD}, used only briefly)")
     parser.add_argument("--jump-host", help="optional SSH jump host")
     parser.add_argument("--jump-port", type=int, default=22)
     parser.add_argument("--jump-user", help="jump host user (default: root)")
@@ -69,8 +80,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="ssh public key: literal key string or path to a file containing one")
     parser.add_argument("--locale", default="en_US.UTF-8", help="e.g. en_US.UTF-8")
     parser.add_argument("--swap-size", default="16G", help="e.g. 16G")
-    parser.add_argument("--root-password", help="root password for the installed system (prompted if omitted)")
-    parser.add_argument("--user-password", help="password for the created user (prompted if omitted)")
+    parser.add_argument("--root-password",
+                        help="root password for the installed system (generated and printed if omitted)")
+    parser.add_argument("--user-password",
+                        help="password for the created user (generated and printed if omitted)")
+    parser.add_argument("--timezone", default="Asia/Bangkok",
+                        help="timezone to set on the installed system (default: Asia/Bangkok)")
     parser.add_argument("--graphical", action="store_true",
                         help="also install graphical packages and the SDDM desktop session")
     parser.add_argument("--install-timeout", type=int, default=7200,
@@ -93,6 +108,8 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
         parser.error(f"--locale must look like en_US.UTF-8 (got {args.locale!r})")
     if not re.fullmatch(r"\d+[KMGT]?", args.swap_size):
         parser.error(f"--swap-size must look like 16G (got {args.swap_size!r})")
+    if not re.fullmatch(r"[A-Za-z]+/[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)?", args.timezone):
+        parser.error(f"--timezone must look like Area/City, e.g. Asia/Bangkok (got {args.timezone!r})")
 
 
 def default_hostname() -> str:
@@ -100,14 +117,34 @@ def default_hostname() -> str:
 
 
 def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str]:
-    login = args.login_password or getpass.getpass(
-        f"Password for {args.login_user}@{args.target} (live ISO): ")
-    root = args.root_password or getpass.getpass("New root password for the installed system: ")
-    user = args.user_password or getpass.getpass(f"New {args.username} password for the installed system: ")
+    login = args.login_password or DEFAULT_LOGIN_PASSWORD
+    root = args.root_password or _generated_password()
+    user = args.user_password or _generated_password()
     for label, value in (("--login-password", login), ("--root-password", root), ("--user-password", user)):
         if not value or "\n" in value:
             sys.exit(f"{label} must be non-empty and contain no newlines")
+    if not args.root_password:
+        print(f"Generated root password: {root}")
+    if not args.user_password:
+        print(f"Generated {args.username} password: {user}")
     return login, root, user
+
+
+def _generated_password() -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(GENERATED_PASSWORD_LENGTH))
+
+
+def _private_key_path(pubkey_arg: str) -> str | None:
+    """Private key matching --ssh-pubkey when it was given as a file path."""
+    path = os.path.expanduser(pubkey_arg.strip())
+    if not os.path.isfile(path):
+        return None
+    if path.endswith(".pub"):
+        candidate = path[:-4]
+    else:
+        candidate = path
+    return candidate if os.path.isfile(candidate) else None
 
 
 def _resolve_jump(args: argparse.Namespace) -> JumpConfig | None:
@@ -167,10 +204,16 @@ def _reboot(conn: SshConnection) -> None:
         pass
 
 
-def _post_boot(conn: SshConnection, user_password: str, username: str, hostname: str) -> None:
+def _post_boot(conn: SshConnection, user_password: str, username: str, hostname: str, timezone: str) -> None:
     run_streaming(
         conn.client,
         "sudo -S -p '' ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf",
+        stdin_text=user_password + "\n",
+        timeout=60,
+    )
+    run_streaming(
+        conn.client,
+        f"sudo -S -p '' timedatectl set-timezone {shlex.quote(timezone)}",
         stdin_text=user_password + "\n",
         timeout=60,
     )

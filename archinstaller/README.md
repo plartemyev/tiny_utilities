@@ -31,9 +31,22 @@ poetry run archinstaller \
     [--graphical]
 ```
 
-Passwords (live ISO login, new root, new user, jump host) are prompted
-for unless given via `--login-password`, `--root-password`,
-`--user-password`, `--jump-password`.
+Password handling:
+
+* `--login-password` defaults to `local0instaLl` (only used briefly on
+  the live ISO; override with the flag if your ISO password differs).
+* `--root-password` / `--user-password` are optional: if omitted, a
+  random 10-character alphanumeric password is generated and **printed**
+  during the run.
+* `--jump-password` is still prompted for when a jump host is used.
+
+After the user is created (with the provided public key in
+`authorized_keys`), sshd password authentication is disabled on the
+installed system, so post-reboot access is public-key only.
+
+Host key changes after a reinstall are handled automatically: stale
+`known_hosts` entries for the target are removed (`ssh-keygen -R`)
+before connecting.
 
 ### Arguments
 
@@ -41,7 +54,7 @@ for unless given via `--login-password`, `--root-password`,
 |---|---|---|
 | `--target HOST` | required | host running the live ISO |
 | `--target-port` | `22` | SSH port of the target |
-| `--login-user` / `--login-password` | `root` / prompt | live ISO credentials |
+| `--login-user` / `--login-password` | `root` / `local0instaLl` | live ISO credentials |
 | `--jump-host`, `--jump-port`, `--jump-user`, `--jump-password` | none | optional SSH jump (like `ssh -J`) |
 | `--disk` | `/dev/vda` | disk to wipe; must be a plain `sdX`/`vdX`/`hdX` device (no NVMe naming) |
 | `--hostname` | `arch-host-YYYY-MM-DD` (script run date) | hostname for the new system |
@@ -49,7 +62,8 @@ for unless given via `--login-password`, `--root-password`,
 | `--ssh-pubkey` | required | ssh public key as a literal string **or** a path to a file containing one; validated (known key type + decodable base64 blob) |
 | `--locale` | `en_US.UTF-8` | system locale (must be `<lang>_<region>.UTF-8`) |
 | `--swap-size` | `16G` | size of `/swapfile` |
-| `--root-password`, `--user-password` | prompt | credentials for the installed system |
+| `--root-password`, `--user-password` | generated (printed) | credentials for the installed system |
+| `--timezone` | `Asia/Bangkok` | timezone set on the installed system via `timedatectl set-timezone` after first boot |
 | `--graphical` | off | console-only package list by default; with the flag the graphical packages and SDDM desktop session are installed too |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
@@ -76,9 +90,16 @@ the key passed via `--ssh-pubkey` is only used for initial access).
   (the draft missed this); it is done automatically.
 * `systemctl enable --now sshd` in chroot → `systemctl enable sshd`
   (starting via chroot would target the live system's PID 1).
-* Host key changes after reinstall are accepted automatically
-  (paramiko `AutoAddPolicy`); no `ssh-keygen -R` needed. If you later
-  connect with the plain `ssh` client, remove the stale key yourself.
+* Host key changes after reinstall are handled by removing stale
+  `known_hosts` entries with `ssh-keygen -R` before each connection
+  phase.
+* After user creation sshd password authentication is disabled
+  (`/etc/ssh/sshd_config.d/10-archinstaller.conf`:
+  `PasswordAuthentication no`); the tool then reconnects with the
+  private key matching `--ssh-pubkey` (derived from the `.pub` file
+  path, or falls back to agent/default keys).
+* The timezone is applied with `timedatectl set-timezone` right after
+  the first boot (it cannot run inside `arch-chroot`).
 * `/etc/resolv.conf` → `stub-resolv.conf` symlink is applied right after
   the first boot, as in the draft.
 

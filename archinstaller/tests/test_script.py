@@ -49,6 +49,7 @@ def test_graphical_flag_installs_desktop():
     assert "systemctl enable sddm" in script
     assert "pacman -S --needed --noconfirm" in script
     assert "blender" in script
+    assert "virtualbox-guest-utils" in script.split()
 
 
 def test_pacman_tuning_and_repos_present():
@@ -76,3 +77,10 @@ def test_sudoers_and_services():
     assert "systemctl enable NetworkManager" in script
     assert "systemctl disable systemd-networkd" in script
     assert "systemctl enable sshd" in script
+
+
+def test_ssh_password_auth_disabled_after_user_creation():
+    script = build_install_script(make_cfg())
+    assert "PasswordAuthentication no" in script
+    assert "KbdInteractiveAuthentication no" in script
+    assert script.index("authorized_keys") < script.index("PasswordAuthentication no")

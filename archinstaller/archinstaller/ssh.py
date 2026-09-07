@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 import sys
 import time
 
@@ -35,8 +36,9 @@ def connect_target(
     host: str,
     port: int,
     username: str,
-    password: str,
+    password: str | None,
     jump: JumpConfig | None = None,
+    key_filename: str | None = None,
 ) -> SshConnection:
     sock = None
     jump_client = None
@@ -46,7 +48,7 @@ def connect_target(
             "direct-tcpip", (host, port), (jump.host, jump.port),
         )
     try:
-        client = _connect_single(host, port, username, password, sock=sock)
+        client = _connect_single(host, port, username, password, sock=sock, key_filename=key_filename)
     except (OSError, paramiko.SSHException, EOFError):
         if jump_client is not None:
             jump_client.close()
@@ -117,14 +119,15 @@ def wait_for_ssh(
     host: str,
     port: int,
     username: str,
-    password: str,
+    password: str | None,
     timeout: float,
     jump: JumpConfig | None = None,
+    key_filename: str | None = None,
 ) -> bool:
     attempts = max(1, int(timeout // POLL_SECONDS))
     for _ in range(attempts):
         try:
-            conn = connect_target(host, port, username, password, jump)
+            conn = connect_target(host, port, username, password, jump, key_filename=key_filename)
             conn.close()
             return True
         except (OSError, paramiko.SSHException, EOFError):
@@ -132,12 +135,20 @@ def wait_for_ssh(
     return False
 
 
+def clear_stale_host_key(host: str, port: int) -> None:
+    """Drop saved known_hosts entries so a reinstall does not break connecting."""
+    names = (host,) if port == 22 else (f"[{host}]:{port}", host)
+    for name in names:
+        subprocess.run(["ssh-keygen", "-R", name], capture_output=True, check=False)
+
+
 def _connect_single(
     host: str,
     port: int,
     username: str,
-    password: str,
+    password: str | None,
     sock: paramiko.Channel | None = None,
+    key_filename: str | None = None,
 ) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -146,9 +157,10 @@ def _connect_single(
         port=port,
         username=username,
         password=password,
+        key_filename=key_filename,
         sock=sock,
-        look_for_keys=False,
-        allow_agent=False,
+        look_for_keys=password is None,
+        allow_agent=password is None,
         timeout=CONNECT_TIMEOUT,
         banner_timeout=CONNECT_TIMEOUT,
         auth_timeout=CONNECT_TIMEOUT,
