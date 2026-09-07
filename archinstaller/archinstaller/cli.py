@@ -8,7 +8,7 @@ import secrets
 import shlex
 import string
 import sys
-from datetime import date
+from datetime import datetime
 
 import paramiko
 
@@ -113,7 +113,7 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
 
 
 def default_hostname() -> str:
-    return f"arch-host-{date.today().isoformat()}"
+    return f"arch-host-{datetime.now().astimezone().date().isoformat()}"
 
 
 def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str]:
@@ -227,7 +227,7 @@ def _post_boot(conn: SshConnection, user_password: str, username: str, hostname:
 
 
 def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str) -> None:
-    code, private = run_capture(conn.client, "ip -4 -o addr show scope global")
+    _code, private = run_capture(conn.client, "ip -4 -o addr show scope global")
     public_code, public = run_capture(conn.client, "curl -4 -sf --max-time 15 https://ifconfig.me")
     key_code, public_key = run_capture(conn.client, "cat $HOME/.ssh/id_ed25519.pub")
     if key_code != 0:

@@ -5,17 +5,17 @@ KEY = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDU0ZDDGMlGKUYbFQtKyODXXUequNtcQz+2U
 
 
 def make_cfg(**overrides):
-    defaults = dict(
-        disk="/dev/vda",
-        hostname="arch-host-2026-09-06",
-        locale="en_US.UTF-8",
-        swap_size="16G",
-        username="nameless",
-        root_password="rootpw",
-        user_password="userpw",
-        public_key=KEY,
-        graphical=False,
-    )
+    defaults = {
+        "disk": "/dev/vda",
+        "hostname": "arch-host-2026-09-06",
+        "locale": "en_US.UTF-8",
+        "swap_size": "16G",
+        "username": "nameless",
+        "root_password": "rootpw",
+        "user_password": "userpw",
+        "public_key": KEY,
+        "graphical": False,
+    }
     defaults.update(overrides)
     return InstallConfig(**defaults)
 
