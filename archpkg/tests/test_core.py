@@ -71,6 +71,15 @@ class TestHasGraphicalDep:
     def test_has_wayland(self) -> None:
         assert _has_graphical_dep(["wayland", "glibc"]) is True
 
+    def test_has_vulkan_dep(self) -> None:
+        assert _has_graphical_dep(["glibc", "vulkan-icd-loader"]) is True
+
+    def test_vulkan_prefix_match(self) -> None:
+        assert _has_graphical_dep(["vulkan-mesa-layers"]) is True
+
+    def test_non_vulkan_prefix(self) -> None:
+        assert _has_graphical_dep(["vulkanfoo"]) is False
+
     def test_case_sensitive_match(self) -> None:
         assert _has_graphical_dep(["GTK3"]) is False
 
@@ -109,6 +118,14 @@ class TestClassifyPackages:
         )
         assert console == []
         assert graphical == ["libx11"]
+        assert missing == []
+
+    def test_vulkan_packages_graphical(self) -> None:
+        console, graphical, missing = classify_packages(
+            ["vulkan-headers", "vulkan-mesa-layers"], query_fn=_fake_query_fn,
+        )
+        assert console == []
+        assert graphical == ["vulkan-headers", "vulkan-mesa-layers"]
         assert missing == []
 
     def test_empty_input(self) -> None:

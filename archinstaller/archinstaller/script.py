@@ -100,7 +100,7 @@ libwbclient libxcrypt libxml2 libxslt libyaml libzip licenses linux
 linux-api-headers linux-atm linux-firmware linux-firmware-marvell
 linux-firmware-whence live-media livecd-sounds lmdb lrzip lsb-release lsscsi lua
 lua-language-server lua-socket lvm2 lynx lz4 lzo lzop m4 man-db man-pages mc
-mdadm memtest86+ memtest86+-efi memtest_vulkan mkinitcpio mkinitcpio-archiso
+mdadm memtest86+ memtest86+-efi mkinitcpio mkinitcpio-archiso
 mkinitcpio-busybox mkinitcpio-nfs-utils mobile-broadband-provider-info
 modemmanager mpdecimal mpfr mpg123 mtools mtr nano nbd ncurses ndisc6 nettle
 networkmanager nfs-utils nfsidmap nftables nilfs-utils nmap nodejs npm npth nspr
@@ -136,8 +136,8 @@ terminus-font testdisk thin-provisioning-tools tmux tpm2-tools tpm2-tss
 traceroute ttf-dejavu ttf-droid ttf-fira-mono ttf-fira-sans ttf-liberation
 tzdata udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils
 util-linux util-linux-libs uv vcdimager vim vim-runtime virt-firmware
-virt-install virt-what virtualbox-guest-utils-nox vkd3d vpnc vulkan-headers
-vulkan-mesa-layers which wireguard-tools wireless-regdb wireless_tools wit
+virt-install virt-what virtualbox-guest-utils-nox vkd3d vpnc which
+wireguard-tools wireless-regdb wireless_tools wit
 wpa_supplicant wvdial wvstreams xdg-utils xfsprogs xl2tpd xmlsec xxhash xz
 yaml-language-server yarn yt-dlp zsh-autosuggestions zstd
 """
@@ -164,7 +164,7 @@ virtualbox-guest-utils
 xfce4-clipman-plugin xlibre-input-evdev xlibre-input-libinput
 xlibre-input-wacom xlibre-meta xlibre-video-amdgpu xlibre-video-ati
 xlibre-video-qxl xlibre-xserver xorg-xprop xorg-xrandr xorg-xset xorgproto
-xreader zed zvbi
+xreader zed zvbi vulkan-mesa-layers vulkan-headers memtest_vulkan
 """
 
 IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"

@@ -47,5 +47,6 @@ poetry run pytest
 
 A package is classified as **graphical** if it directly depends on one of the
 known X11/Wayland/graphics libraries (e.g. `libx11`, `mesa`, `wayland`,
-`qt6-base`, `sdl2`, etc.). Everything else is treated as **console-only**.
+`qt6-base`, `sdl2`, etc.) or if its own name starts with `vulkan-` (any
+Vulkan-related package). Everything else is treated as **console-only**.
 The full indicator list is in `archpkg/core.py`.

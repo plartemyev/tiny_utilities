@@ -54,9 +54,6 @@ _GRAPHICAL_INDICATORS: frozenset[str] = frozenset({
     "sdl2",
     "sdl3",
     "ttf-font",
-    "vulkan-icd-loader",
-    "vulkan-intel",
-    "vulkan-radeon",
     "wayland",
     "wayland-protocols",
     "wxwidgets-common",
@@ -67,6 +64,13 @@ _GRAPHICAL_INDICATORS: frozenset[str] = frozenset({
     "xorgproto",
     "xwayland",
 })
+
+
+_VULKAN_PREFIX = "vulkan-"
+
+
+def _is_graphical_indicator(name: str) -> bool:
+    return name in _GRAPHICAL_INDICATORS or name.startswith(_VULKAN_PREFIX)
 
 
 def sort_packages(packages: list[str]) -> list[str]:
@@ -97,7 +101,7 @@ def classify_packages(
     missing: list[str] = []
     pending: list[str] = []
     for pkg in unique:
-        if pkg in _GRAPHICAL_INDICATORS:
+        if _is_graphical_indicator(pkg):
             graphical.append(pkg)
         elif pkg not in found:
             missing.append(pkg)
@@ -141,7 +145,7 @@ def _dep_tree_has_graphical(root: str, deps_map: dict[str, list[str]]) -> bool:
     stack: list[str] = list(deps_map.get(root, []))
     while stack:
         dep = stack.pop()
-        if dep in _GRAPHICAL_INDICATORS:
+        if _is_graphical_indicator(dep):
             return True
         if dep not in seen:
             seen.add(dep)
@@ -150,4 +154,4 @@ def _dep_tree_has_graphical(root: str, deps_map: dict[str, list[str]]) -> bool:
 
 
 def _has_graphical_dep(deps: list[str]) -> bool:
-    return any(dep in _GRAPHICAL_INDICATORS for dep in deps)
+    return any(_is_graphical_indicator(dep) for dep in deps)
