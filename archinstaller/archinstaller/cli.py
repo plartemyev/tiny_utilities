@@ -236,7 +236,13 @@ def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str,
     for note in generated_notes:
         print(note)
     _code, private = run_capture(conn.client, "ip -4 -o addr show scope global")
-    public_code, public = run_capture(conn.client, "curl -4 -sf --max-time 15 https://ifconfig.me")
+    public_code, public = run_capture(
+        conn.client,
+        "attempt=1; while true; do curl -4 -sf --max-time 15 https://ifconfig.me && break;"
+        " [ \"$attempt\" -ge 3 ] && exit 1;"
+        " echo \"curl failed (attempt $attempt/3), retrying in 5s...\";"
+        " attempt=$((attempt + 1)); sleep 5; done",
+    )
     key_code, public_key = run_capture(conn.client, "cat $HOME/.ssh/id_ed25519.pub")
     if key_code != 0:
         sys.exit("failed to read the newly generated public key on the target")

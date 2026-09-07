@@ -204,6 +204,20 @@ def _header() -> str:
         "set -euo pipefail\n"
         "\n"
         "log() { printf '\\n===== %s =====\\n' \"$*\"; }\n"
+        "curl_retry() {\n"
+        "    local attempt=1\n"
+        "    while true; do\n"
+        "        if curl \"$@\"; then\n"
+        "            return 0\n"
+        "        fi\n"
+        "        if [ \"$attempt\" -ge 3 ]; then\n"
+        "            return 1\n"
+        "        fi\n"
+        "        echo \"curl failed (attempt $attempt/3), retrying in 5s...\"\n"
+        "        attempt=$((attempt + 1))\n"
+        "        sleep 5\n"
+        "    done\n"
+        "}\n"
     )
 
 
@@ -253,6 +267,21 @@ def _chroot(cfg: InstallConfig) -> str:
         "set -euo pipefail",
         "log() { printf '\\n===== %s =====\\n' \"$*\"; }",
         "",
+        "curl_retry() {",
+        "    local attempt=1",
+        "    while true; do",
+        "        if curl \"$@\"; then",
+        "            return 0",
+        "        fi",
+        "        if [ \"$attempt\" -ge 3 ]; then",
+        "            return 1",
+        "        fi",
+        "        echo \"curl failed (attempt $attempt/3), retrying in 5s...\"",
+        "        attempt=$((attempt + 1))",
+        "        sleep 5",
+        "    done",
+        "}",
+        "",
         "log 'Setting root password, enabling sshd'",
         f"printf 'root:%s\\n' {_sh(cfg.root_password)} | chpasswd",
         "systemctl enable sshd",
@@ -284,14 +313,14 @@ def _chroot(cfg: InstallConfig) -> str:
         "REPOS",
         "",
         "log 'Fetching and signing third-party repository keys'",
-        "curl -O https://xlibre-arch.github.io/xlibre-archlinux.asc",
+        "curl_retry -O https://xlibre-arch.github.io/xlibre-archlinux.asc",
         "pacman-key --add xlibre-archlinux.asc",
         f"pacman-key --finger {XLIBRE_KEY_ID}",
         f"pacman-key --lsign-key {XLIBRE_KEY_ID}",
         f"pacman-key --recv-keys {MAINTAINER_KEY_ID}",
         f"pacman-key --finger {MAINTAINER_KEY_ID}",
         f"pacman-key --lsign-key {MAINTAINER_KEY_ID}",
-        "curl -O https://sonicde-arch.github.io/sonicde-archlinux.asc",
+        "curl_retry -O https://sonicde-arch.github.io/sonicde-archlinux.asc",
         "pacman-key --add sonicde-archlinux.asc",
         f"pacman-key --finger {SONICDE_KEY_ID}",
         f"pacman-key --lsign-key {SONICDE_KEY_ID}",
