@@ -232,7 +232,7 @@ def _formatting(disk: str) -> str:
 def _pacstrap() -> str:
     return (
         "log 'Bootstrapping base system with pacstrap (long step)'\n"
-        "pacstrap -K --needed --noconfirm /mnt/new-root \\\n"
+        "pacstrap -K /mnt/new-root \\\n"
         f"    {_wrapped(BASE_PACKAGES)}\n"
     )
 

@@ -17,22 +17,22 @@ def make_args(**overrides):
     return argparse.Namespace(**defaults)
 
 
-def test_generated_passwords_are_printed_and_short(capsys):
+def test_generated_passwords_are_deferred_to_summary_and_short(capsys):
     args = make_args()
-    login, root, user = cli._resolve_passwords(args)
+    login, root, user, generated_notes = cli._resolve_passwords(args)
     assert login == cli.DEFAULT_LOGIN_PASSWORD
     assert len(root) == 10 and root.isalnum()
     assert len(user) == 10 and user.isalnum()
-    out = capsys.readouterr().out
-    assert "Generated root password: " in out
-    assert "Generated nameless password: " in out
+    assert capsys.readouterr().out == ""
+    assert f"Root password:  {root}" in generated_notes
+    assert f"nameless password:{user}" in generated_notes
 
 
-def test_explicit_passwords_are_kept(capsys):
+def test_explicit_passwords_are_kept():
     args = make_args(root_password="rp", user_password="up")
-    _login, root, user = cli._resolve_passwords(args)
+    _login, root, user, generated_notes = cli._resolve_passwords(args)
     assert (root, user) == ("rp", "up")
-    assert "Generated" not in capsys.readouterr().out
+    assert generated_notes == []
 
 
 def test_private_key_path_from_pubkey_file(tmp_path: Path):

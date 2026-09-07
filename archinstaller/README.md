@@ -36,8 +36,9 @@ Password handling:
 * `--login-password` defaults to `local0instaLl` (only used briefly on
   the live ISO; override with the flag if your ISO password differs).
 * `--root-password` / `--user-password` are optional: if omitted, a
-  random 10-character alphanumeric password is generated and **printed**
-  during the run.
+  random 10-character alphanumeric password is generated and printed in
+  the final summary block (deferred to the end so it cannot scroll out
+  of the console buffer).
 * `--jump-password` is still prompted for when a jump host is used.
 
 After the user is created (with the provided public key in
@@ -62,7 +63,7 @@ before connecting.
 | `--ssh-pubkey` | required | ssh public key as a literal string **or** a path to a file containing one; validated (known key type + decodable base64 blob) |
 | `--locale` | `en_US.UTF-8` | system locale (must be `<lang>_<region>.UTF-8`) |
 | `--swap-size` | `16G` | size of `/swapfile` |
-| `--root-password`, `--user-password` | generated (printed) | credentials for the installed system |
+| `--root-password`, `--user-password` | generated (printed in the final summary) | credentials for the installed system |
 | `--timezone` | `Asia/Bangkok` | timezone set on the installed system via `timedatectl set-timezone` after first boot |
 | `--graphical` | off | console-only package list by default; with the flag the graphical packages and SDDM desktop session are installed too |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
@@ -70,8 +71,10 @@ before connecting.
 
 ### Output
 
-After a successful run the script prints the target's private IP(s),
-public IP, created user name and the **newly generated** user SSH public
+The final summary block (printed at the very end, after the first
+boot) lists the generated root/user passwords (only those that were
+generated), the target's private IP(s), public IP, created user name
+and the **newly generated** user SSH public
 key (an `ed25519` keypair is created on the target after the first boot;
 the key passed via `--ssh-pubkey` is only used for initial access).
 

@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     public_key = resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
-    login_password, root_password, user_password = _resolve_passwords(args)
+    login_password, root_password, user_password, generated_notes = _resolve_passwords(args)
     jump = _resolve_jump(args)
     private_key = _private_key_path(args.ssh_pubkey)
 
@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> None:
     conn = connect_target(args.target, args.target_port, args.username, None, jump, key_filename=private_key)
     try:
         _post_boot(conn, user_password, args.username, hostname, args.timezone)
-        _print_summary(conn, args, hostname)
+        _print_summary(conn, args, hostname, generated_notes)
     finally:
         conn.close()
 
@@ -116,18 +116,19 @@ def default_hostname() -> str:
     return f"arch-host-{datetime.now().astimezone().date().isoformat()}"
 
 
-def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str]:
+def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str, list[str]]:
     login = args.login_password or DEFAULT_LOGIN_PASSWORD
     root = args.root_password or _generated_password()
     user = args.user_password or _generated_password()
     for label, value in (("--login-password", login), ("--root-password", root), ("--user-password", user)):
         if not value or "\n" in value:
             sys.exit(f"{label} must be non-empty and contain no newlines")
+    generated_notes = []
     if not args.root_password:
-        print(f"Generated root password: {root}")
+        generated_notes.append(f"{'Root password:':<16}{root}")
     if not args.user_password:
-        print(f"Generated {args.username} password: {user}")
-    return login, root, user
+        generated_notes.append(f"{args.username + ' password:':<16}{user}")
+    return login, root, user, generated_notes
 
 
 def _generated_password() -> str:
@@ -226,7 +227,14 @@ def _post_boot(conn: SshConnection, user_password: str, username: str, hostname:
     )
 
 
-def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str) -> None:
+def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str,
+                   generated_notes: list[str]) -> None:
+    print()
+    print("=" * 60)
+    print("INSTALLATION COMPLETE")
+    print("=" * 60)
+    for note in generated_notes:
+        print(note)
     _code, private = run_capture(conn.client, "ip -4 -o addr show scope global")
     public_code, public = run_capture(conn.client, "curl -4 -sf --max-time 15 https://ifconfig.me")
     key_code, public_key = run_capture(conn.client, "cat $HOME/.ssh/id_ed25519.pub")
