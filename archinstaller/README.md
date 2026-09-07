@@ -43,7 +43,9 @@ Password handling:
 
 After the user is created (with the provided public key in
 `authorized_keys`), sshd password authentication is disabled on the
-installed system, so post-reboot access is public-key only.
+installed system, so post-reboot access is public-key only. The created
+user can `sudo` without a password prompt
+(`/etc/sudoers.d/20-archinstaller`: `NOPASSWD: ALL`).
 
 Host key changes after a reinstall are handled automatically: stale
 `known_hosts` entries for the target are removed (`ssh-keygen -R`)
@@ -65,7 +67,7 @@ before connecting.
 | `--swap-size` | `16G` | size of `/swapfile` |
 | `--root-password`, `--user-password` | generated (printed in the final summary) | credentials for the installed system |
 | `--timezone` | `Asia/Bangkok` | timezone set on the installed system via `timedatectl set-timezone` after first boot |
-| `--graphical` | off | console-only package list by default; with the flag the graphical packages and SDDM desktop session are installed too |
+| `--graphical` | off | console-only package list by default; with the flag the graphical packages and SDDM desktop session are installed too, and the created user gets SDDM autologin (`/etc/sddm.conf.d/10-archinstaller.conf`) |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
 
@@ -84,7 +86,8 @@ the key passed via `--ssh-pubkey` is only used for initial access).
   same layout as the draft.
 * `pacman` runs use `--noconfirm` / `--needed` (non-interactive).
 * `passwd` / `EDITOR=vim visudo` → `chpasswd` and direct
-  `/etc/sudoers.d/10-wheel` (mode `0440`).
+  `/etc/sudoers.d/10-wheel` (mode `0440`) plus a passwordless-sudo rule
+  for the created user (`/etc/sudoers.d/20-archinstaller`, mode `0440`).
 * `/etc/pacman.conf` edits (Color, `ParallelDownloads = 10`, `IgnorePkg`,
   Multilib, `[xlibre]` + `[sonicde]` repos, key signing) done with `sed`
   and heredocs; the `73580DE2EDDFA6D6` key is fetched from the default

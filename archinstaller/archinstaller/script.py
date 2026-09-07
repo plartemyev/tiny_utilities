@@ -318,12 +318,21 @@ def _chroot(cfg: InstallConfig) -> str:
             "",
             "log 'Enabling SDDM display manager'",
             "systemctl enable sddm",
+            "",
+            f"log 'Enabling SDDM autologin for {cfg.username}'",
+            "mkdir -p /etc/sddm.conf.d",
+            (f"printf '%s\\n' '[Autologin]' 'User={cfg.username}'"
+             " > /etc/sddm.conf.d/10-archinstaller.conf"),
         ]
     lines += [
         "",
         f"log 'Creating user {cfg.username}'",
         f"useradd -m --groups {USER_GROUPS} {user}",
         f"printf '%s:%s\\n' {user} {_sh(cfg.user_password)} | chpasswd",
+        "",
+        f"log 'Granting passwordless sudo to {cfg.username}'",
+        f"printf '%s\\n' '{cfg.username} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/20-archinstaller",
+        "chmod 440 /etc/sudoers.d/20-archinstaller",
         f"install -d -m 700 -o {user} -g {user} {home}/.ssh",
         f"printf '%s\\n' {_sh(cfg.public_key)} > {home}/.ssh/authorized_keys",
         f"chmod 600 {home}/.ssh/authorized_keys",

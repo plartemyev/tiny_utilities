@@ -50,6 +50,13 @@ def test_graphical_flag_installs_desktop():
     assert "pacman -S --needed --noconfirm" in script
     assert "blender" in script
     assert "virtualbox-guest-utils" in script.split()
+    assert "[Autologin]" in script
+    assert "User=nameless' > /etc/sddm.conf.d/10-archinstaller.conf" in script
+
+
+def test_no_sddm_autologin_without_graphical():
+    script = build_install_script(make_cfg())
+    assert "sddm.conf.d" not in script
 
 
 def test_pacman_tuning_and_repos_present():
@@ -73,6 +80,7 @@ def test_locale_line_is_escaped_for_sed():
 def test_sudoers_and_services():
     script = build_install_script(make_cfg())
     assert "%wheel ALL=(ALL:ALL) ALL" in script
+    assert "nameless ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/20-archinstaller" in script
     assert "systemctl enable systemd-resolved" in script
     assert "systemctl enable NetworkManager" in script
     assert "systemctl disable systemd-networkd" in script
