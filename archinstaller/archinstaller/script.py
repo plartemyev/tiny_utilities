@@ -75,7 +75,8 @@ ca-certificates-mozilla ca-certificates-utils ccid cfr cifs-utils clamav clang
 clonezilla cloud-init container-diff corepack coreutils cryptsetup curl db5.3
 dbus dbus-broker dbus-broker-units dbus-units ddrescue device-mapper dhclient
 dhcpcd diffutils ding-libs dive dmidecode dmraid dnsmasq dnssec-anchors
-dosfstools drbl drone-cli drone-runner-docker duktape e2fsprogs ecryptfs-utils
+dosfstools docker-compose docker-buildx drbl drone-cli drone-runner-docker
+duktape e2fsprogs ecryptfs-utils
 edk2-aarch64 edk2-ovmf edk2-shell efibootmgr efivar ell ethtool evtest
 exfatprogs expat f2fs-tools fatresize file filesystem findutils flac flex
 foot-terminfo fsarchiver fuse-common fuse2 fuse3 gawk gcc-libs gdbm gettext git
@@ -105,7 +106,7 @@ mkinitcpio-busybox mkinitcpio-nfs-utils mobile-broadband-provider-info
 modemmanager mpdecimal mpfr mpg123 mtools mtr nano nbd ncurses ndisc6 nettle
 networkmanager nfs-utils nfsidmap nftables nilfs-utils nmap nodejs npm npth nspr
 nss nss-mdns ntfs-3g numactl nvme-cli nvtop oath-toolkit open-iscsi open-isns
-openbsd-netcat openconnect openjdk-doc openpgp-card-tools openssh openssl
+openbsd-netcat openconnect opencode openjdk-doc openpgp-card-tools openssh openssl
 openvpn opus osinfo-db otf-fira-mono otf-fira-sans p11-kit pacman pacman-contrib
 pacman-mirrorlist pam pambase pandoc-cli pandoc-crossref pandoc-plot partclone
 parted partimage passff-host pbzip2 pciutils pcre pcre2 pcsclite perl pigz
