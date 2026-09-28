@@ -29,6 +29,25 @@
     - PyGObject `DBusProxy` `g-properties-changed`: the `changed` dict is a `GLib.Variant` — plain `in`/`[]` access raises `KeyError: 0`; call `.unpack()` first;
     - PyGObject `GLibUnix.signal_add` invokes the handler with zero args, while `GLib.unix_signal_add` passes `(user_data)`; the former is the non-deprecated variant;
     - Existing tooling for this: `kdeconnect-media-logger/` (service) and `tmp/kdeconnect_media_probe.py` (exploratory probe).
+- opencode v2 server peculiarities (Arch package 2.0.18; verified in a systemd docker container):
+    - standalone `opencode serve` honours `OPENCODE_SERVER_PASSWORD`: with it set, HTTP basic auth is
+      enforced (401 without/wrong creds, 200 with `opencode:<password>`); without it a random password is
+      generated and printed to stdout (lost in the journal when run under systemd);
+    - the basic-auth username is hardcoded to `opencode`: `OPENCODE_SERVER_USERNAME` is ignored by 2.0.18
+      (honoured by newer v2 builds) and `opencode service set username ...` fails with "Unknown service config key";
+    - `~/.config/opencode/service.json` (managed by `opencode service set/get`) is used only by the
+      background-service mode (`opencode service start`), NOT by standalone `opencode serve`;
+    - auth protects API routes (e.g. `/openapi.json`); static assets and health endpoints stay public.
+- `loginctl enable-linger` without a user argument (verified in a systemd docker container over SSH):
+    - resolves to the **owner of the logind session the calling process belongs to** — `sudo`, `sudo sh -c`,
+      `sudo su`/`sudo -i` root shells all still target the SSH session's user (sudo/su create no logind
+      session on Arch); only a genuine root session (console login, `machinectl shell`, sshd-as-root) targets root;
+    - fails with `Access denied` without root privileges over SSH (polkit `set-self-linger` allows active
+      sessions only), and fails outright with rc=1 in session-less contexts (systemd services, cron,
+      docker exec) — there is no euid fallback and no "all users" mode;
+    - linger itself is per-user marker files in `/var/lib/systemd/linger/<username>`; users created later
+      never linger until enabled explicitly;
+    - the named form `loginctl enable-linger <username>` is the only one independent of session/PAM context.
 
 
 ## 1. Think Before Coding
