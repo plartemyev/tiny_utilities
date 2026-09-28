@@ -28,7 +28,7 @@ poetry run archinstaller \
     [--username nameless] \
     --ssh-pubkey 'ssh-ed25519 AAAA... comment'   # or a path: --ssh-pubkey ~/.ssh/id_ed25519.pub \
     [--locale en_US.UTF-8] [--swap-size 16G] \
-    [--graphical]
+    [--graphical] [--opencode]
 ```
 
 Password handling:
@@ -68,6 +68,7 @@ before connecting.
 | `--root-password`, `--user-password` | generated (printed in the final summary) | credentials for the installed system |
 | `--timezone` | `Asia/Bangkok` | timezone set on the installed system via `timedatectl set-timezone` after first boot |
 | `--graphical` | off | console-only package list by default; with the flag the graphical packages and SDDM desktop session are installed too, and the created user gets SDDM autologin (`/etc/sddm.conf.d/10-archinstaller.conf`) |
+| `--opencode` | off | additionally deploy the opencode web server as a systemd **user** service on port `49374` (opens the port in firewalld; see below) |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
 
@@ -79,6 +80,36 @@ generated), the target's private IP(s), public IP, created user name
 and the **newly generated** user SSH public
 key (an `ed25519` keypair is created on the target after the first boot;
 the key passed via `--ssh-pubkey` is only used for initial access).
+
+With `--opencode` the summary additionally lists the opencode web
+address (`http://<target>:49374`), the connection username (`opencode`)
+and its separately generated password.
+
+### opencode web service (`--opencode`)
+
+After the first boot the tool additionally:
+
+* runs `loginctl enable-linger <username>` (via passwordless sudo) so
+  the user manager — and the service — run without an active login
+  session;
+* installs `~/.config/systemd/user/opencode.service` running
+  `opencode serve --hostname 0.0.0.0 --port 49374` and enables/starts
+  it (`systemctl --user daemon-reload`, `systemctl --user enable --now`);
+* sets the server password through `OPENCODE_SERVER_PASSWORD` in the
+  unit: always a separate generated 10-character alphanumeric password,
+  independent of `--user-password` (opencode v2 protects the server
+  with HTTP basic auth; without the variable it would generate a random
+  password into the journal on every start);
+* opens the port: `firewall-cmd --permanent --add-port=49374/tcp` +
+  `firewall-cmd --reload` (firewalld itself is installed and enabled
+  in the basic setup of every install — see the deviations list).
+
+Username note: opencode v2 (as of 2.0.18, the current Arch package)
+hardcodes the HTTP basic-auth username to `opencode` —
+`OPENCODE_SERVER_USERNAME` is ignored and `opencode service set
+username ...` is rejected as an unknown key — so the summary reports
+`opencode` as the connection username. Newer opencode builds honour
+`OPENCODE_SERVER_USERNAME` if a custom username is ever wanted.
 
 ## Deviations from the manual draft
 
@@ -92,16 +123,9 @@ the key passed via `--ssh-pubkey` is only used for initial access).
   Multilib, `[xlibre-stable]` + `[sonicde]` repos, key signing) done with
   `sed` and heredocs; only the repo signing keys (`B97F7C613F359424`,
   `3B87898C73F11DF5`) are imported from the `.asc` files over HTTPS —
-  no keyserver access is needed (the old `73580DE2EDDFA6D6` maintainer
-  key was revoked and removed from keyservers; upstream docs no longer
-  reference it). The `#Include` uncommenting for Multilib is scoped to
+  no keyserver access is needed. The `#Include` uncommenting for Multilib is scoped to
   the `[multilib]` section so no stray `mirrorlist` include lands inside
-  `[options]`. The `.asc` key fetches and the `pacman` package installs
-  run through a generic 3-attempt / 5-second-pause `retry` wrapper to
-  ride out transient network resets; additionally `XferCommand` is set
-  to curl with `--retry 3 --retry-delay 5 --retry-all-errors -C -` so
-  every individual file download (databases and packages) retries and
-  resumes inside a single pacman run.
+  `[options]`.
 * `locale-gen` needs the locale uncommented in `/etc/locale.gen`
   (the draft missed this); it is done automatically.
 * `systemctl enable --now sshd` in chroot → `systemctl enable sshd`
@@ -118,6 +142,10 @@ the key passed via `--ssh-pubkey` is only used for initial access).
   the first boot (it cannot run inside `arch-chroot`).
 * `/etc/resolv.conf` → `stub-resolv.conf` symlink is applied right after
   the first boot, as in the draft.
+* `firewalld` is installed and enabled in the basic setup of every
+  install (`retry pacman -S --needed --noconfirm firewalld`,
+  `systemctl enable firewalld`); the default zone configuration keeps
+  SSH reachable. `--opencode` additionally opens `49374/tcp`.
 
 ## Test
 

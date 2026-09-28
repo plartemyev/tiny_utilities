@@ -28,13 +28,16 @@ from archinstaller.ssh import (
 INSTALL_SCRIPT_PATH = "/root/archinstaller.sh"
 DEFAULT_LOGIN_PASSWORD = "local0instaLl"
 GENERATED_PASSWORD_LENGTH = 10
+OPENCODE_PORT = 49374
+OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
+OPENCODE_WEB_USER = "opencode"  # server-side basic-auth username, fixed by opencode v2
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     public_key = resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
-    login_password, root_password, user_password, generated_notes = _resolve_passwords(args)
+    login_password, root_password, user_password, opencode_password, generated_notes = _resolve_passwords(args)
     jump = _resolve_jump(args)
     private_key = _private_key_path(args.ssh_pubkey)
 
@@ -49,7 +52,9 @@ def main(argv: list[str] | None = None) -> None:
     conn = connect_target(args.target, args.target_port, args.username, None, jump, key_filename=private_key)
     try:
         _post_boot(conn, user_password, args.username, hostname, args.timezone)
-        _print_summary(conn, args, hostname, generated_notes)
+        if opencode_password is not None:
+            _setup_opencode(conn, args.username, user_password, opencode_password)
+        _print_summary(conn, args, hostname, generated_notes, opencode_password)
     finally:
         conn.close()
 
@@ -88,6 +93,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="timezone to set on the installed system (default: Asia/Bangkok)")
     parser.add_argument("--graphical", action="store_true",
                         help="also install graphical packages and the SDDM desktop session")
+    parser.add_argument("--opencode", action="store_true",
+                        help="also deploy the opencode web server as a systemd user service on "
+                             f"port {OPENCODE_PORT} (opens the port in firewalld)")
     parser.add_argument("--install-timeout", type=int, default=7200,
                         help="seconds to wait for the install script (default: 7200)")
     parser.add_argument("--reboot-timeout", type=int, default=900,
@@ -116,11 +124,15 @@ def default_hostname() -> str:
     return f"arch-host-{datetime.now().astimezone().date().isoformat()}"
 
 
-def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str, list[str]]:
+def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str, str | None, list[str]]:
     login = args.login_password or DEFAULT_LOGIN_PASSWORD
     root = args.root_password or _generated_password()
     user = args.user_password or _generated_password()
-    for label, value in (("--login-password", login), ("--root-password", root), ("--user-password", user)):
+    opencode = _generated_password() if args.opencode else None
+    required = [("--login-password", login), ("--root-password", root), ("--user-password", user)]
+    if opencode is not None:
+        required.append(("opencode password", opencode))
+    for label, value in required:
         if not value or "\n" in value:
             sys.exit(f"{label} must be non-empty and contain no newlines")
     generated_notes = []
@@ -128,7 +140,7 @@ def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str, list[st
         generated_notes.append(f"{'Root password:':<16}{root}")
     if not args.user_password:
         generated_notes.append(f"{args.username + ' password:':<16}{user}")
-    return login, root, user, generated_notes
+    return login, root, user, opencode, generated_notes
 
 
 def _generated_password() -> str:
@@ -227,8 +239,40 @@ def _post_boot(conn: SshConnection, user_password: str, username: str, hostname:
     )
 
 
+def _opencode_unit(opencode_password: str) -> str:
+    return "\n".join([
+        "[Unit]",
+        "Description=OpenCode web server",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        f"Environment=OPENCODE_SERVER_PASSWORD={opencode_password}",
+        f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {OPENCODE_PORT}",
+        "Restart=on-failure",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+    ]) + "\n"
+
+
+def _setup_opencode(conn: SshConnection, username: str, user_password: str, opencode_password: str) -> None:
+    print("Setting up the opencode web service ...")
+    run_streaming(conn.client, f"sudo -S -p '' loginctl enable-linger {shlex.quote(username)}",
+                  stdin_text=user_password + "\n", timeout=60)
+    run_streaming(conn.client, "mkdir -p ~/.config/systemd/user", timeout=60)
+    upload_text(conn.client, _opencode_unit(opencode_password), OPENCODE_UNIT_PATH)
+    run_streaming(conn.client, f"chmod 644 $HOME/{OPENCODE_UNIT_PATH}", timeout=60)
+    run_streaming(conn.client, "systemctl --user daemon-reload", timeout=60)
+    run_streaming(conn.client, "systemctl --user enable --now opencode.service", timeout=60)
+    run_streaming(conn.client, f"sudo -S -p '' firewall-cmd --permanent --add-port={OPENCODE_PORT}/tcp",
+                  stdin_text=user_password + "\n", timeout=60)
+    run_streaming(conn.client, "sudo -S -p '' firewall-cmd --reload",
+                  stdin_text=user_password + "\n", timeout=60)
+
+
 def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str,
-                   generated_notes: list[str]) -> None:
+                   generated_notes: list[str], opencode_password: str | None = None) -> None:
     print()
     print("=" * 60)
     print("INSTALLATION COMPLETE")
@@ -266,4 +310,8 @@ def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str,
     print(f"Created user:   {args.username}")
     print("New SSH key:    $HOME/.ssh/id_ed25519 (ed25519, empty passphrase)")
     print(f"Public key:\n{public_key.strip()}")
+    if opencode_password is not None:
+        print(f"opencode web:   http://{args.target}:{OPENCODE_PORT}")
+        print(f"opencode user:  {OPENCODE_WEB_USER}")
+        print(f"opencode pass:  {opencode_password}")
     print(f"Connect with:\n    {jump_note}")

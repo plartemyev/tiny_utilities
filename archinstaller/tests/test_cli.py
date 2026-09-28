@@ -11,7 +11,7 @@ def make_args(**overrides):
         "disk": "/dev/vda", "hostname": None, "username": "nameless",
         "ssh_pubkey": "key", "locale": "en_US.UTF-8", "swap_size": "16G",
         "root_password": None, "user_password": None, "timezone": "Asia/Bangkok",
-        "graphical": False, "install_timeout": 1, "reboot_timeout": 1,
+        "graphical": False, "opencode": False, "install_timeout": 1, "reboot_timeout": 1,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -19,10 +19,11 @@ def make_args(**overrides):
 
 def test_generated_passwords_are_deferred_to_summary_and_short(capsys):
     args = make_args()
-    login, root, user, generated_notes = cli._resolve_passwords(args)
+    login, root, user, opencode, generated_notes = cli._resolve_passwords(args)
     assert login == cli.DEFAULT_LOGIN_PASSWORD
     assert len(root) == 10 and root.isalnum()
     assert len(user) == 10 and user.isalnum()
+    assert opencode is None
     assert capsys.readouterr().out == ""
     assert f"Root password:  {root}" in generated_notes
     assert f"nameless password:{user}" in generated_notes
@@ -30,9 +31,25 @@ def test_generated_passwords_are_deferred_to_summary_and_short(capsys):
 
 def test_explicit_passwords_are_kept():
     args = make_args(root_password="rp", user_password="up")
-    _login, root, user, generated_notes = cli._resolve_passwords(args)
-    assert (root, user) == ("rp", "up")
+    _login, root, user, opencode, generated_notes = cli._resolve_passwords(args)
+    assert (root, user, opencode) == ("rp", "up", None)
     assert generated_notes == []
+
+
+def test_opencode_flag_generates_separate_password():
+    args = make_args(opencode=True, user_password="up")
+    _login, _root, _user, opencode, _notes = cli._resolve_passwords(args)
+    assert opencode is not None
+    assert len(opencode) == 10 and opencode.isalnum()
+    assert opencode != "up"
+
+
+def test_opencode_unit_contents():
+    unit = cli._opencode_unit("secret01")
+    assert "OPENCODE_SERVER_USERNAME" not in unit
+    assert "Environment=OPENCODE_SERVER_PASSWORD=secret01" in unit
+    assert f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {cli.OPENCODE_PORT}" in unit
+    assert "WantedBy=default.target" in unit
 
 
 def test_private_key_path_from_pubkey_file(tmp_path: Path):
