@@ -286,7 +286,6 @@ def _chroot(cfg: InstallConfig) -> str:
         "log 'Tuning /etc/pacman.conf'",
         "sed -i 's/^#Color/Color/' /etc/pacman.conf",
         "sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf",
-        # "sed -i 's|^#XferCommand = /usr/bin/curl.*|XferCommand = /usr/bin/curl -L -C - -f --retry 3 --retry-delay 5 --retry-all-errors -o %o %u|' /etc/pacman.conf",
         f"sed -i '/^\\[options\\]$/a IgnorePkg = {IGNORE_PKG}' /etc/pacman.conf",
         "sed -i 's/^#\\[multilib\\]/[multilib]/' /etc/pacman.conf",
         "sed -i '/^\\[multilib\\]$/,/^$/ s/^#Include/Include/' /etc/pacman.conf",
@@ -359,6 +358,10 @@ def _chroot(cfg: InstallConfig) -> str:
         "systemctl disable systemd-networkd",
         "systemctl enable systemd-resolved",
         "systemctl enable NetworkManager",
+        "",
+        "log 'Installing and enabling firewalld'",
+        "retry pacman -S --needed --noconfirm firewalld",
+        "systemctl enable firewalld",
         "CHROOT",
     ]
     return "\n".join(lines) + "\n"

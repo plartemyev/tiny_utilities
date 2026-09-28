@@ -63,7 +63,6 @@ def test_pacman_tuning_and_repos_present():
     script = build_install_script(make_cfg())
     assert "IgnorePkg = kweather kweathercore akonadi kmix kalarm kget ktorrent kalk" in script
     assert "ParallelDownloads = 10" in script
-    assert "XferCommand = /usr/bin/curl -L -C - -f --retry 3 --retry-delay 5 --retry-all-errors -o %o %u" in script
     assert "sed -i 's/^#\\[multilib\\]/[multilib]/' /etc/pacman.conf" in script
     assert "sed -i '/^\\[multilib\\]$/,/^$/ s/^#Include/Include/' /etc/pacman.conf" in script
     assert "'s/^#Include/Include/'" not in script
@@ -97,3 +96,10 @@ def test_ssh_password_auth_disabled_after_user_creation():
     assert "PasswordAuthentication no" in script
     assert "KbdInteractiveAuthentication no" in script
     assert script.index("authorized_keys") < script.index("PasswordAuthentication no")
+
+
+def test_firewalld_installed_and_enabled_by_default():
+    script = build_install_script(make_cfg())
+    assert "retry pacman -S --needed --noconfirm firewalld" in script
+    assert "systemctl enable firewalld" in script
+    assert script.index("pacman -S --needed --noconfirm firewalld") < script.rindex("CHROOT")
