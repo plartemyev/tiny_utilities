@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import getpass
+import ipaddress
+import json
 import os
 import re
 import secrets
 import shlex
 import string
 import sys
+import time
 from datetime import datetime
 
 import paramiko
 
+from archinstaller import vbox
 from archinstaller.pubkey import resolve_public_key
 from archinstaller.script import InstallConfig, build_install_script
 from archinstaller.ssh import (
@@ -19,6 +24,7 @@ from archinstaller.ssh import (
     SshConnection,
     clear_stale_host_key,
     connect_target,
+    find_host_in_subnet,
     run_capture,
     run_streaming,
     upload_text,
@@ -35,6 +41,11 @@ OPENCODE_WEB_USER = "opencode"  # server-side basic-auth username, fixed by open
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    if args.resume:
+        _resume_stage(args.resume)
+        return
+    if args.vbox_vm is not None and not vbox.vm_exists(args.vbox_vm):
+        sys.exit(f"VirtualBox VM {args.vbox_vm!r} not found via vboxmanage showvminfo")
     public_key = resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
     login_password, root_password, user_password, opencode_password, generated_notes = _resolve_passwords(args)
@@ -42,21 +53,25 @@ def main(argv: list[str] | None = None) -> None:
     private_key = _private_key_path(args.ssh_pubkey)
 
     clear_stale_host_key(args.target, args.target_port)
-    _run_installation(args, hostname, login_password, root_password, user_password, public_key, jump)
+    _run_installation(args, hostname, login_password, root_password, user_password, public_key, jump,
+                      guest_reboot=args.vbox_vm is None)
 
-    print(f"\nTarget is rebooting; waiting up to {args.reboot_timeout}s for SSH ...")
+    state_path = _state_path(hostname)
+    _save_state(state_path, _state_object(args, hostname, root_password, user_password,
+                                          opencode_password, generated_notes, private_key, jump))
+    if args.vbox_vm is not None:
+        _host_side_reboot(args.vbox_vm)
+    print(f"\nWaiting up to {args.reboot_timeout}s for SSH ...")
     clear_stale_host_key(args.target, args.target_port)
     if not wait_for_ssh(args.target, args.target_port, args.username, None, args.reboot_timeout, jump,
                         key_filename=private_key):
-        sys.exit(f"target did not come back within {args.reboot_timeout}s; connect manually and inspect")
-    conn = connect_target(args.target, args.target_port, args.username, None, jump, key_filename=private_key)
-    try:
-        _post_boot(conn, user_password, args.username, hostname, args.timezone)
-        if opencode_password is not None:
-            _setup_opencode(conn, args.username, user_password, opencode_password)
-        _print_summary(conn, args, hostname, generated_notes, opencode_password)
-    finally:
-        conn.close()
+        found = _find_target_after_reboot(args, hostname, private_key, jump)
+        if found is None:
+            _print_recovery_instructions(state_path)
+            sys.exit(1)
+        args.target = found
+    _finish_install(args, hostname, user_password, opencode_password, generated_notes,
+                    private_key, jump, state_path)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -68,7 +83,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "resulting host IPs, created user and its new SSH public key."
         ),
     )
-    parser.add_argument("--target", required=True, help="host running the Arch ISO live environment")
+    parser.add_argument("--target", help="host running the Arch ISO live environment")
     parser.add_argument("--target-port", type=int, default=22)
     parser.add_argument("--login-user", default="root", help="user on the live ISO (default: root)")
     parser.add_argument("--login-password", default=DEFAULT_LOGIN_PASSWORD,
@@ -81,7 +96,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="disk to wipe: plain sdX/vdX/hdX device, e.g. /dev/vda (no NVMe)")
     parser.add_argument("--hostname", help="hostname for the new system (default: arch-host-YYYY-MM-DD)")
     parser.add_argument("--username", default="nameless", help="user account to create (default: nameless)")
-    parser.add_argument("--ssh-pubkey", required=True,
+    parser.add_argument("--ssh-pubkey",
                         help="ssh public key: literal key string or path to a file containing one")
     parser.add_argument("--locale", default="en_US.UTF-8", help="e.g. en_US.UTF-8")
     parser.add_argument("--swap-size", default="16G", help="e.g. 16G")
@@ -100,7 +115,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="seconds to wait for the install script (default: 7200)")
     parser.add_argument("--reboot-timeout", type=int, default=900,
                         help="seconds to wait for SSH after reboot (default: 900)")
+    parser.add_argument("--no-subnet-scan", action="store_true",
+                        help="do not scan the target's /24 for the machine if it came back "
+                             "at a different address (the scan verifies the configured hostname)")
+    parser.add_argument("--vbox-vm", metavar="NAME",
+                        help="VirtualBox VM name for a host-side reboot: clean power-off, NVRAM "
+                             "store backed up (fresh firmware defaults on next boot), boot order "
+                             "disk before DVD, start. Makes the first boot work out of the box")
+    parser.add_argument("--resume", metavar="STATE_FILE",
+                        help="skip the install and finish a previous run post-reboot from its "
+                             "state file (all other arguments are ignored)")
     args = parser.parse_args(argv)
+    if args.resume:
+        return args
+    if not args.target:
+        parser.error("--target is required (unless --resume is used)")
+    if not args.ssh_pubkey:
+        parser.error("--ssh-pubkey is required (unless --resume is used)")
     _validate(parser, args)
     return args
 
@@ -170,6 +201,171 @@ def _resolve_jump(args: argparse.Namespace) -> JumpConfig | None:
     return JumpConfig(args.jump_host, args.jump_port, username, password)
 
 
+def _is_ipv4(value: str) -> bool:
+    try:
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _find_target_after_reboot(args: argparse.Namespace, hostname: str,
+                              private_key: str | None, jump: JumpConfig | None) -> str | None:
+    """Fallback after a reboot timeout: probe the target's /24 by hostname."""
+    if args.no_subnet_scan:
+        reason = "subnet scan disabled (--no-subnet-scan)"
+    elif jump is not None:
+        reason = "subnet scan is not supported with a jump host"
+    elif not _is_ipv4(args.target):
+        reason = f"{args.target} is not a scannable IPv4 address"
+    else:
+        reason = None
+    if reason:
+        print(f"Target did not come back within {args.reboot_timeout}s ({reason}).")
+        return None
+    print(f"Scanning the /24 around {args.target} for an SSH host named {hostname!r} ...")
+    found = find_host_in_subnet(args.target, args.target_port, args.username, hostname, private_key)
+    if found is None:
+        print(f"Target did not come back within {args.reboot_timeout}s and nothing in its"
+              f" /24 reports hostname {hostname!r}.")
+        return None
+    print(f"Target found at {found} (was {args.target}).")
+    clear_stale_host_key(found, args.target_port)
+    return found
+
+
+def _detect_virt(conn: SshConnection) -> str:
+    """Hypervisor of the target per systemd-detect-virt in the live env."""
+    _code, out = run_capture(conn.client, "systemd-detect-virt || true", timeout=30)
+    virt = out.strip().splitlines()[0].strip() if out.strip() else "none"
+    print(f"Detected virtualization: {virt}")
+    return virt
+
+
+def _host_side_reboot(vm: str) -> None:
+    print(f"VirtualBox assist: powering off VM {vm!r} ...")
+    vbox.poweroff(vm)
+    backup = vbox.reset_nvram(vm)
+    print(f"NVRAM store moved to {backup}; next boot gets fresh firmware defaults.")
+    vbox.order_disk_before_dvd(vm)
+    vbox.start(vm)
+    print(f"VM {vm!r} started with boot order: floppy, disk, dvd (disk first).")
+
+
+def _state_path(hostname: str) -> str:
+    return f"archinstaller-state-{hostname}.json"
+
+
+def _state_object(args: argparse.Namespace, hostname: str, root_password: str, user_password: str,
+                  opencode_password: str | None, generated_notes: list[str],
+                  private_key: str | None, jump: JumpConfig | None) -> dict:
+    return {
+        "version": 1,
+        "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "target": args.target,
+        "target_port": args.target_port,
+        "username": args.username,
+        "hostname": hostname,
+        "timezone": args.timezone,
+        "reboot_timeout": args.reboot_timeout,
+        "private_key": private_key,
+        "jump": dataclasses.asdict(jump) if jump is not None else None,
+        "opencode": opencode_password is not None,
+        "opencode_password": opencode_password,
+        "root_password": root_password,
+        "user_password": user_password,
+        "generated_notes": generated_notes,
+    }
+
+
+def _save_state(path: str, state: dict) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
+        fh.write("\n")
+
+
+def _load_state(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.exit(f"cannot read state file {path}: {exc}")
+    missing = [key for key in REQUIRED_STATE_KEYS if key not in state]
+    if missing:
+        sys.exit(f"state file {path} is missing keys: {', '.join(missing)}")
+    return state
+
+
+REQUIRED_STATE_KEYS = (
+    "target", "target_port", "username", "hostname", "timezone", "reboot_timeout",
+    "private_key", "jump", "opencode", "opencode_password", "root_password",
+    "user_password", "generated_notes",
+)
+
+
+def _resume_stage(path: str) -> None:
+    state = _load_state(path)
+    jump = JumpConfig(**state["jump"]) if state.get("jump") is not None else None
+    print(f"Resuming from {path}: waiting for {state['username']}@{state['target']} ...")
+    clear_stale_host_key(state["target"], state["target_port"])
+    if not wait_for_ssh(state["target"], state["target_port"], state["username"], None,
+                        state["reboot_timeout"], jump, key_filename=state["private_key"]):
+        found = None
+        if jump is None and _is_ipv4(state["target"]):
+            print(f"Scanning the /24 around {state['target']} for an SSH host named"
+                  f" {state['hostname']!r} ...")
+            found = find_host_in_subnet(state["target"], state["target_port"], state["username"],
+                                        state["hostname"], state["private_key"])
+        if found is None:
+            _print_recovery_instructions(path)
+            sys.exit(1)
+        print(f"Target found at {found} (was {state['target']}).")
+        state["target"] = found
+        _save_state(path, state)
+        clear_stale_host_key(found, state["target_port"])
+    args = argparse.Namespace(
+        target=state["target"],
+        username=state["username"],
+        jump_host=state["jump"]["host"] if state.get("jump") is not None else None,
+    )
+    opencode_password = state["opencode_password"] if state["opencode"] else None
+    _finish_install(args, state["hostname"], state["user_password"], opencode_password,
+                    state["generated_notes"], state["private_key"], jump, path)
+
+
+def _finish_install(args: argparse.Namespace, hostname: str, user_password: str,
+                    opencode_password: str | None, generated_notes: list[str],
+                    private_key: str | None, jump: JumpConfig | None, state_path: str) -> None:
+    conn = connect_target(args.target, args.target_port, args.username, None, jump,
+                          key_filename=private_key)
+    try:
+        _post_boot(conn, user_password, args.username, hostname, args.timezone)
+        if opencode_password is not None:
+            _setup_opencode(conn, args.username, user_password, opencode_password)
+        _print_summary(conn, args, hostname, generated_notes, opencode_password)
+    finally:
+        conn.close()
+    os.unlink(state_path)  # finished: the file holds passwords, do not keep it
+
+
+def _print_recovery_instructions(state_path: str) -> None:
+    print(f"\nThe install itself is complete; state saved to {state_path}.")
+    print("Recovery steps:")
+    print("  1. Check the machine's console:")
+    print("     - If it sits in the EFI boot manager, pick the hard disk entry; the")
+    print("       installer left a fallback bootloader at \\EFI\\BOOT\\BOOTX64.EFI.")
+    print("     - VirtualBox: guest-written boot entries die on guest reboots and a")
+    print("       stale BootOrder can trap the boot. One-time host-side reset:")
+    print('           vboxmanage controlvm "<vm>" acpipowerbutton')
+    print("           mv '<nvram-file>' '<nvram-file>.bak'")
+    print('           vboxmanage modifyvm "<vm>" --boot2 disk --boot3 dvd')
+    print('           vboxmanage startvm "<vm>"')
+    print('       (next time pass --vbox-vm "<vm>" to automate this)')
+    print("  2. When the installed system is up (at any address), finish the setup:")
+    print(f"         archinstaller --resume {state_path}")
+
+
 def _run_installation(
     args: argparse.Namespace,
     hostname: str,
@@ -178,10 +374,16 @@ def _run_installation(
     user_password: str,
     public_key: str,
     jump: JumpConfig | None,
+    guest_reboot: bool = True,
 ) -> None:
     print(f"Connecting to live environment {args.target}:{args.target_port} ...")
     conn = connect_target(args.target, args.target_port, args.login_user, login_password, jump)
     try:
+        _code, _ = run_capture(conn.client, "test -d /sys/firmware/efi", timeout=30)
+        if _code != 0:
+            sys.exit("target is not booted in UEFI mode; the install script registers GRUB "
+                     "for x86_64-efi and requires an ESP (boot the live ISO in UEFI mode)")
+        virt = _detect_virt(conn)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -192,6 +394,7 @@ def _run_installation(
             user_password=user_password,
             public_key=public_key,
             graphical=args.graphical,
+            virt=virt,
         )
         print(f"Uploading installation script to {INSTALL_SCRIPT_PATH} ...")
         upload_text(conn.client, build_install_script(cfg), INSTALL_SCRIPT_PATH)
@@ -204,8 +407,11 @@ def _run_installation(
         )
         if code != 0:
             sys.exit(f"installation script exited with code {code}")
-        print("Installation finished. Rebooting target ...")
-        _reboot(conn)
+        if guest_reboot:
+            print("Installation finished. Rebooting target ...")
+            _reboot(conn)
+        else:
+            print("Installation finished; the VM will be rebooted from the host side.")
     finally:
         conn.close()
 
@@ -264,11 +470,29 @@ def _setup_opencode(conn: SshConnection, username: str, user_password: str, open
     upload_text(conn.client, _opencode_unit(opencode_password), OPENCODE_UNIT_PATH)
     run_streaming(conn.client, f"chmod 644 $HOME/{OPENCODE_UNIT_PATH}", timeout=60)
     run_streaming(conn.client, "systemctl --user daemon-reload", timeout=60)
-    run_streaming(conn.client, "systemctl --user enable --now opencode.service", timeout=60)
+    run_streaming(conn.client, "systemctl --user enable opencode.service", timeout=60)
+    run_streaming(conn.client, "systemctl --user start --no-block opencode.service", timeout=60)
+    _wait_user_service_active(conn.client, "opencode.service")
     run_streaming(conn.client, f"sudo -S -p '' firewall-cmd --permanent --add-port={OPENCODE_PORT}/tcp",
                   stdin_text=user_password + "\n", timeout=60)
     run_streaming(conn.client, "sudo -S -p '' firewall-cmd --reload",
                   stdin_text=user_password + "\n", timeout=60)
+
+
+def _wait_user_service_active(client: paramiko.SSHClient, unit: str,
+                              tries: int = 10, delay: float = 1.0) -> None:
+    """Poll `systemctl --user is-active` until unit reports active.
+
+    `systemctl --user start` may occasionally hold the SSH channel open
+    until the read timeout, so the start is queued with --no-block and
+    the result is verified here instead.
+    """
+    for _ in range(tries):
+        code, out = run_capture(client, f"systemctl --user is-active {unit}", timeout=30)
+        if code == 0 and out.strip() == "active":
+            return
+        time.sleep(delay)
+    sys.exit(f"{unit} did not become active after {tries} attempts")
 
 
 def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str,
