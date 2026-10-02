@@ -143,9 +143,25 @@ wpa_supplicant wvdial wvstreams xdg-utils xfsprogs xl2tpd xmlsec xxhash xz
 yaml-language-server yarn yt-dlp zsh-autosuggestions zstd
 """
 
+# Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
+# sonic-login-manager (a sonicde-meta dependency) Requires: xorg-server — with
+# the server installed first that dependency resolves to the xlibre build
+# instead of pulling in the conflicting stock xorg-server.
+XLIBRE_PACKAGES = """
+xlibre-input-evdev xlibre-input-libinput xlibre-input-wacom xlibre-meta
+xlibre-video-amdgpu xlibre-video-ati xlibre-video-qxl xlibre-xserver
+"""
+
+# Installed before GRAPHICAL_PACKAGES: the sonic packages conflict with (and
+# provide) the stock KDE/Plasma ones, so having them installed first makes
+# pacman resolve those dependencies to the sonic replacements.
+SONICDE_PACKAGES = """
+sonicde-meta sonic-ecco sonic-win sonic-workspace
+"""
+
 GRAPHICAL_PACKAGES = """
 audacious audacious-plugins audacity blender brltty cdrdao chromium colord-gtk
-dleyna dolphin dolphin-plugins espeak-ng espeakup ffmpeg filelight firefox
+dleyna sonic-ecco dolphin-plugins espeak-ng espeakup ffmpeg filelight firefox
 firefox-i18n-en-ca firefox-i18n-ru firefox-spell-ru fluidsynth gameconqueror
 gimp graphviz gst-libav gst-plugin-dav1d gst-plugin-rav1e guvcview-qt
 intel-media-driver joyutils kate kgraphviewer lib32-libva lib32-mesa libcanberra
@@ -155,16 +171,13 @@ modem-manager-gui mono mono-msbuild mono-msbuild-sdkresolver
 network-manager-applet networkmanager-openconnect nm-connection-editor okular
 open-vm-tools pavucontrol pcaudiolib peek pipewire-pulse
 pycharm-community-edition qbittorrent qt6-webengine radeontop renderdoc scrcpy
-sddm sdl12-compat sdl2 sonic-win sonic-workspace sonic-x11-session sonicde-meta
+sddm sdl12-compat sdl2
 spice-vdagent systray-x-common telegram-desktop texlive-latexextra
 texlive-latexrecommended thunderbird thunderbird-i18n-en-us thunderbird-i18n-ru
 virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all vulkan-broadcom
 vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-intel vulkan-radeon
 vulkan-tools vulkan-virtio wine wine-gecko xarchiver xcb-proto
-virtualbox-guest-utils
-xfce4-clipman-plugin xlibre-input-evdev xlibre-input-libinput
-xlibre-input-wacom xlibre-meta xlibre-video-amdgpu xlibre-video-ati
-xlibre-video-qxl xlibre-xserver xorg-xprop xorg-xrandr xorg-xset xorgproto
+xfce4-clipman-plugin xorg-xprop xorg-xrandr xorg-xset xorgproto
 xreader zed zvbi vulkan-mesa-layers vulkan-headers memtest_vulkan
 """
 
@@ -185,6 +198,7 @@ class InstallConfig:
     user_password: str
     public_key: str
     graphical: bool
+    virt: str = "oracle"
 
 
 def build_install_script(cfg: InstallConfig) -> str:
@@ -192,7 +206,7 @@ def build_install_script(cfg: InstallConfig) -> str:
         _header(),
         _partitioning(cfg.disk),
         _formatting(cfg.disk),
-        _pacstrap(),
+        _pacstrap(cfg),
         _fstab(),
         _chroot(cfg),
     ])
@@ -229,12 +243,33 @@ def _formatting(disk: str) -> str:
     )
 
 
-def _pacstrap() -> str:
+def _pacstrap(cfg: InstallConfig) -> str:
     return (
         "log 'Bootstrapping base system with pacstrap (long step)'\n"
         "pacstrap -K /mnt/new-root \\\n"
-        f"    {_wrapped(BASE_PACKAGES)}\n"
+        f"    {_wrapped(_select_guest_utils(BASE_PACKAGES, cfg))}\n"
     )
+
+
+def _select_guest_utils(packages: str, cfg: InstallConfig) -> str:
+    # Hypervisor guest agents: virtualbox-guest-utils and -nox conflict, so
+    # exactly one variant must be requested on VirtualBox targets (the full
+    # build with X11/Wayland integration for graphical installs, the headless
+    # nox build otherwise); on any other target both are dead weight and are
+    # dropped.
+    if cfg.virt == "oracle":
+        if cfg.graphical:
+            return packages.replace("virtualbox-guest-utils-nox", "virtualbox-guest-utils")
+        return packages
+    return " ".join(t for t in packages.split()
+                    if not t.startswith("virtualbox-guest-utils"))
+
+
+def _select_graphical_packages(packages: str, cfg: InstallConfig) -> str:
+    # open-vm-tools is VMware-specific; on any other target it is dead weight.
+    if cfg.virt == "vmware":
+        return packages
+    return " ".join(t for t in packages.split() if t != "open-vm-tools")
 
 
 def _fstab() -> str:
@@ -279,7 +314,13 @@ def _chroot(cfg: InstallConfig) -> str:
         f"printf 'LANG=%s\\n' {_sh(cfg.locale)} > /etc/locale.conf",
         "",
         "log 'Installing GRUB bootloader'",
+        # The NVRAM entry alone is unreliable: every wipe randomizes the MBR
+        # disk-id so entries from previous installs stop resolving, and
+        # VirtualBox EFI drops guest-written boot entries on guest-initiated
+        # reboots. --removable additionally installs the signature-less
+        # /EFI/BOOT/BOOTX64.EFI fallback that boots without any NVRAM entry.
         "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB",
+        "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB --removable",
         "grub-mkconfig -o /boot/grub/grub.cfg",
         "mkinitcpio -P",
         "",
@@ -319,21 +360,37 @@ def _chroot(cfg: InstallConfig) -> str:
         "",
         "log 'Installing console packages (long step)'",
         "retry pacman -Sy --needed --noconfirm \\",
-        f"    {_wrapped(CONSOLE_PACKAGES)}",
+        f"    {_wrapped(_select_guest_utils(CONSOLE_PACKAGES, cfg))}",
     ]
     if cfg.graphical:
         lines += [
             "",
-            "log 'Installing graphical packages and desktop (long step)'",
+            "log 'Installing Xlibre X server (long step)'",
             "retry pacman -S --needed --noconfirm \\",
-            f"    {_wrapped(GRAPHICAL_PACKAGES)}",
+            f"    {_wrapped(XLIBRE_PACKAGES)}",
+            "",
+            "log 'Installing Sonic DE base (long step)'",
+            "retry pacman -S --needed --noconfirm \\",
+            f"    {_wrapped(SONICDE_PACKAGES)}",
+            "",
+            "log 'Installing graphical packages (long step)'",
+            "retry pacman -S --needed --noconfirm \\",
+            f"    {_wrapped(_select_graphical_packages(GRAPHICAL_PACKAGES, cfg))}",
             "",
             "log 'Enabling SDDM display manager'",
             "systemctl enable sddm",
             "",
             f"log 'Enabling SDDM autologin for {cfg.username}'",
             "mkdir -p /etc/sddm.conf.d",
+            ("session=$(find /usr/share/xsessions /usr/share/wayland-sessions"
+             " -maxdepth 1 -name '*.desktop' 2>/dev/null | sort | head -n 1)"),
+            "if [ -z \"$session\" ]; then",
+            "    echo 'no session desktop files found' >&2",
+            "    exit 1",
+            "fi",
+            "session_name=$(basename \"$session\")",
             (f"printf '%s\\n' '[Autologin]' 'User={cfg.username}'"
+             " \"Session=$session_name\""
              " > /etc/sddm.conf.d/10-archinstaller.conf"),
         ]
     lines += [
@@ -358,6 +415,7 @@ def _chroot(cfg: InstallConfig) -> str:
         "systemctl disable systemd-networkd",
         "systemctl enable systemd-resolved",
         "systemctl enable NetworkManager",
+        *(["systemctl enable qemu-guest-agent"] if cfg.virt in ("kvm", "qemu") else []),
         "",
         "log 'Installing and enabling firewalld'",
         "retry pacman -S --needed --noconfirm firewalld",

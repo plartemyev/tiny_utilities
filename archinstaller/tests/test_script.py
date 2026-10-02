@@ -15,6 +15,7 @@ def make_cfg(**overrides):
         "user_password": "userpw",
         "public_key": KEY,
         "graphical": False,
+        "virt": "oracle",
     }
     defaults.update(overrides)
     return InstallConfig(**defaults)
@@ -27,6 +28,12 @@ def test_script_contains_configured_values():
     assert "mount --mkdir '/dev/vda2' /mnt/new-root" in script
     assert "printf '%s\\n' 'arch-host-2026-09-06' > /etc/hostname" in script
     assert "mkswap -U clear --size 16G --file /swapfile" in script
+
+
+def test_grub_install_registers_entry_and_removable_fallback():
+    script = build_install_script(make_cfg())
+    entry = "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
+    assert entry + "\n" + entry + " --removable" in script
     assert "useradd -m --groups video,scanner,optical,kvm,sys,wheel,uucp,games,docker 'nameless'" in script
     assert f"printf '%s\\n' '{KEY}' > /home/nameless/.ssh/authorized_keys" in script
 
@@ -51,7 +58,61 @@ def test_graphical_flag_installs_desktop():
     assert "blender" in script
     assert "virtualbox-guest-utils" in script.split()
     assert "[Autologin]" in script
-    assert "User=nameless' > /etc/sddm.conf.d/10-archinstaller.conf" in script
+    assert "'User=nameless' \"Session=$session_name\"" in script
+
+
+def test_sddm_autologin_session_is_detected_from_installed_sessions():
+    script = build_install_script(make_cfg(graphical=True))
+    assert "find /usr/share/xsessions /usr/share/wayland-sessions" in script
+    assert 'session_name=$(basename "$session")' in script
+
+
+def test_graphical_uses_full_virtualbox_guest_utils():
+    script = build_install_script(make_cfg(graphical=True))
+    tokens = script.split()
+    assert "virtualbox-guest-utils" in tokens
+    assert "virtualbox-guest-utils-nox" not in tokens
+
+
+def test_console_only_uses_nox_virtualbox_guest_utils():
+    script = build_install_script(make_cfg())
+    tokens = script.split()
+    assert "virtualbox-guest-utils-nox" in tokens
+    assert "virtualbox-guest-utils" not in tokens
+
+
+def test_non_virtualbox_targets_drop_virtualbox_guest_utils():
+    for virt in ("none", "kvm", "qemu", "vmware", "microsoft", "parallels"):
+        tokens = build_install_script(make_cfg(virt=virt, graphical=True)).split()
+        assert not any(t.startswith("virtualbox-guest-utils") for t in tokens), virt
+
+
+def test_qemu_guest_agent_enabled_only_for_kvm_targets():
+    for virt in ("kvm", "qemu"):
+        assert "systemctl enable qemu-guest-agent" in build_install_script(make_cfg(virt=virt))
+    for virt in ("oracle", "none", "vmware", "microsoft"):
+        assert "systemctl enable qemu-guest-agent" not in build_install_script(make_cfg(virt=virt))
+
+
+def test_open_vm_tools_only_for_vmware_targets():
+    assert "open-vm-tools" in build_install_script(make_cfg(virt="vmware", graphical=True)).split()
+    for virt in ("oracle", "none", "kvm", "qemu", "microsoft"):
+        tokens = build_install_script(make_cfg(virt=virt, graphical=True)).split()
+        assert "open-vm-tools" not in tokens, virt
+
+
+def test_graphical_installs_sonicde_stack_before_graphical_packages():
+    script = build_install_script(make_cfg(graphical=True))
+    tokens = script.split()
+    assert "sonicde-meta" in tokens
+    assert "sonic-ecco" in tokens
+    assert "sonic-win" in tokens
+    assert "sonic-workspace" in tokens
+    assert script.index("Installing Xlibre X server") < script.index("Installing Sonic DE base")
+    assert script.index("Installing Sonic DE base") < script.index("Installing graphical packages")
+    assert script.index("Installing graphical packages") < script.index("blender")
+    assert "dolphin" not in tokens
+    assert "sonic-x11-session" not in tokens
 
 
 def test_no_sddm_autologin_without_graphical():
