@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
+import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import paramiko
 
@@ -11,6 +14,11 @@ CONNECT_TIMEOUT = 30
 POLL_SECONDS = 10
 PUMP_INTERVAL = 0.1
 RECV_CHUNK = 4096
+SCAN_PORT_TIMEOUT = 0.5
+SCAN_CONNECT_TIMEOUT = 5
+SCAN_COMMAND_TIMEOUT = 15
+SCAN_MAX_WORKERS = 64
+SCAN_HOSTNAME_COMMAND = "cat /etc/hostname"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,6 +47,7 @@ def connect_target(
     password: str | None,
     jump: JumpConfig | None = None,
     key_filename: str | None = None,
+    timeout: float = CONNECT_TIMEOUT,
 ) -> SshConnection:
     sock = None
     jump_client = None
@@ -48,7 +57,8 @@ def connect_target(
             "direct-tcpip", (host, port), (jump.host, jump.port),
         )
     try:
-        client = _connect_single(host, port, username, password, sock=sock, key_filename=key_filename)
+        client = _connect_single(host, port, username, password, sock=sock,
+                                 key_filename=key_filename, timeout=timeout)
     except (OSError, paramiko.SSHException, EOFError):
         if jump_client is not None:
             jump_client.close()
@@ -135,6 +145,65 @@ def wait_for_ssh(
     return False
 
 
+def subnet_addresses(address: str) -> list[str]:
+    """Usable host addresses of the /24 that contains address (at most 254)."""
+    network = ipaddress.ip_network(f"{address}/24", strict=False)
+    return [str(host) for host in network.hosts()]
+
+
+def find_host_in_subnet(
+    address: str,
+    port: int,
+    username: str,
+    hostname: str,
+    key_filename: str | None,
+) -> str | None:
+    """Look for the rebooted target in the /24 around address.
+
+    An address matches when its SSH server authenticates username with the
+    install key and reports hostname; returns the first match or None.
+    """
+    candidates = subnet_addresses(address)
+    with ThreadPoolExecutor(max_workers=SCAN_MAX_WORKERS) as pool:
+        listening = [
+            ip for ip, opened in zip(candidates, pool.map(lambda ip: _port_open(ip, port), candidates))
+            if opened
+        ]
+        matched = [
+            ip for ip, hit in zip(listening, pool.map(
+                lambda ip: _matches_host(ip, port, username, hostname, key_filename), listening))
+            if hit
+        ]
+    return matched[0] if matched else None
+
+
+def _port_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=SCAN_PORT_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+def _matches_host(
+    host: str,
+    port: int,
+    username: str,
+    hostname: str,
+    key_filename: str | None,
+) -> bool:
+    try:
+        conn = connect_target(host, port, username, None, None,
+                              key_filename=key_filename, timeout=SCAN_CONNECT_TIMEOUT)
+    except (OSError, paramiko.SSHException, EOFError):
+        return False
+    try:
+        code, out = run_capture(conn.client, SCAN_HOSTNAME_COMMAND, timeout=SCAN_COMMAND_TIMEOUT)
+    finally:
+        conn.close()
+    return code == 0 and out.strip() == hostname
+
+
 def clear_stale_host_key(host: str, port: int) -> None:
     """Drop saved known_hosts entries so a reinstall does not break connecting."""
     names = (host,) if port == 22 else (f"[{host}]:{port}", host)
@@ -149,6 +218,7 @@ def _connect_single(
     password: str | None,
     sock: paramiko.Channel | None = None,
     key_filename: str | None = None,
+    timeout: float = CONNECT_TIMEOUT,
 ) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -161,9 +231,9 @@ def _connect_single(
         sock=sock,
         look_for_keys=password is None,
         allow_agent=password is None,
-        timeout=CONNECT_TIMEOUT,
-        banner_timeout=CONNECT_TIMEOUT,
-        auth_timeout=CONNECT_TIMEOUT,
+        timeout=timeout,
+        banner_timeout=timeout,
+        auth_timeout=timeout,
     )
     return client
 
