@@ -48,6 +48,61 @@
     - linger itself is per-user marker files in `/var/lib/systemd/linger/<username>`; users created later
       never linger until enabled explicitly;
     - the named form `loginctl enable-linger <username>` is the only one independent of session/PAM context.
+- VirtualBox EFI NVRAM peculiarities (verified on the "Vardan's anvil" VM, VirtualBox 7.x, `firmware="EFI"` + `.nvram` store):
+    - `efibootmgr` entries written by the guest do **not** survive a guest-initiated reboot (`systemctl reboot`
+      = VM reset); the NVRAM store is only flushed on power-off. An installer that wipes the disk (new random
+      MBR disk-id via `sfdisk`) and then reboots silently loses its fresh boot entry, leaving stale ones that
+      reference the old disk-id — the firmware skips them and falls through to the still-attached ISO;
+    - reliable fix: also install the signature-less fallback bootloader `\EFI\BOOT\BOOTX64.EFI`
+      (`grub-install ... --removable`); it boots via the firmware's plain HDD option with no NVRAM dependency
+      (done in `archinstaller/archinstaller/script.py`, see the README deviations);
+    - repairing an affected VM: boot the ISO, mount root + ESP, `arch-chroot` and re-run both `grub-install`
+      variants, detach the ISO with `vboxmanage storageattach <vm> --storagectl IDE --port 0 --device 0
+      --type dvddrive --medium emptydrive`, then power off (not reboot) so NVRAM flushes, and start again;
+    - VirtualBox host-only DHCP keys leases by client-id, not MAC (lease store:
+      `~/.config/VirtualBox/HostInterfaceNetworking-*-Dhcpd.leases`): the archiso's systemd-networkd sends a
+      DUID-EN derived from a transient machine-id (archiso `/etc/machine-id` is empty), so every ISO boot is a
+      new client and gets the next pool address (observed .104→.115 for one MAC); NetworkManager on the
+      installed system defaults to a MAC-based client-id, so only the first installed boot may land on a
+      different address — archinstaller falls back to scanning the target's /24 for the configured hostname
+      after a reboot timeout;
+    - VirtualBox EFI forensics (second full install run confirmed): after a guest reboot the fresh
+      `GRUB` entry was absent again while `Boot0005` still carried the old disk-id — guest-written NVRAM
+      is lost across guest reboots, only power-off flushes persist; the system DID auto-boot once the
+      firmware reached the whole-disk entry (`BootCurrent: 0002`, `\EFI\BOOT\BOOTX64.EFI` fallback), and
+      the firmware's own housekeeping reordered that entry ahead of UiApp/CD after a power-cycle;
+    - firewalld `public` (ssh + dhcpv6-client only) does NOT block DHCPv4 client leases — NetworkManager
+      leased both NICs fine on the installed system (earlier "no lease" was the VM sitting in the EFI UI);
+    - `archinstaller --vbox-vm <name>` reboots from the host (poweroff → `<vm>.nvram` → `.nvram.bak` →
+      `--boot2 disk --boot3 dvd` → start) so the first boot works out of the box;
+      `--resume <state-file>` finishes a previous run's post-boot stage; the state file
+      (`archinstaller-state-<hostname>.json`, mode 0600, holds generated passwords) is written before the
+      reboot and deleted on success;
+    - opencode unit Environment changes need `systemctl --user restart` (never just `start`) to reach the
+      running process — `start` is a no-op on an active service, so a rewritten unit's new password gives
+      HTTP 401 until a restart (hit during the manual stage-two replay); the tool's unit upload is
+      follow-by-restart-safe because it runs before the first start;
+    - target matrix (verified `systemd-detect-virt` = `oracle` on anvil): the hypervisor is detected in
+      the live env before script generation (`oracle` → virtualbox-guest-utils/-nox per `--graphical`;
+      `kvm`/`qemu` → `qemu-guest-agent` enabled; `vmware` → `open-vm-tools` on graphical installs;
+      anything else → neither) and the tool preflights UEFI (`test -d /sys/firmware/efi`) before touching
+      the disk, so BIOS-booted targets fail fast instead of dying inside `grub-install` after pacstrap;
+      physical machines and libvirt VMs need no host-side boot fix (their NVRAM persists guest-written
+      entries), `--vbox-vm` stays VirtualBox-only;
+    - the "missing" `initramfs-linux-fallback.img` on new installs is upstream default, not a tool bug:
+      Arch's `/etc/mkinitcpio.d/linux.preset` ships `PRESETS=('default')` with the fallback preset
+      commented out, so `mkinitcpio -P` builds the default image only;
+    - SDDM autologin requires `Session=` in `[Autologin]`: with only `User=` set the journal shows
+      "Unable to find autologin session entry" and the greeter appears instead (hit on anvil — the tool now
+      detects the session via `find` over `/usr/share/{x,wayland}-sessions` at install time);
+    - SDDM autologin also cannot auto-unlock password-encrypted secret stores — pam_kwallet5 logs
+      "Couldn't get password (it is empty)" and the wallet stays locked until the first app prompts
+      (ksecretd, which ships inside the `kwallet` package since 6.x, has the same encrypted backing store);
+      the only autologin-compatible auto-unlock is a blank wallet password (insecure) or TPM-sealed
+      secrets (not wired into this stack);
+    - diagnostic helper: `tmp/vm_probe.py` (runs efibootmgr/lsblk/mounts over SSH into the ISO environment);
+      `tmp/finish_install.py` + `tmp/restart_opencode.py` replayed the interrupted install's stage two on
+      192.168.56.117 ("anvil").
 
 
 ## 1. Think Before Coding
