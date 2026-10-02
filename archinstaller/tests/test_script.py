@@ -94,6 +94,12 @@ def test_qemu_guest_agent_enabled_only_for_kvm_targets():
         assert "systemctl enable qemu-guest-agent" not in build_install_script(make_cfg(virt=virt))
 
 
+def test_vboxservice_enabled_only_for_virtualbox_targets():
+    assert "systemctl enable vboxservice" in build_install_script(make_cfg(virt="oracle"))
+    for virt in ("none", "kvm", "qemu", "vmware", "microsoft", "parallels"):
+        assert "systemctl enable vboxservice" not in build_install_script(make_cfg(virt=virt))
+
+
 def test_open_vm_tools_only_for_vmware_targets():
     assert "open-vm-tools" in build_install_script(make_cfg(virt="vmware", graphical=True)).split()
     for virt in ("oracle", "none", "kvm", "qemu", "microsoft"):

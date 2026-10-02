@@ -73,6 +73,24 @@
       the firmware's own housekeeping reordered that entry ahead of UiApp/CD after a power-cycle;
     - firewalld `public` (ssh + dhcpv6-client only) does NOT block DHCPv4 client leases — NetworkManager
       leased both NICs fine on the installed system (earlier "no lease" was the VM sitting in the EFI UI);
+    - VBoxClient 0x0 blank-screen chain (verified on anvil, VirtualBox 7.2.20 host / guest kernel 7.2.8 /
+      XLibre, `graphicscontroller="vmsvga"`, 3D on): if `vboxservice.service` is not enabled, the guest
+      never reports the graphics capability to the host (`VMMDev: Guest Additions capability report:
+      graphics: no` in VBox.log), so the host never sends an initial video-mode hint; at X session start
+      `VBoxClient --vmsvga` (logs under `dp-svga-x11` via VMMDev guest log) queries the display size,
+      gets 0x0, and applies it — X rejects the mode (`BadValue`, `Resizing frame buffer to 0 0 has
+      failed, current mode 1280 800`) but the attempt leaves the single KMS CRTC disabled
+      (`/sys/class/drm/card0-Virtual-1/enabled` = `disabled`, `xrandr --listactivemonitors` = 0), and
+      the VM window shows the EFI logo forever while the guest runs fine over SSH; guest dmesg noise
+      `vmwgfx seems to be running on an unsupported hypervisor` + `Failed to open channel` is cosmetic
+      (GCM/MesaVmsvgaDrv fixer, present on every VMSVGA boot); recovery: `xrandr --output Virtual-1
+      --mode <mode>` inside the session (root needs `XAUTHORITY=/tmp/xauth_*` — SDDM writes a fresh
+      random-named file per boot, `/run/sddm/xauth_*` from the previous boot goes stale); permanent fix:
+      `systemctl enable vboxservice` (now done by archinstaller for `virt == "oracle"`);
+    - archinstaller enabled `qemu-guest-agent` for kvm/qemu but never `vboxservice` for VirtualBox
+      targets (hit on anvil 2026-10-02 install → the blank screen above); installs made before commit
+      525d0e9 also carry a stray inert `open-vm-tools` package on VirtualBox targets (removable with
+      `pacman -R open-vm-tools`);
     - `archinstaller --vbox-vm <name>` reboots from the host (poweroff → `<vm>.nvram` → `.nvram.bak` →
       `--boot2 disk --boot3 dvd` → start) so the first boot works out of the box;
       `--resume <state-file>` finishes a previous run's post-boot stage; the state file

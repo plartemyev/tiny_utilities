@@ -29,7 +29,7 @@ mode and serves SSH works. It detects the hypervisor on the target with
 |---|---|
 | Physical computer | nothing special; real NVRAM persists boot entries, so the plain post-install reboot works; VirtualBox guest utils are skipped |
 | libvirt / KVM / QEMU VM | `qemu-guest-agent` is installed and enabled; OVMF pflash NVRAM persists boot entries, so the plain reboot works; no `--vbox-vm` equivalent needed |
-| VirtualBox VM | `virtualbox-guest-utils` (graphical) or `-nox` (console) is installed; use `--vbox-vm` for the host-side reboot — guest-written EFI boot entries do not survive a guest reboot there (see below) |
+| VirtualBox VM | `virtualbox-guest-utils` (graphical) or `-nox` (console) is installed and `vboxservice` is enabled (without it the host never sends video-mode hints and `VBoxClient --vmsvga` blanks the screen after login — see the hypervisor bullet in the deviations below); use `--vbox-vm` for the host-side reboot — guest-written EFI boot entries do not survive a guest reboot there (see below) |
 | Other (Hyper-V, VMware, ...) | detected and reported; `open-vm-tools` is installed only on VMware graphical installs; the base lists already carry `qemu-guest-agent` and Hyper-V daemons (inert where unused) |
 
 Requirements for every target:
@@ -235,11 +235,23 @@ NVRAM are gone (only the firmware defaults remain).
   (run in the live environment) before the install script is generated:
   VirtualBox targets get `virtualbox-guest-utils` (graphical) or `-nox`
   (console) — the two conflict, so exactly one variant must be
-  requested — KVM/QEMU targets additionally get `qemu-guest-agent`
-  enabled, and VMware graphical installs get `open-vm-tools`. Any other
+  requested — plus `vboxservice` enabled, KVM/QEMU targets additionally
+  get `qemu-guest-agent` enabled, and VMware graphical installs get
+  `open-vm-tools`. Any other
   target installs neither; the `qemu-guest-agent` and Hyper-V daemons
   already present in the lists stay installed but are inert where
   unused.
+* `vboxservice` must be enabled on VirtualBox targets (Arch does not
+  auto-enable it): it is what reports the guest graphics capability to
+  the host. Without it the host never sends an initial video-mode hint,
+  so at X session start `VBoxClient --vmsvga` reads a 0x0 display size
+  and applies it — the mode-set fails (`BadValue`, `dp-svga-x11:
+  Resizing frame buffer to 0 0 has failed`) and the failed attempt
+  leaves the only KMS CRTC disabled, so the VM window shows the EFI
+  logo forever while the guest itself runs fine. Verified on
+  VirtualBox 7.2.20 / guest kernel 7.2.8 / XLibre; recovery without the
+  fix is `xrandr --output Virtual-1 --mode <mode>` from a terminal or
+  over SSH.
 * `locale-gen` needs the locale uncommented in `/etc/locale.gen`
   (the draft missed this); it is done automatically.
 * `systemctl enable --now sshd` in chroot → `systemctl enable sshd`

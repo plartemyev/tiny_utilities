@@ -416,6 +416,7 @@ def _chroot(cfg: InstallConfig) -> str:
         "systemctl enable systemd-resolved",
         "systemctl enable NetworkManager",
         *(["systemctl enable qemu-guest-agent"] if cfg.virt in ("kvm", "qemu") else []),
+        *(["systemctl enable vboxservice"] if cfg.virt == "oracle" else []),
         "",
         "log 'Installing and enabling firewalld'",
         "retry pacman -S --needed --noconfirm firewalld",
