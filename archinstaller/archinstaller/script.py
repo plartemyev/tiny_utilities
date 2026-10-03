@@ -489,6 +489,30 @@ def _chroot(cfg: InstallConfig) -> str:
             (f"printf '%s\\n' '[KDE]'"
              f" 'LookAndFeelPackage={DEFAULT_LOOKANDFEEL}'"
              f" > {home}/.config/kdeglobals"),
+            "",
+            "log 'Making the ACPI power button shut down'",
+            # PowerDevil takes a block inhibitor on handle-power-key, so
+            # logind's default (poweroff) never fires; the non-mobile default
+            # action is the logout dialog, which stalls host-side
+            # `VBoxManage controlvm acpipowerbutton` on an autologin desktop.
+            # 8 = PowerDevil PowerButtonAction::Shutdown.
+            (f"printf '%s\\n' '[AC][HandleButtonLid]' 'powerButtonAction=8'"
+             " '[Battery][HandleButtonLid]' 'powerButtonAction=8'"
+             " '[LowBattery][HandleButtonLid]' 'powerButtonAction=8'"
+             f" > {home}/.config/powerdevilrc"),
+            *(([
+                "",
+                "log 'Handing ACPI power buttons to logind (VM target)'",
+                # On X11 sessions PowerDevil's button delivery is dead (its
+                # kglobalaccel grabs never fire a configured action) while its
+                # logind inhibitor blocks the default poweroff: the button
+                # becomes a no-op (verified 2026-10-03 on powerdevil 6.7.5).
+                # VMs have no battery or backlight, so DE power management is
+                # worth less than a working button — mask PowerDevil and let
+                # logind's HandlePowerKey=poweroff shut the machine down.
+                f"mkdir -p {home}/.config/systemd/user",
+                f"ln -s /dev/null {home}/.config/systemd/user/plasma-powerdevil.service",
+            ] if cfg.virt != "none" else [])),
             f"chown -R {user}:{user} {home}/.config",
         ] if cfg.graphical else []),
         "",

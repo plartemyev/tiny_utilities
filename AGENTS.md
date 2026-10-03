@@ -188,6 +188,25 @@
       lease — verified on anvil; nmcli gotcha: `con modify` takes `prop value`, the `prop=value` form
       only exists in get output and is rejected). Stage two just kicks the hook once
       (`manual --worker`) when its own probe finds resolution broken;
+    - Plasma PowerDevil makes ACPI power buttons a no-op on X11 VMs (hit on anvil, powerdevil
+      6.7.5/Xlibre, 2026-10-03): the daemon takes a **block** inhibitor on `handle-power-key` at
+      startup ("KDE handles power events"), so logind's default `HandlePowerKey=poweroff` never
+      fires — and PowerDevil's own button path is dead on this stack: real `acpipowerbutton` presses
+      (logind logs "Power key pressed short", the inhibitor swallows them) and synthetic XTEST
+      `xdotool key XF86PowerOff` presses alike never reach PowerDevil (kglobalaccel grabs never fire;
+      `QT_LOGGING_RULES="powerdevil*=true"` shows no button activity). Seeding the action changes
+      nothing on X11 — note the profile settings live in `~/.config/powerdevilrc` on powerdevil 6.7
+      (`powermanagementprofilesrc` is legacy; the `[Migration] MigratedProfilesToPlasma6=powerdevilrc`
+      marker points away from it, and external file edits are NOT live-reloaded — restart
+      plasma-powerdevil.service to apply). `PowerButtonAction` enum: 0 NoAction, 1 Sleep, 2 Hibernate,
+      8 Shutdown, 16 PromptLogoutDialog (the non-mobile default), 32 LockScreen, 64 TurnOffScreen,
+      128 ToggleScreenOnOff. Working setups, verified on anvil: console installs (no powerdevil) and
+      graphical VM installs with plasma-powerdevil **masked** (`systemctl --user mask
+      plasma-powerdevil.service`; archinstaller does this for `--graphical` on VM targets and keeps
+      the daemon on physical machines) → `VBoxManage controlvm <vm> acpipowerbutton` cleanly powers
+      off in ~5 s via logind; otherwise automate clean shutdowns with SSH `sudo systemctl poweroff`
+      (~10 s; guest poweroffs never hang, unlike guest-initiated reboots) or hard
+      `VBoxManage controlvm <vm> poweroff` (what `--vbox-vm` uses);
 
 
 ## 1. Think Before Coding

@@ -62,6 +62,28 @@ def test_console_only_seeds_no_look_and_feel():
     assert "LookAndFeelPackage" not in script
 
 
+def test_graphical_seeds_power_button_shutdown():
+    script = build_install_script(make_cfg(graphical=True))
+    assert ("printf '%s\\n' '[AC][HandleButtonLid]' 'powerButtonAction=8'"
+            " '[Battery][HandleButtonLid]' 'powerButtonAction=8'"
+            " '[LowBattery][HandleButtonLid]' 'powerButtonAction=8'"
+            " > /home/nameless/.config/powerdevilrc") in script
+    # the seed must land before the .config chown so the user owns it
+    assert script.index("powerButtonAction=8") < script.index("chown -R 'nameless':'nameless' /home/nameless/.config")
+
+
+def test_graphical_vm_targets_mask_powerdevil_for_logind_buttons():
+    script = build_install_script(make_cfg(graphical=True))
+    assert "ln -s /dev/null /home/nameless/.config/systemd/user/plasma-powerdevil.service" in script
+    assert "chown -R 'nameless':'nameless' /home/nameless/.config" in script
+
+
+def test_graphical_physical_targets_keep_powerdevil():
+    script = build_install_script(make_cfg(graphical=True, virt="none"))
+    assert "plasma-powerdevil.service" not in script
+    assert "powerButtonAction=8" in script  # seed kept for Wayland delivery
+
+
 def test_dns_fallback_dispatcher_installed_in_base_system():
     script = build_install_script(make_cfg())
     assert ("cat > /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback"
@@ -72,6 +94,12 @@ def test_dns_fallback_dispatcher_installed_in_base_system():
     assert "chmod 755 /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback" in script
     # the hook body must be inside the chroot heredoc
     assert script.index("90-archinstaller-dns-fallback <<'DNS_HOOK'") < script.index("chmod 755") < script.rindex("CHROOT")
+
+
+def test_console_only_seeds_no_power_button_profile():
+    script = build_install_script(make_cfg())
+    assert "powerButtonAction" not in script
+    assert "plasma-powerdevil" not in script
 
 
 def test_console_only_by_default():
