@@ -502,7 +502,7 @@ def _chroot(cfg: InstallConfig) -> str:
              " '[Battery][HandleButtonLid]' 'powerButtonAction=8'"
              " '[LowBattery][HandleButtonLid]' 'powerButtonAction=8'"
              f" > {home}/.config/powerdevilrc"),
-            *(([
+            *([
                 "",
                 "log 'Handing ACPI power buttons to logind (VM target)'",
                 # On X11 sessions PowerDevil's button delivery is dead (its
@@ -514,7 +514,7 @@ def _chroot(cfg: InstallConfig) -> str:
                 # logind's HandlePowerKey=poweroff shut the machine down.
                 f"mkdir -p {home}/.config/systemd/user",
                 f"ln -s /dev/null {home}/.config/systemd/user/plasma-powerdevil.service",
-            ] if cfg.virt != "none" else [])),
+            ] if cfg.virt != "none" else []),
             f"chown -R {user}:{user} {home}/.config",
         ] if cfg.graphical else []),
         "",
