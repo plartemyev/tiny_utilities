@@ -1,7 +1,7 @@
 from archinstaller.script import InstallConfig, build_install_script
 
 KEY = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDU0ZDDGMlGKUYbFQtKyODXXUequNtcQz+2UVe5Vr9A0"
-       " pasha@p-745-g5")
+       " nameless@example")
 
 
 def make_cfg(**overrides):
@@ -42,6 +42,24 @@ def test_script_shells_out_passwords():
     script = build_install_script(make_cfg(root_password="ro'ot", user_password="us;er"))
     assert "printf 'root:%s\\n' 'ro'\\''ot' | chpasswd" in script
     assert "printf '%s:%s\\n' 'nameless' 'us;er' | chpasswd" in script
+
+
+def test_graphical_seeds_default_look_and_feel():
+    script = build_install_script(make_cfg(graphical=True))
+    assert "install -d -m 700 -o 'nameless' -g 'nameless' /home/nameless/.config/kdedefaults" in script
+    assert ("printf '%s\\n' '[General]' 'ColorScheme=SilverLight' '' '[Icons]'"
+            " 'Theme=silver' '' '[KDE]' 'widgetStyle=Silver'"
+            " > /home/nameless/.config/kdedefaults/kdeglobals") in script
+    assert "printf '%s' 'org.kde.silverlightbottompanel.desktop' > /home/nameless/.config/kdedefaults/package" in script
+    assert ("printf '%s\\n' '[KDE]'"
+            " 'LookAndFeelPackage=org.kde.silverlightbottompanel.desktop'"
+            " > /home/nameless/.config/kdeglobals") in script
+    assert "chown -R 'nameless':'nameless' /home/nameless/.config" in script
+
+
+def test_console_only_seeds_no_look_and_feel():
+    script = build_install_script(make_cfg())
+    assert "LookAndFeelPackage" not in script
 
 
 def test_console_only_by_default():

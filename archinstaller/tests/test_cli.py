@@ -71,9 +71,9 @@ def test_no_subnet_scan_flag_parsing():
 
 def test_vbox_vm_and_resume_parsing():
     argv = ["--target", "192.168.56.113", "--ssh-pubkey", "k"]
-    assert cli._parse_args(argv + ["--vbox-vm", "Vardan's anvil"]).vbox_vm == "Vardan's anvil"
-    resumed = cli._parse_args(["--resume", "archinstaller-state-anvil.json"])
-    assert resumed.resume == "archinstaller-state-anvil.json"
+    assert cli._parse_args(argv + ["--vbox-vm", "test's vm"]).vbox_vm == "test's vm"
+    resumed = cli._parse_args(["--resume", "archinstaller-state-testhost.json"])
+    assert resumed.resume == "archinstaller-state-testhost.json"
 
 
 def test_target_and_pubkey_optional_only_for_resume():
@@ -92,11 +92,11 @@ def test_state_roundtrip(tmp_path: Path):
     args = make_args()
     args.target = "192.168.56.113"
     state = cli._state_object(
-        args, "anvil", "rootpw", "userpw", "opencodepw",
-        ["Root password:  rootpw"], "/home/pasha/.ssh/id_ed25519",
+        args, "testhost", "rootpw", "userpw", "opencodepw",
+        ["Root password:  rootpw"], "/home/user/.ssh/id_ed25519",
         cli.JumpConfig("10.0.0.1", 2222, "root", "jpw"),
     )
-    path = tmp_path / "archinstaller-state-anvil.json"
+    path = tmp_path / "archinstaller-state-testhost.json"
     cli._save_state(str(path), state)
     assert path.stat().st_mode & 0o777 == 0o600
     assert cli._load_state(str(path)) == state

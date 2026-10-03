@@ -48,7 +48,7 @@
     - linger itself is per-user marker files in `/var/lib/systemd/linger/<username>`; users created later
       never linger until enabled explicitly;
     - the named form `loginctl enable-linger <username>` is the only one independent of session/PAM context.
-- VirtualBox EFI NVRAM peculiarities (verified on the "Vardan's anvil" VM, VirtualBox 7.x, `firmware="EFI"` + `.nvram` store):
+- VirtualBox EFI NVRAM peculiarities (verified on a VirtualBox 7.x EFI VM with `firmware="EFI"` + `.nvram` store):
     - `efibootmgr` entries written by the guest do **not** survive a guest-initiated reboot (`systemctl reboot`
       = VM reset); the NVRAM store is only flushed on power-off. An installer that wipes the disk (new random
       MBR disk-id via `sfdisk`) and then reboots silently loses its fresh boot entry, leaving stale ones that
@@ -73,7 +73,7 @@
       the firmware's own housekeeping reordered that entry ahead of UiApp/CD after a power-cycle;
     - firewalld `public` (ssh + dhcpv6-client only) does NOT block DHCPv4 client leases — NetworkManager
       leased both NICs fine on the installed system (earlier "no lease" was the VM sitting in the EFI UI);
-    - VBoxClient 0x0 blank-screen chain (verified on anvil, VirtualBox 7.2.20 host / guest kernel 7.2.8 /
+    - VBoxClient 0x0 blank-screen chain (verified on a VirtualBox guest, VirtualBox 7.2.20 host / guest kernel 7.2.8 /
       XLibre, `graphicscontroller="vmsvga"`, 3D on): if `vboxservice.service` is not enabled, the guest
       never reports the graphics capability to the host (`VMMDev: Guest Additions capability report:
       graphics: no` in VBox.log), so the host never sends an initial video-mode hint; at X session start
@@ -88,7 +88,7 @@
       random-named file per boot, `/run/sddm/xauth_*` from the previous boot goes stale); permanent fix:
       `systemctl enable vboxservice` (now done by archinstaller for `virt == "oracle"`);
     - archinstaller enabled `qemu-guest-agent` for kvm/qemu but never `vboxservice` for VirtualBox
-      targets (hit on anvil 2026-10-02 install → the blank screen above); installs made before commit
+      targets (hit on a 2026-10-02 install → the blank screen above); installs made before commit
       525d0e9 also carry a stray inert `open-vm-tools` package on VirtualBox targets (removable with
       `pacman -R open-vm-tools`);
     - `archinstaller --vbox-vm <name>` reboots from the host (poweroff → `<vm>.nvram` → `.nvram.bak` →
@@ -100,7 +100,7 @@
       running process — `start` is a no-op on an active service, so a rewritten unit's new password gives
       HTTP 401 until a restart (hit during the manual stage-two replay); the tool's unit upload is
       follow-by-restart-safe because it runs before the first start;
-    - target matrix (verified `systemd-detect-virt` = `oracle` on anvil): the hypervisor is detected in
+    - target matrix (verified `systemd-detect-virt` = `oracle` on a VirtualBox target): the hypervisor is detected in
       the live env before script generation (`oracle` → virtualbox-guest-utils/-nox per `--graphical`;
       `kvm`/`qemu` → `qemu-guest-agent` enabled; `vmware` → `open-vm-tools` on graphical installs;
       anything else → neither) and the tool preflights UEFI (`test -d /sys/firmware/efi`) before touching
@@ -111,7 +111,7 @@
       Arch's `/etc/mkinitcpio.d/linux.preset` ships `PRESETS=('default')` with the fallback preset
       commented out, so `mkinitcpio -P` builds the default image only;
     - SDDM autologin requires `Session=` in `[Autologin]`: with only `User=` set the journal shows
-      "Unable to find autologin session entry" and the greeter appears instead (hit on anvil — the tool now
+      "Unable to find autologin session entry" and the greeter appears instead (hit on a fresh install — the tool now
       detects the session via `find` over `/usr/share/{x,wayland}-sessions` at install time);
     - SDDM autologin also cannot auto-unlock password-encrypted secret stores — pam_kwallet5 logs
       "Couldn't get password (it is empty)" and the wallet stays locked until the first app prompts
@@ -119,8 +119,29 @@
       the only autologin-compatible auto-unlock is a blank wallet password (insecure) or TPM-sealed
       secrets (not wired into this stack);
     - diagnostic helper: `tmp/vm_probe.py` (runs efibootmgr/lsblk/mounts over SSH into the ISO environment);
-      `tmp/finish_install.py` + `tmp/restart_opencode.py` replayed the interrupted install's stage two on
-      192.168.56.117 ("anvil").
+      `tmp/finish_install.py` + `tmp/restart_opencode.py` replayed an interrupted install's stage two on
+      the target VM.
+    - missing icons on fresh Sonic DE installs (observed 2026-10-02): startplasma never materializes the
+      Silver session defaults — `~/.config/kdedefaults` stays empty (no `[Icons] Theme=silver`, colors,
+      cursors), every theme/icon lookup falls back to hicolor and kickoff/tray/KRunner render generic
+      icons; `sonic-silver-icons` is complete (breeze renamed, nothing missing) and `sonic-breeze` is an
+      unrelated explicitly-installed leftover on working hosts. `plasma-apply-lookandfeel` fixes it but
+      only in a fully interactive session — it fails ("Failed to open package file") or segfaults in
+      chroot/offscreen/autostart contexts; fix: archinstaller seeds `~/.config/kdedefaults/*` + a
+      `package` marker (no trailing newline!) + `kdeglobals [KDE] LookAndFeelPackage` — the marker pair
+      keeps startplasma's empty-writing defaults step from firing on later logins (see the deviations
+      bullet in `archinstaller/README.md`);
+    - driving a running guest from the host without SSH (used for the icon debugging): `VBoxManage
+      controlvm <vm> screenshotpng file.png` (watch the screen) and `keyboardputscancode` (set-1 hex
+      bytes, extended keys as two bytes e.g. `e0 1f e0 f0 1f` for Meta — flaky, may type bare keys),
+      `keyboardputstring "cmd"` + scancode `1c 9c` (Enter) into Konsole/KRunner restores access when
+      `~/.ssh/authorized_keys` is gone; `VBoxManage controlvm <vm> poweroff` + `startvm` for the cold
+      cycle;
+    - `systemctl reboot` inside the VirtualBox guest hung at the final `Remounting '/' read-only` shutdown step (twice);
+      `systemctl poweroff` works — power off and `VBoxManage startvm` instead of guest reboots;
+    - sshd (StrictModes) rejects a **root-owned** `~/.ssh/authorized_keys` (Permission denied even with
+      correct perms); files written by root into a user's home must be chowned (archinstaller's install
+      script already does this for `authorized_keys`);
 
 
 ## 1. Think Before Coding

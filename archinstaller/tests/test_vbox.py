@@ -4,14 +4,14 @@ from archinstaller import vbox
 
 
 def test_vm_info_parses_quoted_keys_and_values(monkeypatch):
-    output = ('name="anvil"\n'
+    output = ('name="testvm"\n'
               'VMState="running"\n'
-              '"IDE-0-0"="/home/pasha/Downloads/archlinux-x86_64.iso"\n')
+              '"IDE-0-0"="/home/user/Downloads/archlinux-x86_64.iso"\n')
     monkeypatch.setattr(vbox, "_run", lambda *args: output)
     info = vbox.vm_info("vm")
-    assert info["name"] == "anvil"
+    assert info["name"] == "testvm"
     assert info["VMState"] == "running"
-    assert info["IDE-0-0"] == "/home/pasha/Downloads/archlinux-x86_64.iso"
+    assert info["IDE-0-0"] == "/home/user/Downloads/archlinux-x86_64.iso"
 
 
 def test_vm_exists(monkeypatch):

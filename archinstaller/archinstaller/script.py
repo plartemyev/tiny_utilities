@@ -182,6 +182,19 @@ xreader zed zvbi vulkan-mesa-layers vulkan-headers memtest_vulkan
 """
 
 IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"
+# sonic-workspace's startplasma never materializes the Silver session defaults
+# (~/.config/kdedefaults: [Icons] Theme=silver, colors, cursors, decorations):
+# with no look-and-feel recorded its defaults write is skipped, and when it
+# runs it produces empty files. Without the defaults every theme/icon lookup
+# falls back to hicolor and the desktop renders generic or missing icons.
+# Running plasma-apply-lookandfeel instead is not an option: it works only in
+# a fully interactive session (it fails/segfaults in chroot and autostart
+# contexts), so the installer seeds the kdedefaults files directly, mirroring
+# the state a successful apply leaves behind (verified against a working
+# host). The kdedefaults/package marker plus kdeglobals [KDE]
+# LookAndFeelPackage keep startplasma's broken defaults write from firing on
+# later logins. Fork-specific values — revisit on sonic-workspace updates.
+DEFAULT_LOOKANDFEEL = "org.kde.silverlightbottompanel.desktop"
 XLIBRE_KEY_ID = "B97F7C613F359424"
 SONICDE_KEY_ID = "3B87898C73F11DF5"
 USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games,docker"
@@ -406,6 +419,33 @@ def _chroot(cfg: InstallConfig) -> str:
         f"printf '%s\\n' {_sh(cfg.public_key)} > {home}/.ssh/authorized_keys",
         f"chmod 600 {home}/.ssh/authorized_keys",
         f"chown {user}:{user} {home}/.ssh/authorized_keys",
+        *([
+            "",
+            "log 'Seeding the default Silver session defaults'",
+            f"install -d -m 700 -o {user} -g {user} {home}/.config/kdedefaults",
+            (f"printf '%s\\n' '[General]' 'ColorScheme=SilverLight' '' '[Icons]'"
+             " 'Theme=silver' '' '[KDE]' 'widgetStyle=Silver'"
+             f" > {home}/.config/kdedefaults/kdeglobals"),
+            (f"printf '%s\\n' '[Mouse]' 'cursorTheme=silver_cursors_light'"
+             f" > {home}/.config/kdedefaults/kcminputrc"),
+            (f"printf '%s\\n' '[Theme]' 'name=silver-light'"
+             f" > {home}/.config/kdedefaults/plasmarc"),
+            (f"printf '%s\\n' '[DesktopSwitcher]' 'LayoutName=org.kde.silver.desktop'"
+             " '' '[WindowSwitcher]' 'LayoutName=org.kde.silver.desktop' ''"
+             " '[org.kde.kdecoration2]' 'library=org.kde.silver' 'theme=Silver'"
+             f" > {home}/.config/kdedefaults/kwinrc"),
+            (f"printf '%s\\n' '[KSplash]' 'Theme=org.kde.silver.desktop'"
+             f" > {home}/.config/kdedefaults/ksplashrc"),
+            # startplasma re-runs its (empty-writing) defaults step whenever
+            # this marker differs from kdeglobals [KDE] LookAndFeelPackage;
+            # the marker must carry no trailing newline for the comparison.
+            (f"printf '%s' '{DEFAULT_LOOKANDFEEL}'"
+             f" > {home}/.config/kdedefaults/package"),
+            (f"printf '%s\\n' '[KDE]'"
+             f" 'LookAndFeelPackage={DEFAULT_LOOKANDFEEL}'"
+             f" > {home}/.config/kdeglobals"),
+            f"chown -R {user}:{user} {home}/.config",
+        ] if cfg.graphical else []),
         "",
         "log 'Disabling sshd password authentication'",
         "mkdir -p /etc/ssh/sshd_config.d",

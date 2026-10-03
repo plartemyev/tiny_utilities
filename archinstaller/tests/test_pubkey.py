@@ -3,7 +3,7 @@ import pytest
 from archinstaller.pubkey import resolve_public_key
 
 KEY = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDU0ZDDGMlGKUYbFQtKyODXXUequNtcQz+2UVe5Vr9A0"
-       " pasha@p-745-g5")
+       " nameless@example")
 
 
 def test_accepts_key_string():

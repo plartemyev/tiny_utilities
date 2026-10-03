@@ -252,6 +252,25 @@ NVRAM are gone (only the firmware defaults remain).
   VirtualBox 7.2.20 / guest kernel 7.2.8 / XLibre; recovery without the
   fix is `xrandr --output Virtual-1 --mode <mode>` from a terminal or
   over SSH.
+* For graphical installs the tool seeds the Silver session defaults
+  directly into the created user's `~/.config/kdedefaults/` (icon theme
+  `silver`, SilverLight colors, widget style, cursors, window
+  decorations, plasma style, splash) plus a `kdedefaults/package`
+  marker and `kdeglobals [KDE] LookAndFeelPackage`. sonic-workspace's
+  `startplasma` never materializes these defaults on its own: with a
+  fresh user the defaults write is skipped entirely, and when it does
+  run it produces empty `kdedefaults` files — without them every
+  theme/icon lookup falls back to hicolor and the desktop renders
+  generic or missing icons even though `sonic-silver-icons` is fully
+  installed. The two marker files keep that broken defaults write from
+  firing on later logins (its result only matters when the user picks
+  another global theme, whose explicit settings then win anyway).
+  Applying `plasma-apply-lookandfeel` instead is not reliable from the
+  installer: it works only in a fully interactive session and fails or
+  segfaults in chroot/autostart contexts. The seeded values mirror a
+  working Sonic DE host and are pinned to the current fork — revisit
+  on sonic-workspace updates. `sonic-breeze` is not involved: the
+  `silver` theme set replaces breeze one-to-one.
 * `locale-gen` needs the locale uncommented in `/etc/locale.gen`
   (the draft missed this); it is done automatically.
 * `systemctl enable --now sshd` in chroot → `systemctl enable sshd`
