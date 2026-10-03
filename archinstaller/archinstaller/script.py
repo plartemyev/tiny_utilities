@@ -180,7 +180,7 @@ vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-intel vulkan-radeon
 vulkan-tools vulkan-virtio wine wine-gecko xarchiver xcb-proto
 xfce4-clipman-plugin xorg-xprop xorg-xrandr xorg-xset xorgproto
 xreader zed zvbi vulkan-mesa-layers vulkan-headers memtest_vulkan
-firefox-ublock-origin gwenview
+firefox-ublock-origin gwenview keepsecret
 """
 
 IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"
