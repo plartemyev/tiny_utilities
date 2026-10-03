@@ -139,6 +139,26 @@
       cycle;
     - `systemctl reboot` inside the VirtualBox guest hung at the final `Remounting '/' read-only` shutdown step (twice);
       `systemctl poweroff` works — power off and `VBoxManage startvm` instead of guest reboots;
+      a 2026-10-03 deep-dive (anvil) confirmed the mechanism: the guest kernel stays alive and idles
+      (both vCPUs in `pv_native_safe_halt` = `default_idle`, NOT `stop_this_cpu`), so the hang is
+      systemd-shutdown (PID 1) blocked in its late phase (sync/remount-ro of the VirtioSCSI root),
+      and no reset ever reaches VBox (log shows no `RESETTING`). Intermittent: 1 hang vs 8+ clean
+      reboots on the same VM; poweroffs never hang. Debugging peculiarities:
+      - `VBox.log` stamps are **relative to VM start** (not wall clock; `Log opened <ISO>` gives the
+        anchor). Guest reboot = `RUNNING→RESETTING→RUNNING`; the reset line is preceded by
+        `ACPI: Reset initiated by ACPI`; silent window + no reset = guest-side stall. At power-off
+        VBox dumps both vCPUs' full register state ("Guest state at power off") — a snapshot of any
+        pre-poweroff hang; symbolize via guest `/proc/kallsyms` (fix KASLR slide with the
+        `entry_SYSCALL_64` value from the dump's `LSTAR` vs current boot).
+      - `VBoxManage debugvm <vm> dumpvmcore --filename=f.elf` grabs guest RAM (~RAM-size) while
+        running; the printk ring buffer is inside, greppable as `[YYYY-MM-DD HH:MM:SS] message...`
+        — captures everything after journald died. `debugvm osdmesg` fails with VERR_NOT_FOUND on
+        kernel 7.2 (VBox 7.2.20 too old for its log layout); `debugvm osdetect` works.
+      - re-arm before hunting the hang (removed again 2026-10-03 after the deep-dive):
+        `printf "kernel.printk = 7 4 1 7\nkernel.sysrq = 1\n" | sudo tee /etc/sysctl.d/90-shutdown-debug.conf`
+        makes a hung-task report ("task systemd-shutdown/1 blocked for 120+s" + blocker) print to
+        the console — capture with `VBoxManage controlvm <vm> screenshotpng` or from the dumpvmcore
+        ring buffer (stock: printk `3 4 1 3`, sysrq `16`);
     - sshd (StrictModes) rejects a **root-owned** `~/.ssh/authorized_keys` (Permission denied even with
       correct perms); files written by root into a user's home must be chowned (archinstaller's install
       script already does this for `authorized_keys`);
