@@ -162,6 +162,32 @@
     - sshd (StrictModes) rejects a **root-owned** `~/.ssh/authorized_keys` (Permission denied even with
       correct perms); files written by root into a user's home must be chowned (archinstaller's install
       script already does this for `authorized_keys`);
+    - VirtualBox NAT network DNS is snapshotted, not tracked (hit 2026-10-03 on the anvil install —
+      guest DNS silently died after the host switched networks):
+      `VBoxSVC` reads the host resolver config at startup and caches it; the NAT network service
+      (`VBoxNetNAT`) advertises that cached list via DHCP forever. When the host roams
+      (wired `192.168.1.x` → wifi `192.168.0.x`), guests keep the old, now-unreachable DNS server
+      while routing keeps working — lookups just time out. `VBoxManage natnetwork stop/start` does
+      NOT refresh the list (its config comes from the same VBoxSVC cache); the only fix is restarting
+      VBoxSVC — power off every VM first (a VBoxSVC kill takes running VMs down with it), then
+      `pkill -9 VBoxSVC` (SIGTERM was insufficient once), renew the guest lease
+      (`nmcli device reapply`) after the next start. Plain per-VM NAT mode (`--nic1 nat`) is better:
+      its engine lives in the VM process and passes through the host's CURRENT resolvers at every VM
+      boot (verified: a fresh VM-process start advertised 192.168.0.1 while a same-state NAT network
+      still advertised the stale value); `--natdnshostresolver1 on` goes further and resolves per
+      query via the host resolver. Guest-side resilience is now built into
+      archinstaller: stage one verifies DNS on the live ISO and falls back to public resolvers via
+      `resolvectl dns <default-route-iface> 1.1.1.1 8.8.8.8` (fails the install fast if still broken);
+      the install system carries a NetworkManager dispatcher hook
+      (`/etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback`) that probes each
+      connection's lease DNS servers directly (`timeout 4 drill archlinux.org @<server>`; drill is
+      from the already-installed ldns) on every network event and toggles `ipv4/ipv6.ignore-auto-dns`:
+      servers answering → off (router DNS, search domains and split-DNS all apply), all dead → on
+      (resolved's fallback 9.9.9.9/1.1.1.1/8.8.8.8 take over). The decision is derived per-server, so
+      it is loop-free and self-reverting (a reapply-triggered event re-probes and re-adopts a healed
+      lease — verified on anvil; nmcli gotcha: `con modify` takes `prop value`, the `prop=value` form
+      only exists in get output and is rejected). Stage two just kicks the hook once
+      (`manual --worker`) when its own probe finds resolution broken;
 
 
 ## 1. Think Before Coding

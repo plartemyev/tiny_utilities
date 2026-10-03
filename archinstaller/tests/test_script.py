@@ -62,6 +62,18 @@ def test_console_only_seeds_no_look_and_feel():
     assert "LookAndFeelPackage" not in script
 
 
+def test_dns_fallback_dispatcher_installed_in_base_system():
+    script = build_install_script(make_cfg())
+    assert ("cat > /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback"
+            " <<'DNS_HOOK'") in script
+    assert 'setsid "$0" "$iface" "$event" --worker' in script
+    assert 'drill archlinux.org @"$s"' in script
+    assert 'nmcli con modify "$conn" ipv4.ignore-auto-dns "$mode"' in script
+    assert "chmod 755 /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback" in script
+    # the hook body must be inside the chroot heredoc
+    assert script.index("90-archinstaller-dns-fallback <<'DNS_HOOK'") < script.index("chmod 755") < script.rindex("CHROOT")
+
+
 def test_console_only_by_default():
     script = build_install_script(make_cfg())
     assert "systemctl enable sddm" not in script

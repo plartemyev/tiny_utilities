@@ -11,7 +11,10 @@ the created user and prints a summary.
 Boot the target (physical machine or VM) from the Arch ISO in **UEFI
 mode** with **Secure Boot disabled** — the install registers GRUB for
 `x86_64-efi` and needs an ESP; the tool verifies this on the target
-before touching the disk. Then, on the Arch ISO console:
+before touching the disk. It also verifies working DNS resolution
+(a broken DHCP-advertised resolver is switched to public resolvers on
+the live environment; the install aborts with a clear error if that
+still does not resolve). Then, on the Arch ISO console:
 
 ```bash
 passwd              # set the live environment root password
@@ -150,9 +153,15 @@ The install and the post-boot configuration are two stages. Before the
 reboot the tool writes `archinstaller-state-<hostname>.json` (mode
 0600 — it holds the generated passwords) into the working directory.
 Normally the tool finishes stage two itself: wait for SSH at
-`--target`, fall back to the /24 hostname scan, then apply the timezone,
-`resolv.conf`, user key and opencode service, print the summary, and
-delete the state file. If the machine does not come back, the tool
+`--target`, fall back to the /24 hostname scan, then verify DNS (the
+install system carries a NetworkManager dispatcher hook that probes the
+connection's DHCP DNS servers on every network event: while they answer
+they are used as-is — router DNS, search domains and split-DNS all
+apply; when none answers, DHCP DNS is ignored so systemd-resolved's
+built-in fallback resolvers take over, self-reverting when the network
+heals. Stage two kicks the hook once if resolution is broken right
+now), apply the timezone, `resolv.conf`, user key and opencode service,
+print the summary, and delete the state file. If the machine does not come back, the tool
 prints recovery steps and exits non-zero, keeping the state file; once
 the machine is reachable again (at any address), run:
 

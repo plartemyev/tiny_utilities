@@ -1,6 +1,8 @@
 import argparse
 from pathlib import Path
 
+import pytest
+
 from archinstaller import cli
 
 
@@ -117,3 +119,77 @@ def test_wait_user_service_active_gives_up(monkeypatch):
     except SystemExit:
         return
     raise AssertionError("expected SystemExit when the unit never becomes active")
+
+
+def test_healthy_dns_probes_once_and_never_repairs(monkeypatch, capsys):
+    captured = []
+    monkeypatch.setattr(cli, "run_capture",
+                        lambda client, cmd, **kw: captured.append(cmd) or (0, ""))
+    cli._ensure_live_dns(None)
+    cli._ensure_installed_dns(None, "pw")
+    assert captured == [cli.DNS_PROBE, cli.DNS_PROBE]
+    assert "broken" not in capsys.readouterr().out
+
+
+def test_live_dns_falls_back_to_public_resolvers(monkeypatch, capsys):
+    state = {"probes": 0}
+    captured = []
+
+    def fake_capture(client, cmd, **kw):
+        captured.append(cmd)
+        if cmd == cli.DNS_PROBE:
+            state["probes"] += 1
+            return (0 if state["probes"] > 1 else 1, "")
+        if "ip route" in cmd:
+            return (0, "enp0s3\n")  # post-awk interface name
+        return (0, "")
+
+    monkeypatch.setattr(cli, "run_capture", fake_capture)
+    cli._ensure_live_dns(None)
+    assert "resolvectl dns enp0s3 1.1.1.1 8.8.8.8" in captured
+    assert state["probes"] == 2
+    assert "DNS fallback is active" in capsys.readouterr().out
+
+
+def test_live_dns_aborts_install_when_fallback_does_not_help(monkeypatch):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (1, ""))
+    with pytest.raises(SystemExit):
+        cli._ensure_live_dns(None)
+
+
+def test_installed_dns_kicks_dispatcher_hook_when_broken(monkeypatch, capsys):
+    state = {"probes": 0}
+    captured = []
+    streamed = []
+
+    def fake_capture(client, cmd, **kw):
+        captured.append(cmd)
+        if cmd == cli.DNS_PROBE:
+            state["probes"] += 1
+            return (0 if state["probes"] > 1 else 1, "")
+        return (0, "enp0s3\n")
+
+    def fake_stream(client, cmd, **kw):
+        streamed.append(cmd)
+
+    monkeypatch.setattr(cli, "run_capture", fake_capture)
+    monkeypatch.setattr(cli, "run_streaming", fake_stream)
+    cli._ensure_installed_dns(None, "pw")
+    assert len(streamed) == 1
+    hook = streamed[0]
+    assert "sudo -S -p '' /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback" in hook
+    assert "manual --worker" in hook and "ip route show default" in hook
+    assert not any("nmcli" in c for c in streamed)  # no direct profile edits from the cli
+    assert state["probes"] == 2
+    assert "DNS works via the fallback resolvers" in capsys.readouterr().out
+
+
+def test_installed_dns_reports_when_hook_does_not_help(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (1, ""))
+
+    def fake_stream(client, cmd, **kw):
+        pass
+
+    monkeypatch.setattr(cli, "run_streaming", fake_stream)
+    cli._ensure_installed_dns(None, "pw")
+    assert "warning: DNS is still broken" in capsys.readouterr().out

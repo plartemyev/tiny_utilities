@@ -384,6 +384,7 @@ def _run_installation(
             sys.exit("target is not booted in UEFI mode; the install script registers GRUB "
                      "for x86_64-efi and requires an ESP (boot the live ISO in UEFI mode)")
         virt = _detect_virt(conn)
+        _ensure_live_dns(conn.client)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -423,6 +424,65 @@ def _reboot(conn: SshConnection) -> None:
         pass
 
 
+DNS_PROBE = "timeout 15 getent hosts archlinux.org >/dev/null"
+
+
+def _dns_works(client: paramiko.SSHClient) -> bool:
+    code, _out = run_capture(client, DNS_PROBE, timeout=30)
+    return code == 0
+
+
+def _ensure_live_dns(client: paramiko.SSHClient) -> None:
+    """Verify DNS on the live ISO before the (destructive) install starts.
+
+    pacstrap needs working resolution; a target whose DHCP hands out an
+    unusable DNS server would die deep inside pacstrap with unrelated
+    mirror errors. Fall back to public resolvers on the default-route
+    interface (transient — the live environment dies at reboot anyway).
+    """
+    if _dns_works(client):
+        return
+    print("DNS resolution is broken on the target; pointing the default-route "
+          "interface at public resolvers for the install.")
+    _code, iface = run_capture(client, "ip route show default | awk '{print $5; exit}'",
+                               timeout=30)
+    if _code == 0 and iface.strip():
+        run_capture(client,
+                    f"resolvectl dns {shlex.quote(iface.strip())} 1.1.1.1 8.8.8.8",
+                    timeout=30)
+    if not _dns_works(client):
+        sys.exit("target DNS is broken and the public-resolver fallback did not "
+                 "help; fix the target's DNS (check the hypervisor NAT/DHCP "
+                 "settings) and rerun")
+    print("DNS fallback is active; continuing.")
+
+
+def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> None:
+    """Post-boot DNS health check.
+
+    The persistent fallback logic lives in the NetworkManager dispatcher hook
+    installed by the install script: it probes the lease's DNS servers on
+    every network event and uses them only while at least one answers, so
+    router DNS tuning applies on healthy networks. At stage-two time the
+    lease events have already fired, so when resolution is broken right now
+    the hook is invoked once directly (synchronously, as root).
+    """
+    if _dns_works(client):
+        return
+    print("DNS resolution is broken; running the DNS fallback dispatcher hook ...")
+    run_streaming(
+        client,
+        "sudo -S -p '' /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback"
+        " \"$(ip route show default | awk '{print $5; exit}')\" manual --worker",
+        stdin_text=user_password + "\n",
+        timeout=60,
+    )
+    if _dns_works(client):
+        print("DNS works via the fallback resolvers now.")
+    else:
+        print("warning: DNS is still broken after the fallback hook; fix it manually")
+
+
 def _post_boot(conn: SshConnection, user_password: str, username: str, hostname: str, timezone: str) -> None:
     run_streaming(
         conn.client,
@@ -430,6 +490,7 @@ def _post_boot(conn: SshConnection, user_password: str, username: str, hostname:
         stdin_text=user_password + "\n",
         timeout=60,
     )
+    _ensure_installed_dns(conn.client, user_password)
     run_streaming(
         conn.client,
         f"sudo -S -p '' timedatectl set-timezone {shlex.quote(timezone)}",
