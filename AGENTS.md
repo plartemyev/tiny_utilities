@@ -207,6 +207,23 @@
       off in ~5 s via logind; otherwise automate clean shutdowns with SSH `sudo systemctl poweroff`
       (~10 s; guest poweroffs never hang, unlike guest-initiated reboots) or hard
       `VBoxManage controlvm <vm> poweroff` (what `--vbox-vm` uses);
+    - VirtualBox HDA guest audio freeze + ring-buffer loop (hit on anvil, VirtualBox 7.2.20 host /
+      7.2.8 guest kernel, pipewire 1.6.9 + wireplumber 0.5.18, 2026-10-03): the emulated HDA
+      advertises a DMA position buffer that never advances — guest
+      `/proc/asound/card0/pcm0p/sub0/status` shows `hw_ptr: 0` with appl_ptr/delay frozen while the
+      sink is RUNNING, so the audio graph stalls and the **first pulse client hangs forever**
+      (`paplay` blocks silently, sink ends SUSPENDED), while the emulated controller keeps clocking
+      the whole ALSA ring buffer to the host: the last-written fragment repeats every ring period
+      (buffer_size/rate — 0.74 s at the wireplumber-picked 44100/period 1024) indefinitely;
+      pipewire/wireplumber logs stay clean (no XRUNs). Observing it: on the host
+      `pactl load-module module-null-sink sink_name=vbxtap`, `pactl move-sink-input <idx-of
+      "VirtualBox front [...]"> vbxtap`, then `parec -d vbxtap.monitor --file-format=wav` and look
+      for periodic bursts while the guest is idle. Fix: `options snd-hda-intel position_fix=1`
+      (read the LPIB register instead of the position buffer — the emulation keeps that one
+      accurate); a guest stack restart only clears the loop until the next stuck playback. Baked
+      into the installs as `/etc/modprobe.d/90-archinstaller-vbox-audio.conf` on `oracle` targets
+      (verified: sounds play once and the device idle-closes to silence after a reboot with the
+      option persisted);
 
 
 ## 1. Think Before Coding

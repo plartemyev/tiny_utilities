@@ -32,8 +32,12 @@ mode and serves SSH works. It detects the hypervisor on the target with
 |---|---|
 | Physical computer | nothing special; real NVRAM persists boot entries, so the plain post-install reboot works; VirtualBox guest utils are skipped |
 | libvirt / KVM / QEMU VM | `qemu-guest-agent` is installed and enabled; OVMF pflash NVRAM persists boot entries, so the plain reboot works; no `--vbox-vm` equivalent needed |
-| VirtualBox VM | `virtualbox-guest-utils` (graphical) or `-nox` (console) is installed and `vboxservice` is enabled (without it the host never sends video-mode hints and `VBoxClient --vmsvga` blanks the screen after login — see the hypervisor bullet in the deviations below); use `--vbox-vm` for the host-side reboot — guest-written EFI boot entries do not survive a guest reboot there (see below) |
+| VirtualBox VM | `virtualbox-guest-utils` (graphical) or `-nox` (console) is installed and `vboxservice` is enabled (without it the host never sends video-mode hints and `VBoxClient --vmsvga` blanks the screen after login — see the hypervisor bullet in the deviations below); the guest HDA driver is pinned to `position_fix=1` (`/etc/modprobe.d/90-archinstaller-vbox-audio.conf`) because the emulated DMA position buffer never advances — with the default auto mode the first playback stalls the audio graph and the last sound fragment loops on the host forever; use `--vbox-vm` for the host-side reboot — guest-written EFI boot entries do not survive a guest reboot there (see below) |
 | Other (Hyper-V, VMware, ...) | detected and reported; `open-vm-tools` is installed only on VMware graphical installs; the base lists already carry `qemu-guest-agent` and Hyper-V daemons (inert where unused) |
+
+Every install names the sound stack explicitly in the console package list —
+`pipewire`, `wireplumber` and the `pipewire-pulse` PulseAudio compatibility —
+instead of leaving them to transitive dependencies of other packages.
 
 Requirements for every target:
 

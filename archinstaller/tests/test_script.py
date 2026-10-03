@@ -158,6 +158,21 @@ def test_vboxservice_enabled_only_for_virtualbox_targets():
         assert "systemctl enable vboxservice" not in build_install_script(make_cfg(virt=virt))
 
 
+def test_audio_stack_installed_explicitly():
+    tokens = build_install_script(make_cfg()).split()
+    for pkg in ("pipewire", "wireplumber", "pipewire-pulse", "pipewire-alsa"):
+        assert pkg in tokens, pkg
+
+
+def test_virtualbox_hda_position_fix_pinned_only_on_virtualbox_targets():
+    script = build_install_script(make_cfg(virt="oracle"))
+    assert "options snd-hda-intel position_fix=1" in script
+    assert "> /etc/modprobe.d/90-archinstaller-vbox-audio.conf" in script
+    for virt in ("none", "kvm", "qemu", "vmware", "microsoft", "parallels"):
+        script = build_install_script(make_cfg(virt=virt))
+        assert "position_fix" not in script, virt
+
+
 def test_open_vm_tools_only_for_vmware_targets():
     assert "open-vm-tools" in build_install_script(make_cfg(virt="vmware", graphical=True)).split()
     for virt in ("oracle", "none", "kvm", "qemu", "microsoft"):

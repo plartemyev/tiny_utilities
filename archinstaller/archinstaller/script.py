@@ -110,7 +110,8 @@ openbsd-netcat openconnect opencode openjdk-doc openpgp-card-tools openssh opens
 openvpn opus osinfo-db otf-fira-mono otf-fira-sans p11-kit pacman pacman-contrib
 pacman-mirrorlist pam pambase pandoc-cli pandoc-crossref pandoc-plot partclone
 parted partimage passff-host pbzip2 pciutils pcre pcre2 pcsclite perl pigz
-pinentry pipewire-alsa pipewire-audio pipewire-v4l2 pixz plantuml
+pinentry pipewire pipewire-alsa pipewire-audio pipewire-pulse pipewire-v4l2
+pixz plantuml
 plantuml-ascii-math popt power-profiles-daemon ppp pptpclient procps-ng
 protobuf psmisc pv python python-attrs python-babel python-build-backend
 python-cffi python-charset-normalizer python-configobj python-cryptography
@@ -138,7 +139,7 @@ traceroute ttf-dejavu ttf-droid ttf-fira-mono ttf-fira-sans ttf-liberation
 tzdata udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils
 util-linux util-linux-libs uv vcdimager vim vim-runtime virt-firmware
 virt-install virt-what virtualbox-guest-utils-nox vkd3d vpnc which
-wireguard-tools wireless-regdb wireless_tools wit
+wireguard-tools wireless-regdb wireless_tools wireplumber wit
 wpa_supplicant wvdial wvstreams xdg-utils xfsprogs xl2tpd xmlsec xxhash xz
 yaml-language-server yarn yt-dlp zsh-autosuggestions zstd
 """
@@ -169,7 +170,7 @@ libpulse libreoffice-fresh-ru libsm libtiger libva libva-utils libvdpau-va-gl
 libx11 libxau libxcb libxdmcp libxext libxmu libxss libxt mesa-utils
 modem-manager-gui mono mono-msbuild mono-msbuild-sdkresolver
 network-manager-applet networkmanager-openconnect nm-connection-editor okular
-open-vm-tools pavucontrol pcaudiolib peek pipewire-pulse
+open-vm-tools pavucontrol pcaudiolib peek
 pycharm-community-edition qbittorrent qt6-webengine radeontop renderdoc scrcpy
 sddm sdl12-compat sdl2
 spice-vdagent systray-x-common telegram-desktop texlive-latexextra
@@ -527,6 +528,18 @@ def _chroot(cfg: InstallConfig) -> str:
         "systemctl enable NetworkManager",
         *(["systemctl enable qemu-guest-agent"] if cfg.virt in ("kvm", "qemu") else []),
         *(["systemctl enable vboxservice"] if cfg.virt == "oracle" else []),
+        *(["",
+           "log 'Working around the frozen VirtualBox HDA DMA position reporting'",
+           # VirtualBox's emulated HDA advertises a DMA position buffer that
+           # never advances: the guest kernel reads hw_ptr stuck at 0, the
+           # audio graph stalls on the first playback (pulse clients hang)
+           # and the emulated controller keeps looping whatever sits in the
+           # ALSA ring buffer to the host — a short sound fragment repeats
+           # indefinitely. position_fix=1 reads the LPIB register instead,
+           # which the emulation keeps accurate (verified on 7.2.20).
+           ("printf '%s\\n' 'options snd-hda-intel position_fix=1'"
+            " > /etc/modprobe.d/90-archinstaller-vbox-audio.conf"),
+           ] if cfg.virt == "oracle" else []),
         "",
         "log 'Installing the DNS fallback NetworkManager dispatcher'",
         "cat > /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback <<'DNS_HOOK'",
