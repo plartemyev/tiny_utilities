@@ -141,7 +141,7 @@ util-linux util-linux-libs uv vcdimager vim vim-runtime virt-firmware
 virt-install virt-what virtualbox-guest-utils-nox vkd3d vpnc which
 wireguard-tools wireless-regdb wireless_tools wireplumber wit
 wpa_supplicant wvdial wvstreams xdg-utils xfsprogs xl2tpd xmlsec xxhash xz
-yaml-language-server yarn yt-dlp zsh-autosuggestions zstd
+yaml-language-server yarn yt-dlp zsh-autosuggestions zstd b3sum
 """
 
 # Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
