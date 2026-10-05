@@ -61,3 +61,37 @@ def test_poweroff_falls_back_to_hard_stop(monkeypatch):
     vbox.poweroff("vm")
     assert commands[0] == ("controlvm", "vm", "acpipowerbutton")
     assert commands[1] == ("controlvm", "vm", "poweroff")
+
+
+def test_enable_discard_reattaches_hdd_attachments_only(monkeypatch):
+    monkeypatch.setattr(vbox, "vm_info", lambda vm: {
+        "name": "testvm",
+        "VMState": "poweroffed",
+        "storagecontrollername0": "IDE",
+        "storagecontrollername1": "SATA",
+        "IDE-1-0": "/tmp/archlinux-x86_64.iso",
+        "IDE-1-0-UUID": "e6fe8b2a-0000-4000-8000-000000000001",
+        "SATA-0-0": "/home/u/VirtualBox VMs/testvm/disk.vdi",
+    })
+    commands = []
+    monkeypatch.setattr(vbox, "_run", lambda *args: commands.append(args) or "")
+    changed = vbox.enable_discard("testvm")
+    assert changed == ["SATA-0-0"]
+    assert commands == [(
+        "storageattach", "testvm", "--storagectl", "SATA", "--port", "0",
+        "--device", "0", "--type", "hdd", "--medium",
+        "/home/u/VirtualBox VMs/testvm/disk.vdi",
+        "--discard", "on", "--nonrotational", "on",
+    )]
+
+
+def test_enable_discard_raises_without_hdd_attachment(monkeypatch):
+    monkeypatch.setattr(vbox, "vm_info", lambda vm: {
+        "storagecontrollername0": "IDE",
+        "IDE-1-0": "/tmp/archlinux-x86_64.iso",
+    })
+    try:
+        vbox.enable_discard("vm")
+    except vbox.VboxError:
+        return
+    raise AssertionError("expected VboxError without a hard-disk attachment")

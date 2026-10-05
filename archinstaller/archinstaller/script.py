@@ -259,13 +259,18 @@ class InstallConfig:
     public_key: str
     graphical: bool
     virt: str = "oracle"
+    # The target disk accepts discards (SSD/NVMe hardware, or a VM disk whose
+    # hypervisor forwards guest TRIM): enables fstrim.timer and the swapfile
+    # fstab discard option; VM targets additionally mount root with the
+    # continuous discard option so freed extents unmap the drive image at once.
+    discard: bool = False
 
 
 def build_install_script(cfg: InstallConfig) -> str:
     return "\n".join([
         _header(),
         _partitioning(cfg.disk),
-        _formatting(cfg.disk),
+        _formatting(cfg),
         _pacstrap(cfg),
         _fstab(),
         _chroot(cfg),
@@ -293,13 +298,18 @@ def _partitioning(disk: str) -> str:
     )
 
 
-def _formatting(disk: str) -> str:
+def _formatting(cfg: InstallConfig) -> str:
+    # Continuous discard on VM targets: freed extents unmap immediately, keeping
+    # the hypervisor-side drive image (VDI/qcow2/...) compact. Real SSDs get the
+    # weekly fstrim.timer batch instead (no per-delete latency cost). genfstab
+    # copies the mount options verbatim, so the option persists in fstab.
+    options = " -o discard" if cfg.discard and cfg.virt != "none" else ""
     return (
         "log 'Creating filesystems and mounting'\n"
-        f"mkfs.fat -F 32 {_sh(disk + '1')}\n"
-        f"mkfs.ext4 -F {_sh(disk + '2')}\n"
-        f"mount --mkdir {_sh(disk + '2')} /mnt/new-root\n"
-        f"mount --mkdir {_sh(disk + '1')} /mnt/new-root/boot\n"
+        f"mkfs.fat -F 32 {_sh(cfg.disk + '1')}\n"
+        f"mkfs.ext4 -F {_sh(cfg.disk + '2')}\n"
+        f"mount --mkdir{options} {_sh(cfg.disk + '2')} /mnt/new-root\n"
+        f"mount --mkdir {_sh(cfg.disk + '1')} /mnt/new-root/boot\n"
     )
 
 
@@ -330,6 +340,14 @@ def _select_graphical_packages(packages: str, cfg: InstallConfig) -> str:
     if cfg.virt == "vmware":
         return packages
     return " ".join(t for t in packages.split() if t != "open-vm-tools")
+
+
+def _swap_fstab_line(cfg: InstallConfig) -> str:
+    # discard makes swapon trim unused swap blocks (a full trim at every
+    # swapon plus frees as pages are released), passing them on to the
+    # backing SSD or hypervisor drive image.
+    options = "defaults,discard" if cfg.discard else "defaults"
+    return f"/swapfile none swap {options} 0 0"
 
 
 def _fstab() -> str:
@@ -416,7 +434,7 @@ def _chroot(cfg: InstallConfig) -> str:
         f"log 'Creating {cfg.swap_size} swap file'",
         f"mkswap -U clear --size {cfg.swap_size} --file /swapfile",
         "swapon /swapfile",
-        "printf '%s\\n' '/swapfile none swap defaults 0 0' >> /etc/fstab",
+        f"printf '%s\\n' {_sh(_swap_fstab_line(cfg))} >> /etc/fstab",
         "",
         "log 'Installing console packages (long step)'",
         "retry pacman -Sy --needed --noconfirm \\",
@@ -528,6 +546,14 @@ def _chroot(cfg: InstallConfig) -> str:
         "systemctl enable NetworkManager",
         *(["systemctl enable qemu-guest-agent"] if cfg.virt in ("kvm", "qemu") else []),
         *(["systemctl enable vboxservice"] if cfg.virt == "oracle" else []),
+        *([
+            "",
+            "log 'Enabling weekly batch TRIM (fstrim.timer)'",
+            # Weekly batch TRIM: low wear and no per-delete latency on real
+            # SSDs; on VM disks it still unmaps free space (compacting the
+            # drive image) on top of the continuous root discard.
+            "systemctl enable fstrim.timer",
+            ] if cfg.discard else []),
         *(["",
            "log 'Working around the frozen VirtualBox HDA DMA position reporting'",
            # VirtualBox's emulated HDA advertises a DMA position buffer that

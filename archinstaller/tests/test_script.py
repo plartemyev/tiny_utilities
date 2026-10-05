@@ -16,6 +16,7 @@ def make_cfg(**overrides):
         "public_key": KEY,
         "graphical": False,
         "virt": "oracle",
+        "discard": False,
     }
     defaults.update(overrides)
     return InstallConfig(**defaults)
@@ -156,6 +157,31 @@ def test_vboxservice_enabled_only_for_virtualbox_targets():
     assert "systemctl enable vboxservice" in build_install_script(make_cfg(virt="oracle"))
     for virt in ("none", "kvm", "qemu", "vmware", "microsoft", "parallels"):
         assert "systemctl enable vboxservice" not in build_install_script(make_cfg(virt=virt))
+
+
+def test_discard_enables_fstrim_and_swap_discard():
+    script = build_install_script(make_cfg(discard=True))
+    assert "printf '%s\\n' '/swapfile none swap defaults,discard 0 0' >> /etc/fstab" in script
+    assert "systemctl enable fstrim.timer" in script
+
+
+def test_no_discard_keeps_plain_swap_line_and_skips_fstrim():
+    script = build_install_script(make_cfg(discard=False))
+    assert "printf '%s\\n' '/swapfile none swap defaults 0 0' >> /etc/fstab" in script
+    assert "fstrim" not in script
+
+
+def test_discard_mounts_root_continuously_only_on_vm_targets():
+    for virt in ("none", "kvm", "qemu", "oracle", "vmware", "microsoft", "parallels"):
+        script = build_install_script(make_cfg(discard=True, virt=virt))
+        assert ("-o discard" in script) == (virt != "none"), virt
+        if virt != "none":
+            assert "mount --mkdir -o discard '/dev/vda2' /mnt/new-root" in script
+
+
+def test_discard_off_keeps_plain_root_mount():
+    script = build_install_script(make_cfg(discard=True, virt="none"))
+    assert "mount --mkdir '/dev/vda2' /mnt/new-root" in script
 
 
 def test_audio_stack_installed_explicitly():

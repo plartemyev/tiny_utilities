@@ -96,6 +96,17 @@
       `--resume <state-file>` finishes a previous run's post-boot stage; the state file
       (`archinstaller-state-<hostname>.json`, mode 0600, holds generated passwords) is written before the
       reboot and deleted on success;
+    - VirtualBox discard/TRIM forwarding (guest TRIM shrinking the VDI; wired into archinstaller as
+      `vbox.enable_discard` + guest-side fstrim/swap/root-discard config): `--discard on` and
+      `--nonrotational on` are **per-attachment** flags on `VBoxManage storageattach` (not `modifyvm`),
+      and the re-attach must re-pass `--storagectl/--port/--device/--type/--medium`; without
+      `--discard on` the guest may TRIM all day and the VDI never shrinks. Attachments appear in
+      `showvminfo --machinereadable` as `"<controller>-<port>-<device>"` keys (controller names come from
+      the `storagecontrollername<N>` keys; subkeys like `"<id>-UUID"` are NOT attachments); the emulation
+      forwards TRIM only on controllers that support it (SATA/AHCI, NVMe) — IDE-attached disks cannot;
+      the flags are only settable while the VM is powered off, so on `--vbox-vm` runs the guest discard
+      config is decided before the live-env probe could ever see them (probed via
+      `/sys/block/<disk>/queue/{rotational,discard_max_bytes}`);
     - opencode unit Environment changes need `systemctl --user restart` (never just `start`) to reach the
       running process — `start` is a no-op on an active service, so a rewritten unit's new password gives
       HTTP 401 until a restart (hit during the manual stage-two replay); the tool's unit upload is

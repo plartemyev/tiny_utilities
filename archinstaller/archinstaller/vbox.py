@@ -10,6 +10,7 @@ boots via the signature-less \\EFI\\BOOT\\BOOTX64.EFI fallback on its ESP.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 
@@ -70,6 +71,38 @@ def reset_nvram(vm: str) -> str:
 def order_disk_before_dvd(vm: str) -> None:
     """Put the disk in front of the DVD for the fresh default boot order."""
     _run("modifyvm", vm, "--boot2", "disk", "--boot3", "dvd")
+
+
+def enable_discard(vm: str) -> list[str]:
+    """Make the guest's TRIM commands shrink the VM's disk images.
+
+    VirtualBox only punches holes in the attached image (shrinking the VDI
+    in response to guest TRIM) when the attachment carries --discard on;
+    --nonrotational presents the disk as an SSD to the guest. The flags are
+    per-attachment, so every hard-disk attachment is re-attached with them
+    (medium and type are re-specified so nothing depends on storageattach's
+    defaults for omitted flags). Only safe while the VM is powered off.
+    Returns the changed attachment ids (<controller>-<port>-<device>).
+    """
+    info = vm_info(vm)
+    controllers = [value for key, value in sorted(info.items())
+                   if re.fullmatch(r"storagecontrollername\d+", key)]
+    changed = []
+    for name in controllers:
+        for key, medium in sorted(info.items()):
+            match = re.fullmatch(re.escape(name) + r"-(\d+)-(\d+)", key)
+            # skip non-attachment subkeys (e.g. <id>-UUID) and optical media
+            if (match is None or medium == "none"
+                    or medium.endswith((".iso", ".dmg", ".cdr"))):
+                continue
+            _run("storageattach", vm, "--storagectl", name,
+                 "--port", match.group(1), "--device", match.group(2),
+                 "--type", "hdd", "--medium", medium,
+                 "--discard", "on", "--nonrotational", "on")
+            changed.append(key)
+    if not changed:
+        raise VboxError(f"VM {vm!r} has no hard-disk attachment to enable discard on")
+    return changed
 
 
 def start(vm: str) -> None:

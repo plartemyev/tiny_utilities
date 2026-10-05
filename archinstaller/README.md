@@ -39,6 +39,29 @@ Every install names the sound stack explicitly in the console package list —
 `pipewire`, `wireplumber` and the `pipewire-pulse` PulseAudio compatibility —
 instead of leaving them to transitive dependencies of other packages.
 
+### TRIM/discard handling
+
+Before the install the tool probes the target disk in the live environment
+(`/sys/block/<disk>/queue/rotational` + `discard_max_bytes`) and enables
+discard-dependent tuning only when the device actually accepts discards:
+
+| Target disk | Behavior |
+|---|---|
+| SSD/NVMe or any other discard-capable device | `fstrim.timer` is enabled (weekly batch TRIM — SSD longevity and steady performance without the per-delete latency of continuous discard) and the swapfile fstab entry becomes `/swapfile none swap defaults,discard 0 0` so swapon trims unused swap blocks (a full trim at every swapon plus frees as pages are released) |
+| discard-capable VM disk | additionally the root filesystem is mounted with the continuous `discard` option (genfstab persists the mount option into fstab) so freed extents unmap the hypervisor-side drive image at once, keeping VDI/qcow2 files compact |
+| rotational HDD, or VM disk whose hypervisor drops discards | nothing is enabled — TRIM would be a no-op or never reach the backing store |
+
+With `--vbox-vm` the tool additionally flips `--discard on` +
+`--nonrotational on` onto the VM's hard-disk attachments host-side while it
+is powered off (part of the existing reboot-assist step): VirtualBox shrinks
+a VDI in response to guest TRIM only when the attachment carries these flags,
+so without them the guest-side TRIMs never reach the image. Since the flags
+land only after the install, the live-env probe cannot see them yet — for
+`--vbox-vm` runs the guest is configured for discard regardless. A failed
+flip only warns (e.g. IDE-attached disks cannot forward TRIM); on runs
+without `--vbox-vm`, enable the two flags on the attachment yourself (VM
+Storage settings) for compaction to work.
+
 Requirements for every target:
 
 * UEFI boot, Secure Boot off (the GRUB build is unsigned);
@@ -104,7 +127,7 @@ before connecting.
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
 | `--no-subnet-scan` | off | if the rebooted target does not answer at `--target` in time, the tool scans the surrounding /24 (TCP 22 probe of the 254 host addresses, then a key-authenticated SSH login) for the machine reporting the configured hostname and continues at that address; this flag disables the fallback |
-| `--vbox-vm NAME` | none | VirtualBox VM name for a **host-side** reboot: clean power-off, NVRAM store backed up to `.nvram.bak` (fresh firmware defaults on next boot), boot order disk-before-DVD, start — makes the first boot work out of the box (see below) |
+| `--vbox-vm NAME` | none | VirtualBox VM name for a **host-side** reboot: clean power-off, NVRAM store backed up to `.nvram.bak` (fresh firmware defaults on next boot), boot order disk-before-DVD, start — makes the first boot work out of the box (see below); the VM's hard-disk attachments are also re-attached with `--discard on` + `--nonrotational on` so guest TRIM compacts the drive images (see TRIM/discard handling) |
 | `--resume STATE_FILE` | none | skip the install; finish a previous run's post-reboot stage from its state file (all other arguments ignored) |
 
 ### Output

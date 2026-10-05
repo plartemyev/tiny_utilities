@@ -242,9 +242,43 @@ def _detect_virt(conn: SshConnection) -> str:
     return virt
 
 
+def _analyze_discard(conn: SshConnection, disk: str) -> bool:
+    """TRIM/discard feasibility of the target disk, probed in the live env.
+
+    discard_max_bytes > 0 means the guest kernel sees a discard-capable
+    device: real SSD/NVMe hardware, or a VM disk whose hypervisor forwards
+    guest TRIM. Rotational is reported for context only (VirtualBox disks
+    report rotational=1 until --nonrotational is set on the attachment).
+    """
+    dev = disk.rsplit("/", 1)[-1]
+    _code, out = run_capture(
+        conn.client,
+        (f"cat /sys/block/{dev}/queue/rotational"
+         f" /sys/block/{dev}/queue/discard_max_bytes 2>/dev/null"),
+        timeout=30,
+    )
+    values = out.split()
+    kind = {"0": "non-rotational (SSD-like)", "1": "rotational (HDD-like)"}.get(
+        values[0] if values else "", "unknown")
+    supported = len(values) == 2 and values[1].isdigit() and int(values[1]) > 0
+    verdict = ("discard-capable: fstrim.timer, swapfile discard and (on VMs)"
+               " root discard will be enabled"
+               if supported else
+               "no discard support: TRIM stays disabled")
+    print(f"TRIM/discard analysis of {disk}: {kind}, {verdict}")
+    return supported
+
+
 def _host_side_reboot(vm: str) -> None:
     print(f"VirtualBox assist: powering off VM {vm!r} ...")
     vbox.poweroff(vm)
+    try:
+        changed = vbox.enable_discard(vm)
+        print(f"Discard/TRIM forwarding (--discard, --nonrotational) enabled on: "
+              f"{', '.join(changed)}.")
+    except vbox.VboxError as exc:
+        print(f"warning: could not enable discard forwarding ({exc}); "
+              f"guest TRIM will not compact the drive images")
     backup = vbox.reset_nvram(vm)
     print(f"NVRAM store moved to {backup}; next boot gets fresh firmware defaults.")
     vbox.order_disk_before_dvd(vm)
@@ -384,6 +418,15 @@ def _run_installation(
             sys.exit("target is not booted in UEFI mode; the install script registers GRUB "
                      "for x86_64-efi and requires an ESP (boot the live ISO in UEFI mode)")
         virt = _detect_virt(conn)
+        discard = _analyze_discard(conn, args.disk)
+        if args.vbox_vm is not None and not discard:
+            # The attachment flags are flipped host-side after the install
+            # (only safe while the VM is powered off), so the live-env probe
+            # cannot yet see the discards the installed system will get:
+            # configure the guest for them right away.
+            print("VirtualBox assist: disk attachments get --discard on; "
+                  "enabling guest discard support.")
+            discard = True
         _ensure_live_dns(conn.client)
         cfg = InstallConfig(
             disk=args.disk,
@@ -396,6 +439,7 @@ def _run_installation(
             public_key=public_key,
             graphical=args.graphical,
             virt=virt,
+            discard=discard,
         )
         print(f"Uploading installation script to {INSTALL_SCRIPT_PATH} ...")
         upload_text(conn.client, build_install_script(cfg), INSTALL_SCRIPT_PATH)

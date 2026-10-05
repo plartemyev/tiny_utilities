@@ -1,9 +1,13 @@
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from archinstaller import cli
+
+
+LIVE_CONN = SimpleNamespace(client=None)  # probe target: only .client is used
 
 
 def make_args(**overrides):
@@ -155,6 +159,32 @@ def test_live_dns_aborts_install_when_fallback_does_not_help(monkeypatch):
     monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (1, ""))
     with pytest.raises(SystemExit):
         cli._ensure_live_dns(None)
+
+
+def test_analyze_discard_supported_on_ssd_like_disk(monkeypatch, capsys):
+    commands = []
+    monkeypatch.setattr(
+        cli, "run_capture",
+        lambda client, cmd, **kw: commands.append(cmd) or (0, "0\n2147450880\n"))
+    assert cli._analyze_discard(LIVE_CONN, "/dev/vda") is True
+    assert "/sys/block/vda/queue/discard_max_bytes" in commands[0]
+    out = capsys.readouterr().out
+    assert "non-rotational (SSD-like)" in out
+    assert "discard-capable" in out
+
+
+def test_analyze_discard_skipped_on_rotational_disk(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (0, "1\n0\n"))
+    assert cli._analyze_discard(LIVE_CONN, "/dev/sda") is False
+    out = capsys.readouterr().out
+    assert "rotational (HDD-like)" in out
+    assert "no discard support" in out
+
+
+def test_analyze_discard_defaults_to_disabled_when_probe_fails(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (1, ""))
+    assert cli._analyze_discard(LIVE_CONN, "/dev/vda") is False
+    assert "unknown" in capsys.readouterr().out
 
 
 def test_installed_dns_kicks_dispatcher_hook_when_broken(monkeypatch, capsys):
