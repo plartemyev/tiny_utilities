@@ -76,10 +76,9 @@ discard and root discard start unmapping on their next pass. Recommended
 companion on the same `<driver>`: `detect_zeroes='unmap'` converts guest
 zero-writes into live unmaps — compacting zero-heavy writes such as a
 reinstall's fresh mkfs or `dd`-style zeroing without waiting for the next
-fstrim pass (on the older stacks above set it together with
-`discard='unmap'`, which it requires). Compaction frees the image's
-allocated blocks (`du`); the apparent file size only shrinks when the
-discarded range reaches the image tail.
+fstrim pass (must be set together with `discard='unmap'`, which it requires).
+Compaction frees the image's allocated blocks (`du`); the apparent file size
+only shrinks when the discarded range reaches the image tail.
 
 Requirements for every target:
 
