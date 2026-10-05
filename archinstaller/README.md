@@ -62,6 +62,18 @@ flip only warns (e.g. IDE-attached disks cannot forward TRIM); on runs
 without `--vbox-vm`, enable the two flags on the attachment yourself (VM
 Storage settings) for compaction to work.
 
+libvirt/KVM targets are the self-serve case by design (the tool manages no
+libvirt state): virtio-blk advertises discard to the guest out of the box
+(QEMU ≥ 4.0), so the analysis enables the guest-side config — but the
+hypervisor forwards TRIM into the qcow2 only when the disk XML carries
+`<driver name='qemu' type='qcow2' discard='unmap'/>` (virt-manager: Discard
+mode "unmap"). Without it the guest TRIMs are silently dropped and the image
+never compacts; no guest-side re-run is needed once the flag is set — the
+already-enabled fstrim.timer, swap discard and root discard start unmapping
+on their next pass. Compaction frees the image's allocated blocks (`du`);
+the apparent file size only shrinks when the discarded range reaches the
+image tail.
+
 Requirements for every target:
 
 * UEFI boot, Secure Boot off (the GRUB build is unsigned);
