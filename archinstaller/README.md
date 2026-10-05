@@ -72,9 +72,14 @@ with `discard='ignore'`. Older stacks forward only with the explicit
 mode "unmap") — without it the guest TRIMs are silently dropped and the
 image never compacts. No guest-side re-run is needed when forwarding
 appears (stack upgrade or flag set): the already-enabled fstrim.timer, swap
-discard and root discard start unmapping on their next pass. Compaction
-frees the image's allocated blocks (`du`); the apparent file size only
-shrinks when the discarded range reaches the image tail.
+discard and root discard start unmapping on their next pass. Recommended
+companion on the same `<driver>`: `detect_zeroes='unmap'` converts guest
+zero-writes into live unmaps — compacting zero-heavy writes such as a
+reinstall's fresh mkfs or `dd`-style zeroing without waiting for the next
+fstrim pass (on the older stacks above set it together with
+`discard='unmap'`, which it requires). Compaction frees the image's
+allocated blocks (`du`); the apparent file size only shrinks when the
+discarded range reaches the image tail.
 
 Requirements for every target:
 
