@@ -107,6 +107,15 @@
       the flags are only settable while the VM is powered off, so on `--vbox-vm` runs the guest discard
       config is decided before the live-env probe could ever see them (probed via
       `/sys/block/<disk>/queue/{rotational,discard_max_bytes}`);
+    - libvirt/qemu discard forwarding (see the archinstaller README TRIM section): virtio-blk advertises
+      discard to the guest since QEMU 4.0 regardless of backend forwarding; on libvirt ≥ 12.7.0 with
+      QEMU ≥ 11.1.1 guest discards reach the image in all modes unless the disk XML explicitly sets
+      `<driver ... discard='ignore'/>`, older stacks forward only with the explicit `discard='unmap'`;
+      the live-env probe cannot distinguish "advertised" from "forwarded" (hypervisor-side state,
+      invisible to the guest). QEMU's `detect_zeroes='unmap'` (converts guest zero-writes to unmaps
+      live) has NO VirtualBox analog: VirtualBox forwards only explicit guest TRIM (`--discard on`),
+      and its only zero-based compaction is the offline batch `VBoxManage modifymedium --compact`
+      ("removes blocks that only contain zeroes", VDI, medium must not be attached to a running VM);
     - opencode unit Environment changes need `systemctl --user restart` (never just `start`) to reach the
       running process — `start` is a no-op on an active service, so a rewritten unit's new password gives
       HTTP 401 until a restart (hit during the manual stage-two replay); the tool's unit upload is

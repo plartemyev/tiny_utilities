@@ -63,16 +63,18 @@ without `--vbox-vm`, enable the two flags on the attachment yourself (VM
 Storage settings) for compaction to work.
 
 libvirt/KVM targets are the self-serve case by design (the tool manages no
-libvirt state): virtio-blk advertises discard to the guest out of the box
-(QEMU ≥ 4.0), so the analysis enables the guest-side config — but the
-hypervisor forwards TRIM into the qcow2 only when the disk XML carries
+libvirt state). virtio-blk advertises discard to the guest out of the box
+(QEMU ≥ 4.0), so the analysis enables the guest-side config; on current
+stacks (libvirt ≥ 12.7.0 with QEMU ≥ 11.1.1) the hypervisor forwards guest
+TRIM into the image in all modes unless the disk XML explicitly opts out
+with `discard='ignore'`. Older stacks forward only with the explicit
 `<driver name='qemu' type='qcow2' discard='unmap'/>` (virt-manager: Discard
-mode "unmap"). Without it the guest TRIMs are silently dropped and the image
-never compacts; no guest-side re-run is needed once the flag is set — the
-already-enabled fstrim.timer, swap discard and root discard start unmapping
-on their next pass. Compaction frees the image's allocated blocks (`du`);
-the apparent file size only shrinks when the discarded range reaches the
-image tail.
+mode "unmap") — without it the guest TRIMs are silently dropped and the
+image never compacts. No guest-side re-run is needed when forwarding
+appears (stack upgrade or flag set): the already-enabled fstrim.timer, swap
+discard and root discard start unmapping on their next pass. Compaction
+frees the image's allocated blocks (`du`); the apparent file size only
+shrinks when the discarded range reaches the image tail.
 
 Requirements for every target:
 
