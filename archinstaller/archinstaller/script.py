@@ -119,7 +119,7 @@ python-docker python-docutils python-idna python-imagesize python-jinja
 python-jsonpatch python-jsonpointer python-jsonschema
 python-jsonschema-specifications python-markupsafe python-netifaces
 python-oauthlib python-packaging python-pandocfilters python-poetry
-python-psycopg python-psycopg-pool python-pycparser python-pygments
+python-psycopg python-psycopg-pool python-pycparser python-pygments python-libguestfs
 python-pypandoc python-pyparted python-pyserial python-pytest-ruff python-pytz
 python-referencing python-requests python-rpds-py python-ruff python-ruff-api
 python-six python-snowballstemmer python-sphinx python-sphinx-alabaster-theme
