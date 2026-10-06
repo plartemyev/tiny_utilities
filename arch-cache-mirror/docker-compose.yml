@@ -1,0 +1,23 @@
+services:
+  arch-cache-mirror:
+    build: .
+    image: arch-cache-mirror:latest
+    container_name: arch-cache-mirror
+    restart: unless-stopped
+    ports:
+      - "8080:8080"           # host:container; point pacman at http://<host-ip>:8080
+    environment:
+      # cache pruning: 0 disables a limit
+      CACHE_SIZE: "20G"       # total cache cap, e.g. 20G / 500M / 0
+      CACHE_AGE: "0"          # delete files untouched for this long, e.g. 30d / 0
+      KEEP_VERSIONS: "0"      # superseded package versions to keep (0 = latest only)
+      GC_INTERVAL: "3600"     # seconds between pruning passes
+      DB_TTL: "10m"           # max age of cached db copies (0 = refresh on every request)
+      FRESH_WAIT: "5"         # max seconds a db request waits for the fresh
+                              # retrieval before getting the cached copy (0 = off)
+      # upstream mirrors; note: $$ escapes $ for compose - use $$repo/$$arch here
+      # OFFICIAL_REPOS: "core extra multilib"
+      OFFICIAL_MIRRORS: "https://geo.mirror.pkgbuild.com/$$repo/os/$$arch https://mirror.rackspace.com/archlinux/$$repo/os/$$arch"
+      EXTRA_REPOS: "xlibre=https://packages.xlibre.net/arch/stable/$$arch;sonicde=https://sonicde-arch.github.io/$$arch"
+    volumes:
+      - ./cache:/var/cache/arch-mirror

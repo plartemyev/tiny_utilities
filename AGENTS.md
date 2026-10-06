@@ -244,6 +244,33 @@
       into the installs as `/etc/modprobe.d/90-archinstaller-vbox-audio.conf` on `oracle` targets
       (verified: sounds play once and the device idle-closes to silence after a reboot with the
       option persisted);
+- `arch-cache-mirror/` (caching pacman mirror container) peculiarities (discovered 2026-10-05 while
+  building it):
+    - `archlinux:latest` docker builds: plain `pacman -Syu` fails signature checks when the image's
+      `archlinux-keyring` lags behind the current repos; fix is `pacman -Sy --noconfirm
+      archlinux-keyring && pacman -Syu --noconfirm <pkgs>` (baked into `arch-cache-mirror/Dockerfile`);
+    - Arch mirrors largely IGNORE `If-Modified-Since` — `geo.mirror.pkgbuild.com` and
+      `mirror.rackspace.com` both answered HTTP 200 to a conditional GET with a 2099 date (HEAD too),
+      so conditional db revalidation is pointless against them; arch-cache-mirror instead triggers a
+      bounded fresh retrieval (FRESH_WAIT, 5 s default) on every stale db request and falls back to
+      serving the cached copy while the refresh continues in the background;
+    - GitHub Pages edges can serve a short body with a stale Content-Length depending on the client's
+      vantage point: `sonicde-arch.github.io/x86_64/sonicde.db` reported `Content-Length: 21502` with
+      a 21500-byte body from a docker container while the host consistently got `21500/21500` — strict
+      clients (pacman's curl, aiohttp, urllib) abort with "transfer truncated" although the whole file
+      arrived. arch-cache-mirror buffers db downloads (they are small) and keeps what arrived, so
+      clients always get self-consistent responses;
+    - pacman aborts any download that transfers < 1 B/s for 10 s (curl low-speed default) — a proxy
+      that buffers a large db (e.g. `extra.db` 8.4 MB on a slow moment) before sending the first
+      client byte gets its clients killed; this is the second reason dbs are never proxied live but
+      served from cache with background refresh (packages still stream through);
+    - pacman `vercmp` reference source: sources.archlinux.org only hosts tarballs up to 6.0.2 (7.x not
+      published there) and gitlab.archlinux.org is Anubis-walled; the algorithm is unchanged in 7.x —
+      port from the 6.0.2 tarball (`lib/libalpm/version.c`) and differential-test against the 7.x
+      binary in the container (`tmp/difftest_vercmp.py`, 2500 pairs, 0 mismatches);
+    - aiohttp: mutating `app[...]` after the application started emits "Changing state of started or
+      joined application is deprecated" (3.14) — share a plain dict set before startup and mutate it
+      in place instead.
 
 
 ## 1. Think Before Coding
