@@ -97,6 +97,7 @@ Without docker compose:
 ```bash
 docker build -t arch-cache-mirror .
 docker run -d --name arch-cache-mirror -p 8080:8080 \
+    --user "$(id -u):$(id -g)" \
     -v /var/cache/arch-mirror:/var/cache/arch-mirror \
     -e OFFICIAL_MIRRORS='https://geo.mirror.pkgbuild.com/$repo/os/$arch https://mirror.rackspace.com/archlinux/$repo/os/$arch' \
     -e 'EXTRA_REPOS=xlibre=https://packages.xlibre.net/arch/stable/$arch;sonicde=https://sonicde-arch.github.io/$arch' \
@@ -165,9 +166,10 @@ currently being downloaded are never touched.
 port publishing, cache volume, restart policy (`unless-stopped` keeps
 the mirror alive across host reboots) and environment configuration in
 one reviewed file instead of a long `docker run` incantation. It also
-makes the two operational must-haves explicit and durable: the
-bind-mounted `./cache` (so the cache survives image upgrades) and the
-env defaults. Healthcheck comes from the Dockerfile (a stdlib-only
+makes the three operational must-haves explicit and durable: the
+bind-mounted `./cache` (so the cache survives image upgrades), the
+uid:gid mapping to the calling host user (so the cache stays
+host-user owned) and the env defaults. Healthcheck comes from the Dockerfile (a stdlib-only
 `/healthz` probe), so `docker ps` shows mirror health without extra
 packages. The only cost is the compose plugin itself, which ships with
 Docker everywhere nowadays.
@@ -175,10 +177,17 @@ Docker everywhere nowadays.
 ## Caveats
 
 - Plain HTTP on the LAN, no authentication - by design, like every
-  pacman mirror; do not expose it to the internet. The container runs
-  as root so it can own a bind-mounted cache volume; add `user:` to the
-  compose service and chown the volume yourself if you want to drop
-  privileges.
+  pacman mirror; do not expose it to the internet. The container runs as
+  a non-root `mirror` user (uid/gid 1000); docker-compose.yml maps that
+  to the calling host user (`user: "${UID:-1000}:${GID:-1000}"`), so the
+  bind-mounted `./cache` stays owned by your user. On the common
+  single-user host (uid 1000) this just works; otherwise put `UID`/`GID`
+  in a `.env` file next to `docker-compose.yml`
+  (`env UID=$(id -u) GID=$(id -g) docker compose up` also works). A
+  mismatch fails loudly: the mirror cannot write the cache dir and
+  exits. A cache directory created by older, root-running deployments is
+  migrated once on the host: `sudo chown -R $(id -u):$(id -g) cache` or
+  simply `sudo rm -rf cache` (it is only a cache).
 - If you keep real upstream mirrors below the proxy line in
   `mirrorlist`, pacman will use them as fallback when the proxy is
   down (nice), but the same file must not be `Include`d by the extra
@@ -226,13 +235,15 @@ version pairs, 0 mismatches at the time of writing).
 ### End-to-end test
 
 `./e2e.sh` exercises the real thing: it builds the image, runs the
-in-image unit/integration tests, boots the mirror on a throwaway docker
-network next to a genuine `archlinux:latest` client and checks the full
-path - health/status endpoints, db cache miss → upstream fetch → cache
-hit, a cold `pacman -Sy` (including the `xlibre`/`sonicde` repos and
-real signature verification), a warm sync that must not touch upstream
-databases (DB_TTL), a package install through the proxy, and the
-negative cache. Eight PASS lines mean everything worked:
+in-image unit/integration tests (as the non-root `mirror` user), boots
+the mirror on a throwaway docker network - as the uid:gid mapped from
+`docker-compose.yml` - next to a genuine `archlinux:latest` client and
+checks the full path - health/status endpoints, db cache miss →
+upstream fetch → cache hit with host-user-owned cache files, a cold
+`pacman -Sy` (including the `xlibre`/`sonicde` repos and real signature
+verification), a warm sync that must not touch upstream databases
+(DB_TTL), a package install through the proxy, and the negative cache.
+Eight PASS lines mean everything worked:
 
 ```bash
 ./e2e.sh                 # full run (~2-4 min), cleans up after itself

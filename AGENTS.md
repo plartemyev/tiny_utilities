@@ -280,7 +280,18 @@
       `arch-cache-mirror/test_mirror.py` now locks the defaults contract;
     - aiohttp: mutating `app[...]` after the application started emits "Changing state of started or
       joined application is deprecated" (3.14) — share a plain dict set before startup and mutate it
-      in place instead.
+      in place instead;
+    - non-root in-container runtime (since 2026-10-06): the image ships a `mirror` user (uid/gid 1000)
+      and `docker-compose.yml` maps it to the compose caller via `user: "${UID:-1000}:${GID:-1000}"` so
+      the bind-mounted `./cache` stays host-user owned. Peculiarities: bash's `UID` is a readonly,
+      NOT-exported shell variable — `UID=$(id -u) docker compose ...` dies with "readonly variable" and
+      plain invocation leaves compose blind to it, so overrides must go through a `.env` file or
+      `env UID=... GID=...` (zsh: both readonly as well); with a `:-` default compose interpolates
+      silently (no warning), so a uid≠1000 host without the override only surfaces as a container
+      crash-loop (PermissionError on the cache dir). `e2e.sh` derives both env AND the compose `user:`
+      value from `docker compose config --format json` and passes it as `docker run --user`, plus a
+      `stat -c %u` ownership assertion on cached files; because cache files are host-uid owned, the
+      old root-wipe-through-a-container cleanup step is gone (plain `rm -rf` works).
 
 
 ## 1. Think Before Coding

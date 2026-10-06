@@ -4,9 +4,12 @@
 # Builds the image, boots the mirror on a throwaway docker network next to
 # a real Arch client container and verifies the whole path:
 #
-#   stage 1  unit + integration tests inside the built image
-#   stage 2  proxy boots; /healthz and / status page respond
-#   stage 3  db cache-miss -> upstream fetch -> cache-hit on second request
+#   stage 1  unit + integration tests inside the built image (as the
+#            non-root mirror user)
+#   stage 2  proxy boots (as the compose-mapped uid:gid); /healthz and /
+#            status page respond
+#   stage 3  db cache-miss -> upstream fetch -> cache-hit on second request;
+#            cache files on the host are owned by the calling user
 #   stage 4  pacman -Sy on a cold client (core/extra/multilib through the
 #            proxy, real signature verification)
 #   stage 5  xlibre + sonicde repos sync through the proxy (default
@@ -51,6 +54,7 @@ done
 PASS=0
 LOG_PID=""
 HOST_PORT=""
+HOST_UID=$(id -u)
 cleanup() {
 	if [ "$KEEP" = 1 ]; then
 		echo "kept stack: docker logs $PROXY; proxy on http://127.0.0.1:${HOST_PORT:-?}; cache in $SCRATCH"
@@ -59,10 +63,6 @@ cleanup() {
 	[ -n "$LOG_PID" ] && kill "$LOG_PID" 2>/dev/null || true
 	docker rm -f "$CLIENT" "$PROXY" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
-	# the bind-mounted cache is written by the container's root user; wipe
-	# it through a container before removing the scratch dir
-	docker run --rm -v "$PWD/$SCRATCH:/s" "$IMAGE" \
-		sh -c 'rm -rf /s/cache' >/dev/null 2>&1 || true
 	rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
@@ -83,28 +83,34 @@ if ! docker run --rm "$IMAGE" python /app/test_mirror.py >"$SCRATCH/unit.log" 2>
 	fail "in-image unit/integration tests"
 fi
 grep -q '^ok   mirror-flow' "$SCRATCH/unit.log" || fail "in-image tests did not run"
-ok "unit + integration tests (in image)"
+[ "$(docker run --rm "$IMAGE" id -u)" = 1000 ] || fail "image must default to the non-root mirror user"
+ok "unit + integration tests (in image, non-root)"
 
 echo "== stage 2: boot proxy"
-# single source of truth: the mirror/repo env comes from docker-compose.yml
-# (compose also resolves the $$ -> $ escaping), the container gets it via
-# --env-file
-docker compose config --format json | python3 -c '
-import json, sys
+# single source of truth: the mirror/repo env AND the uid:gid mapping come
+# from docker-compose.yml (compose also resolves the $$ -> $ escaping), the
+# container gets them via --env-file / --user
+PROXY_USER=$(docker compose config --format json | python3 -c '
+import json, os, sys
 cfg = json.load(sys.stdin)
-env = cfg["services"]["arch-cache-mirror"]["environment"]
-with open(sys.argv[1], "w") as f:
+svc = cfg["services"]["arch-cache-mirror"]
+env = svc["environment"]
+with open(sys.argv[2], "w") as f:
     for key, value in env.items():
         if value is not None:
             # config --format json keeps compose escaping: $$ means a
             # literal $ - apply the same resolution compose would at
             # container creation
             f.write("%s=%s\n" % (key, value.replace("$$", "$")))
-' "$SCRATCH/envfile"
+# fall back to the calling user when the compose file has no user: entry
+print(svc.get("user") or "%d:%d" % (os.getuid(), os.getgid()))
+' - "$SCRATCH/envfile") || fail "could not derive env/user from docker-compose.yml"
 grep -q '^EXTRA_REPOS=' "$SCRATCH/envfile" || fail "could not derive EXTRA_REPOS from docker-compose.yml"
+[ -n "$PROXY_USER" ] || fail "could not derive user from docker-compose.yml"
 docker network create "$NET" >/dev/null
 docker rm -f "$PROXY" "$CLIENT" >/dev/null 2>&1 || true
 docker run -d --name "$PROXY" --network "$NET" \
+	--user "$PROXY_USER" \
 	--env-file "$SCRATCH/envfile" \
 	-v "$PWD/$SCRATCH/cache:/var/cache/arch-mirror" \
 	-p 127.0.0.1::8080 "$IMAGE" >/dev/null
@@ -127,7 +133,9 @@ curl -fsS -o "$SCRATCH/core.db.2" "http://127.0.0.1:$HOST_PORT/core/os/x86_64/co
 AFTER_MISS2=$(logcount 'miss core/x86_64/core\.db ')
 [ "$AFTER_MISS2" -eq "$AFTER_MISS" ] || fail "second core.db fetch must be served from cache"
 cmp -s "$SCRATCH/core.db.1" "$SCRATCH/core.db.2" || fail "cached db differs from first response"
-ok "core.db miss -> upstream fetch -> cache hit (identical bytes)"
+[ "$(stat -c %u "$SCRATCH/cache/core/os/x86_64/core.db")" = "$HOST_UID" ] \
+	|| fail "cached file must be owned by the calling user on the host"
+ok "core.db miss -> upstream fetch -> cache hit (identical bytes, host-user owned)"
 
 echo "== stages 4-6: pacman client (cold sync, extra repos, install)"
 # client config lives on the host so both client runs share it

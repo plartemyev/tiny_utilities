@@ -9,7 +9,17 @@ RUN pacman-key --init \
 	&& pacman -Syu --noconfirm python-aiohttp \
 	&& pacman -Scc --noconfirm
 
+# Unprivileged runtime user; docker-compose.yml maps this uid:gid to the
+# calling host user so the bind-mounted cache stays host-user owned
+# (see README.md "Caveats"). Default 1000 also matches a bare
+# `docker run` on typical single-user hosts.
+RUN groupadd -g 1000 mirror \
+	&& useradd -u 1000 -g mirror -M -d /var/cache/arch-mirror -s /usr/bin/nologin mirror \
+	&& install -d -o mirror -g mirror /var/cache/arch-mirror
+
 COPY server.py test_mirror.py /app/
+
+USER mirror
 
 ENV LISTEN_ADDR=0.0.0.0 \
 	LISTEN_PORT=8080 \
@@ -26,6 +36,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 	timeout=4\
 	).status == 200 else 1)"
 
-# Runs as root so the (bind-mounted) cache volume is always writable; see
-# README.md ("Security") if you want to drop privileges.
+# Non-root (mirror, uid/gid 1000): port 8080 is unprivileged and the cache
+# is a bind mount whose host side is owned by the mapped user.
 CMD ["python", "/app/server.py"]

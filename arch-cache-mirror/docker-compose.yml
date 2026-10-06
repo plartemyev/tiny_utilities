@@ -3,9 +3,13 @@ services:
     build: .
     image: arch-cache-mirror:latest
     container_name: arch-cache-mirror
+    # run the mirror as the calling host user so ./cache stays host-user
+    # for a host uid != 1000 set UID/GID
+    # in a .env file or use: env UID=$(id -u) GID=$(id -g) docker compose up)
+    user: "${UID:-1000}:${GID:-1000}"
     restart: unless-stopped
     ports:
-      - "8080:8080"           # host:container; point pacman at http://<host-ip>:8080
+      - "8080:8080"
     environment:
       # cache pruning: 0 disables a limit
       CACHE_SIZE: "20G"       # total cache cap, e.g. 20G / 500M / 0
