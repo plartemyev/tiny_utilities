@@ -1,0 +1,3 @@
+# keep this (empty) cache directory in git; its runtime contents stay local
+*
+!.gitignore

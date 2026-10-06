@@ -291,7 +291,14 @@
       crash-loop (PermissionError on the cache dir). `e2e.sh` derives both env AND the compose `user:`
       value from `docker compose config --format json` and passes it as `docker run --user`, plus a
       `stat -c %u` ownership assertion on cached files; because cache files are host-uid owned, the
-      old root-wipe-through-a-container cleanup step is gone (plain `rm -rf` works);
+      old root-wipe-through-a-container cleanup step is gone (plain `rm -rf` works); dockerd
+      auto-creates a MISSING bind-mount host path (e.g. `./cache` after an `rm -rf`) as
+      root:root 0755 at container create, so the next `up` crash-loops the non-root mirror
+      (`PermissionError: /var/cache/arch-mirror/tmp` in the startup `os.makedirs`) even with
+      the UID/GID override in place — the repo ships an empty `cache/` via
+      `cache/.gitignore` (`*` + `!.gitignore`), so fresh clones are safe; after an
+      `rm -rf cache` recreate it as the invoking user before `up` (an empty root-owned
+      leftover needs no sudo: `rmdir cache && mkdir cache`; documented in README Caveats);
     - host-exposed port is **8282** (since 2026-10-06; was 8080), published as `8282:8080` — 8080 is
       heavily contended by local tools (dev servers, Jenkins, qBittorrent, ...) and 8282 is rarely
       taken (IANA: `libelle`, a rare enterprise tool) while staying below the Linux ephemeral range

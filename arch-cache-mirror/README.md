@@ -51,7 +51,7 @@ LAN):
 
 ```bash
 cd arch-cache-mirror
-docker compose up -d --build     # cache persists in ./cache/
+env UID=$(id -u) GID=$(id -g) docker compose up -d --build     # cache persists in ./cache/
 ```
 
 On every Arch machine of the house, put this as the **first** line of
@@ -187,9 +187,14 @@ Docker everywhere nowadays.
   in a `.env` file next to `docker-compose.yml`
   (`env UID=$(id -u) GID=$(id -g) docker compose up` also works). A
   mismatch fails loudly: the mirror cannot write the cache dir and
-  exits. A cache directory created by older, root-running deployments is
-  migrated once on the host: `sudo chown -R $(id -u):$(id -g) cache` or
-  simply `sudo rm -rf cache` (it is only a cache).
+  exits. An empty `cache/` ships in the repository (kept via
+  `cache/.gitignore`; its runtime contents stay ignored), so a fresh
+  clone already has a user-owned cache dir. If you delete it later,
+  recreate it before `up`: `mkdir cache` - when `./cache` is missing at
+  container create, dockerd auto-creates the bind-mount source as
+  `root:root` (the daemon runs as root), which trips exactly that
+  PermissionError crash-loop (an empty root-owned leftover needs no
+  sudo: `rmdir cache && mkdir cache`).
 - If you keep real upstream mirrors below the proxy line in
   `mirrorlist`, pacman will use them as fallback when the proxy is
   down (nice), but the same file must not be `Include`d by the extra
