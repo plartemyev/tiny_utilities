@@ -291,7 +291,12 @@
       crash-loop (PermissionError on the cache dir). `e2e.sh` derives both env AND the compose `user:`
       value from `docker compose config --format json` and passes it as `docker run --user`, plus a
       `stat -c %u` ownership assertion on cached files; because cache files are host-uid owned, the
-      old root-wipe-through-a-container cleanup step is gone (plain `rm -rf` works).
+      old root-wipe-through-a-container cleanup step is gone (plain `rm -rf` works);
+    - host-exposed port is **8282** (since 2026-10-06; was 8080), published as `8282:8080` — 8080 is
+      heavily contended by local tools (dev servers, Jenkins, qBittorrent, ...) and 8282 is rarely
+      taken (IANA: `libelle`, a rare enterprise tool) while staying below the Linux ephemeral range
+      (32768-60999). Deliberate: do not "normalize" back to 8080; the container-internal listen port
+      stays 8080 (LISTEN_PORT default, Dockerfile healthcheck, e2e in-network URLs).
 
 
 ## 1. Think Before Coding

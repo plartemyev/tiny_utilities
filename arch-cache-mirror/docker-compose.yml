@@ -9,7 +9,9 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # host 8282 -> container 8080: 8282 is rarely taken by local tools and
+      # stays below the 32768-60999 ephemeral port range
+      - "8282:8080"
     environment:
       # cache pruning: 0 disables a limit
       CACHE_SIZE: "20G"       # total cache cap, e.g. 20G / 500M / 0

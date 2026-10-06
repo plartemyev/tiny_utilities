@@ -10,7 +10,7 @@ first request of any file.
 LAN clients (pacman)                 arch-cache-mirror (Docker)         upstream mirrors
 +-----------------+   GET /extra/os/x86_64/   +----------------------+   +-------------------+
 | Server =        |  htop-3.5.3-1-...pkg.zst | cache hit?  -> serve |-->| geo.mirror.pkgbuild.com
-| http://nas:8080 | -----------------------> | miss?       -> stream|-->| mirror.rackspace.com
+| http://nas:8282 | -----------------------> | miss?       -> stream|-->| mirror.rackspace.com
 | /$repo/os/$arch |    bytes as they arrive  |  to client + to cache|-->| packages.xlibre.net/arch/stable
 +-----------------+                          +----------------------+   | sonicde-arch.github.io
                                                                           +-------------------+
@@ -44,8 +44,10 @@ Behaviour per request:
 
 ## Quickstart
 
-On the box that will host the cache (any machine with Docker; port 8080
-must be reachable from the LAN):
+On the box that will host the cache (any machine with Docker; host port
+8282 is published to the container's 8080 - deliberately uncommon and
+below the 32768-60999 ephemeral range - and must be reachable from the
+LAN):
 
 ```bash
 cd arch-cache-mirror
@@ -56,7 +58,7 @@ On every Arch machine of the house, put this as the **first** line of
 `/etc/pacman.d/mirrorlist`:
 
 ```
-Server = http://<host-ip>:8080/$repo/os/$arch
+Server = http://<host-ip>:8282/$repo/os/$arch
 ```
 
 and attach the extra repositories in `/etc/pacman.conf` (they reuse the
@@ -70,7 +72,7 @@ Include = /etc/pacman.d/mirrorlist
 Include = /etc/pacman.d/mirrorlist
 ```
 
-Then `pacman -Syu` as usual. Check `curl http://<host-ip>:8080/` for a
+Then `pacman -Syu` as usual. Check `curl http://<host-ip>:8282/` for a
 status page (configured repos, cache size, last GC) and `docker logs`
 for per-request hit/miss lines.
 
@@ -96,7 +98,7 @@ Without docker compose:
 
 ```bash
 docker build -t arch-cache-mirror .
-docker run -d --name arch-cache-mirror -p 8080:8080 \
+docker run -d --name arch-cache-mirror -p 8282:8080 \
     --user "$(id -u):$(id -g)" \
     -v /var/cache/arch-mirror:/var/cache/arch-mirror \
     -e OFFICIAL_MIRRORS='https://geo.mirror.pkgbuild.com/$repo/os/$arch https://mirror.rackspace.com/archlinux/$repo/os/$arch' \
