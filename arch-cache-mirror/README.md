@@ -204,9 +204,8 @@ Docker everywhere nowadays.
   repos (their Server lines would 404 noisily there). Either keep the
   mirrorlist proxy-only, or use a second file for the official repos.
 - A db first-fetch (repo not cached at all) streams to the client while
-  it downloads - bytes flow continuously, but pacman shows an unknown
-  size for that one transfer (chunked, since some upstreams lie about
-  Content-Length). Concurrent first requests for the same file share the
+  it downloads - bytes flow continuously, with the true size from
+  upstream. Concurrent first requests for the same file share the
   one download, exactly like package misses. Definitive
   upstream 404s are negative-cached for 5 minutes (`NEGATIVE_TTL_SECONDS`
   in `server.py`): a `.db.sig` that starts to exist upstream, or a
@@ -217,10 +216,15 @@ Docker everywhere nowadays.
   client see the cached copy (and the fresh one lands for the next
   sync). Set `FRESH_WAIT=0` for strictly-non-blocking behavior or
   raise it if your upstream is reliably slow.
-- Some upstreams declare a wrong `Content-Length` (observed on a
-  GitHub Pages edge serving `sonicde.db` a few bytes short): since dbs
-  are downloaded whole and served from the cache file, clients never
-  notice; the truncated body is accepted and logged with a warning.
+- Upstream content negotiation: the proxy requests
+  `Accept-Encoding: identity` from upstreams. CDN-fronted repos (GitHub
+  Pages on Fastly) otherwise serve gzip variants whose `Content-Length`
+  describes the compressed bytes while the proxy streams the
+  decompressed body - pacman 7.x compares the relayed length against the
+  size recorded in the repository database and aborts with `Maximum file
+  size exceeded` (curl error 63). Identity encoding removes the variant
+  mismatch at the source; a genuinely truncated upstream transfer aborts
+  the stream and nothing lands in the cache.
 - On upstream mirror rotation the local layout stays stable; clients
   never need a mirrorlist change.
 

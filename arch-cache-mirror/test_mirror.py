@@ -16,7 +16,7 @@ import tempfile
 import time
 import traceback
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientError, ClientSession, web
 from aiohttp.test_utils import TestServer
 
 import server
@@ -409,17 +409,25 @@ async def test_mirror_flow(base: str) -> None:
             assert upstream["test.db"]["calls"] == 3
             assert open(cached_db, "rb").read() == b"DB2"
 
-            # upstream declaring more bytes than it sends: the first fetch
-            # streams chunked (no Content-Length to contradict) and keeps
-            # what arrived; from the cache on, responses carry exact sizes
+            # upstream declaring more bytes than it sends (a genuinely
+            # truncated transfer - the proxy requests identity encoding, so
+            # a Content-Length mismatch can never be a variant artifact):
+            # the stream aborts, nothing lands in the cache, and further
+            # requests keep retrying the upstream (truncations are never
+            # negative-cached)
             upstream["lie.db"] = dict(body=b"DB-LIE", mtime=now, calls=0, cl_delta=3)
-            async with http.get(base_url + "/test/os/x86_64/lie.db") as r:
-                assert r.status == 200
-                assert "Content-Length" not in r.headers
-                assert await r.read() == b"DB-LIE"
-            async with http.get(base_url + "/test/os/x86_64/lie.db") as r:
-                assert r.headers["Content-Length"] == "6"
-                assert await r.read() == b"DB-LIE"  # and again from cache
+            lie_cached = os.path.join(cache_dir, "test/os/x86_64/lie.db")
+            for _ in range(2):
+                try:
+                    async with http.get(base_url + "/test/os/x86_64/lie.db") as r:
+                        await r.read()
+                except (ClientError, OSError):
+                    pass
+                else:
+                    raise AssertionError("truncated upstream must fail the transfer")
+            assert not os.path.exists(lie_cached)
+            assert upstream["lie.db"]["calls"] == 2, \
+                "truncations must not be negative-cached"
 
             # upstream 404 for a missing package passes through, and an
             # unknown repository is a local 404; the definitive 404 is

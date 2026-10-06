@@ -254,12 +254,17 @@
       so conditional db revalidation is pointless against them; arch-cache-mirror instead triggers a
       bounded fresh retrieval (FRESH_WAIT, 5 s default) on every stale db request and falls back to
       serving the cached copy while the refresh continues in the background;
-    - GitHub Pages edges can serve a short body with a stale Content-Length depending on the client's
-      vantage point: `sonicde-arch.github.io/x86_64/sonicde.db` reported `Content-Length: 21502` with
-      a 21500-byte body from a docker container while the host consistently got `21500/21500` — strict
-      clients (pacman's curl, aiohttp, urllib) abort with "transfer truncated" although the whole file
-      arrived. arch-cache-mirror buffers db refresh downloads (they are small) and keeps what arrived
-      (first fetches stream chunked instead), so clients always get self-consistent responses;
+    - GitHub Pages (Fastly) serves **gzip Vary variants** keyed on Accept-Encoding (misdiagnosed for
+      a week as "upstreams lying about Content-Length"): with aiohttp's default
+      `Accept-Encoding: gzip, deflate`, `sonicde-arch.github.io` answers `content-encoding: gzip` with
+      the COMPRESSED Content-Length (sonic-silver-sddm pkg: 7406532 vs raw 7405537; sonicde.db:
+      21502 vs 21500) while aiohttp hands the proxy the auto-decompressed body — the relayed CL
+      mismatch made pacman 7.x abort with curl error 63 "Maximum file size exceeded" (libalpm sets
+      CURLOPT_MAXFILESIZE_LARGE to the db's %CSIZE%; hit 2026-10-06 on a real sonicde sync). Direct
+      curl sends no Accept-Encoding and always got the raw object, which is why the artifact looked
+      vantage-dependent. Fix: the mirror's upstream ClientSession sends `Accept-Encoding: identity`
+      (server.py `on_startup`); a CL/body mismatch can now only be a genuine truncation, which aborts
+      the stream and caches nothing (the keep-what-arrived tolerance died with the misdiagnosis);
     - pacman aborts any download that transfers < 1 B/s for 10 s (curl low-speed default) — a proxy
       that buffers a large db (e.g. `extra.db` 8.4 MB on a slow moment) before sending the first
       client byte gets its clients killed; this is the second reason dbs are never proxied live but

@@ -21,8 +21,8 @@ same URL layout.  On a request the proxy:
   10 s low-speed abort) - past that budget the cached copy is served
   while the refresh continues in the background.  A first-time fetch
   (nothing cached yet) follows the package-miss semantics exactly: one
-  shared download under the per-file lock, streamed to the client
-  chunked while it fills the cache, so even a multi-MB db on a slow
+  shared download under the per-file lock, streamed to the client while
+  it fills the cache, so even a multi-MB db on a slow
   upstream keeps bytes flowing and concurrent clients are served from
   the cache once it lands.  Definitive upstream 404s (e.g. the `.db.sig`
   files official repos never serve) are remembered for 5 minutes so
@@ -53,7 +53,6 @@ from functools import cmp_to_key
 
 from aiohttp import (
     ClientError,
-    ClientPayloadError,
     ClientSession,
     ClientTimeout,
     TCPConnector,
@@ -497,7 +496,6 @@ async def handle_repo(request: web.Request) -> web.StreamResponse:
 
 async def _fetch_upstream(app: web.Application, request: web.Request | None,
                           repo: Repo, arch: str, filename: str, local: str, *,
-                          keep_partial: bool = False,
                           revalidate: bool = False,
                           ) -> tuple[str, web.StreamResponse | None, int | None]:
     """Download `filename` from the first reachable upstream mirror into
@@ -508,16 +506,14 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
     the per-file lock when a concurrent fetch of the same file is
     possible.
 
-    keep_partial (metadata only): an upstream that sends less than its
-    declared Content-Length (GitHub Pages does) still yields a complete
-    chunked response and a cached copy of what arrived; without it
-    (packages) a short body aborts the stream instead, since the cache
-    must never gain a partial package - the client retries the whole
-    file.  keep_partial also omits the Content-Length passthrough so the
-    chunked framing stays self-consistent.
-
     revalidate (background refresh only): send If-Modified-Since from the
     cached copy's mtime and treat 304 as done.
+
+    The upstream session requests identity encoding, so a body shorter
+    than the declared Content-Length can only be a genuinely truncated
+    transfer: the stream is aborted (dropping the client connection when
+    bytes already flowed - the client retries the whole file), nothing
+    lands in the cache, and the usual mirror/retry machinery applies.
 
     Returns (outcome, response, last-upstream-status) with outcome 'ok',
     'not-modified' or 'failed' ('failed' means every mirror was exhausted
@@ -558,24 +554,17 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
                     if request is not None:
                         response = web.StreamResponse(
                             headers={"Content-Type": "application/octet-stream"})
-                        if length is not None and not keep_partial:
+                        if length is not None:
                             response.content_length = int(length)
                         await response.prepare(request)
                         prepared = True
                     received = 0
                     with open(tmp, "wb") as out:
-                        try:
-                            async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
-                                out.write(chunk)
-                                received += len(chunk)
-                                if response is not None:
-                                    await response.write(chunk)
-                        except ClientPayloadError as exc:
-                            if received == 0 or not keep_partial:
-                                raise  # nothing arrived, or package: retry/next mirror
-                            LOG.warning("upstream %s sent %d of %s declared bytes; "
-                                        "keeping what arrived (%s)",
-                                        url, received, length, exc)
+                        async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
+                            out.write(chunk)
+                            received += len(chunk)
+                            if response is not None:
+                                await response.write(chunk)
                     os.replace(tmp, local)
                     if response is not None:
                         await response.write_eof()
@@ -665,8 +654,7 @@ async def _refresh_db(app: web.Application, repo: Repo, arch: str,
             LOG.info("ref  %s/%s/%s (db already fresh)", repo.name, arch, filename)
             return "ok", None
         outcome, _, last_status = await _fetch_upstream(
-            app, None, repo, arch, filename, local,
-            keep_partial=True, revalidate=True)
+            app, None, repo, arch, filename, local, revalidate=True)
     return outcome, last_status
 
 
@@ -689,7 +677,7 @@ async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
         async with file_lock(app, local):
             if not os.path.exists(local):  # a concurrent client may have won
                 outcome, response, last_status = await _fetch_upstream(
-                    app, request, repo, arch, filename, local, keep_partial=True)
+                    app, request, repo, arch, filename, local)
                 if outcome != "ok":
                     return _upstream_failed(filename, last_status)
                 return response
@@ -742,7 +730,16 @@ async def on_startup(app: web.Application) -> None:
     app["client"] = ClientSession(
         timeout=UPSTREAM_TIMEOUT,
         connector=TCPConnector(limit=32),
-        headers={"User-Agent": "arch-cache-mirror/1.0"},
+        # Accept-Encoding: identity - CDNs in front of repo mirrors (e.g.
+        # GitHub Pages on Fastly) key gzip Vary variants whose
+        # Content-Length describes the compressed bytes while aiohttp hands
+        # us the decompressed body.  Relaying that length made pacman abort
+        # with curl error 63 "Maximum file size exceeded" (libalpm sets the
+        # curl max-file-size to the size recorded in the repository
+        # database).  Identity encoding serves the raw object, so the
+        # declared length always matches the body we stream and cache.
+        headers={"User-Agent": "arch-cache-mirror/1.0",
+                 "Accept-Encoding": "identity"},
     )
     app["gc_task"] = asyncio.create_task(_gc_loop(app))
     LOG.info("serving %d repositories on %s:%d (cache %s)",
