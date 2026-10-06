@@ -135,6 +135,8 @@ printf 'Server = http://%s:8080/$repo/os/$arch\n' "$PROXY" >"$SCRATCH/mirrorlist
 docker run --rm archlinux:latest cat /etc/pacman.conf >"$SCRATCH/pacman.conf"
 cat >>"$SCRATCH/pacman.conf" <<CFG
 
+# SigLevel Never: throwaway client - the e2e tests the proxy path (dbs
+# and packages through the mirror), not the repos' key management
 [xlibre]
 SigLevel = Never
 Include = /etc/pacman.d/mirrorlist

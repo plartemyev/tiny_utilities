@@ -74,10 +74,23 @@ Then `pacman -Syu` as usual. Check `curl http://<host-ip>:8080/` for a
 status page (configured repos, cache size, last GC) and `docker logs`
 for per-request hit/miss lines.
 
-Signature/key setup for the extra repos is unchanged by the proxy (it
-shuffles bytes, including `.sig` files): import the repo owner's key as
-you would when using the upstream directly. The example above sets
-`SigLevel = Never`, which is *not* recommended for real machines.
+The extra repos bring their own signing keys, and the proxy does not
+change anything about them (it only shuffles bytes, including `.sig`
+files - verification happens on your machine, exactly as with the
+upstream directly). With the stock `SigLevel = Required
+DatabaseOptional` (the pacman default), `pacman -Sy` works right away -
+a missing *database* signature is fine - and installing a package from
+them asks for the repo owner's key once. Import it as described on the
+respective repo's page; typically (the key id is shown in pacman's
+"unknown trust" error output, and `<repo>` is `xlibre`/`sonicde`):
+
+    sudo pacman-key --recv-keys <KEYID>
+    sudo pacman-key --lsign-key <KEYID>
+
+Keep the default SigLevel for real machines. `SigLevel = Never` would
+switch package verification for those repos off entirely and is not
+used or recommended anywhere here (it exists only inside `e2e.sh`, for
+its disposable test client).
 
 Without docker compose:
 
