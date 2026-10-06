@@ -234,11 +234,34 @@ def test_pacman_tuning_and_repos_present():
     assert "'s/^#Include/Include/'" not in script
     assert "[xlibre-stable]" in script
     assert "[sonicde]" in script
+    assert "Server = https://packages.xlibre.net/arch/stable/$arch" in script
+    assert "Server = https://sonicde-arch.github.io/$arch" in script
     assert "pacman-key --lsign-key B97F7C613F359424" in script
     assert "recv-keys" not in script
     assert "3B87898C73F11DF5" in script
     assert "retry pacman -Sy --needed --noconfirm" in script
     assert "retry curl -O https://xlibre-arch.github.io/xlibre-archlinux.asc" in script
+
+
+def test_no_mirrorlist_writes_without_local_mirror():
+    script = build_install_script(make_cfg())
+    assert "> /etc/pacman.d/mirrorlist" not in script
+
+
+def test_local_mirror_is_the_sole_pacman_source():
+    script = build_install_script(make_cfg(local_mirror="http://192.168.1.10:8282"))
+    write = ("printf '%s\\n' 'Server = http://192.168.1.10:8282/$repo/os/$arch'"
+             " > /etc/pacman.d/mirrorlist")
+    assert script.count(write) == 2  # live environment + installed system
+    # the live write lands before pacstrap, the chroot write after it
+    assert script.index(write) < script.index("pacstrap")
+    assert script.rindex(write) > script.index("pacstrap")
+    assert "Server = https://packages.xlibre.net/arch/stable/$arch" not in script
+    assert "Server = https://sonicde-arch.github.io/$arch" not in script
+    # extra repos point at the mirror's own repo segments (upstream repo
+    # names; the pacman section [xlibre-stable] cannot use the $repo template)
+    assert "Server = http://192.168.1.10:8282/xlibre/os/$arch" in script
+    assert "Server = http://192.168.1.10:8282/sonicde/os/$arch" in script
 
 
 def test_locale_line_is_escaped_for_sed():

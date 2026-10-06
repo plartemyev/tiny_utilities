@@ -264,17 +264,22 @@ class InstallConfig:
     # fstab discard option; VM targets additionally mount root with the
     # continuous discard option so freed extents unmap the drive image at once.
     discard: bool = False
+    # Base URL of the local arch-cache-mirror (http://<host-ip>:8282) when
+    # --local-mirror is set: the sole pacman source for the live environment
+    # and the installed system, extra-repo Server lines included.
+    local_mirror: str | None = None
 
 
 def build_install_script(cfg: InstallConfig) -> str:
-    return "\n".join([
+    return "\n".join(part for part in [
         _header(),
         _partitioning(cfg.disk),
         _formatting(cfg),
+        _local_mirror(cfg),
         _pacstrap(cfg),
         _fstab(),
         _chroot(cfg),
-    ])
+    ] if part)
 
 
 def _header() -> str:
@@ -311,6 +316,37 @@ def _formatting(cfg: InstallConfig) -> str:
         f"mount --mkdir{options} {_sh(cfg.disk + '2')} /mnt/new-root\n"
         f"mount --mkdir {_sh(cfg.disk + '1')} /mnt/new-root/boot\n"
     )
+
+
+def _local_mirror(cfg: InstallConfig) -> str:
+    # Sole mirrorlist entry for the live environment: pacstrap downloads the
+    # official repos through the local arch-cache-mirror, so reinstalls hit
+    # its package cache instead of the public mirrors.
+    if cfg.local_mirror is None:
+        return ""
+    return (
+        "log 'Pointing the live pacman mirrorlist at the local cache mirror'\n"
+        f"printf '%s\\n' {_sh(_mirrorlist_line(cfg))} > /etc/pacman.d/mirrorlist\n"
+    )
+
+
+def _mirrorlist_line(cfg: InstallConfig) -> str:
+    return f"Server = {cfg.local_mirror}/$repo/os/$arch"
+
+
+def _extra_repo_servers(cfg: InstallConfig) -> tuple[str, str]:
+    """Server lines for the [xlibre-stable] and [sonicde] pacman sections.
+
+    With a local cache mirror both point at the mirror's own repo segments,
+    which carry the upstream repo names (xlibre, sonicde) — pacman requests
+    the database named after the section (xlibre-stable), so the sections
+    cannot reuse the mirrorlist's $repo template here.
+    """
+    if cfg.local_mirror is None:
+        return ("Server = https://packages.xlibre.net/arch/stable/$arch",
+                "Server = https://sonicde-arch.github.io/$arch")
+    return (f"Server = {cfg.local_mirror}/xlibre/os/$arch",
+            f"Server = {cfg.local_mirror}/sonicde/os/$arch")
 
 
 def _pacstrap(cfg: InstallConfig) -> str:
@@ -360,6 +396,7 @@ def _fstab() -> str:
 def _chroot(cfg: InstallConfig) -> str:
     user = _sh(cfg.username)
     home = f"/home/{cfg.username}"
+    xlibre_server, sonicde_server = _extra_repo_servers(cfg)
     lines = [
         "log 'Configuring the new system (arch-chroot)'",
         "arch-chroot /mnt/new-root /bin/bash <<'CHROOT'",
@@ -408,13 +445,17 @@ def _chroot(cfg: InstallConfig) -> str:
         f"sed -i '/^\\[options\\]$/a IgnorePkg = {IGNORE_PKG}' /etc/pacman.conf",
         "sed -i 's/^#\\[multilib\\]/[multilib]/' /etc/pacman.conf",
         "sed -i '/^\\[multilib\\]$/,/^$/ s/^#Include/Include/' /etc/pacman.conf",
+        *(["",
+           f"log 'Pointing pacman at the local cache mirror ({cfg.local_mirror})'",
+           f"printf '%s\\n' {_sh(_mirrorlist_line(cfg))} > /etc/pacman.d/mirrorlist",
+           ] if cfg.local_mirror else []),
         "cat >> /etc/pacman.conf <<'REPOS'",
         "",
         "[xlibre-stable]",
-        "Server = https://packages.xlibre.net/arch/stable/$arch",
+        xlibre_server,
         "",
         "[sonicde]",
-        "Server = https://sonicde-arch.github.io/$arch",
+        sonicde_server,
         "REPOS",
         "",
         "log 'Fetching and signing third-party repository keys'",

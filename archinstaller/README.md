@@ -101,7 +101,7 @@ poetry run archinstaller \
     [--username nameless] \
     --ssh-pubkey 'ssh-ed25519 AAAA... comment'   # or a path: --ssh-pubkey ~/.ssh/id_ed25519.pub \
     [--locale en_US.UTF-8] [--swap-size 16G] \
-    [--graphical] [--opencode]
+    [--graphical] [--opencode] [--local-mirror]
 ```
 
 Password handling:
@@ -142,6 +142,7 @@ before connecting.
 | `--timezone` | `Asia/Bangkok` | timezone set on the installed system via `timedatectl set-timezone` after first boot |
 | `--graphical` | off | console-only package list by default; with the flag the Xlibre X server stack is installed first, then the Sonic DE base (`sonicde-meta`, `sonic-ecco`, `sonic-win`, `sonic-workspace`), then the graphical packages (this order makes the `xorg-server` and KDE/Plasma dependencies resolve to their xlibre/sonic replacements instead of conflicting), the SDDM desktop session is installed with autologin for the created user (`/etc/sddm.conf.d/10-archinstaller.conf`; the `Session=` entry is auto-detected from the installed session desktop files — SDDM refuses to autologin without it), the ACPI power button is wired for clean host-side shutdown — on VM targets PowerDevil is masked (its logind inhibitor blocks the button while its X11 delivery never fires it, making `VBoxManage controlvm acpipowerbutton` a no-op; logind's power-key default then shuts the machine down in ~5 s) and the KDE power profiles are seeded with the Shutdown action for stacks where PowerDevil's button delivery works (e.g. Wayland) — and on VirtualBox targets the full `virtualbox-guest-utils` (X11/Wayland integration) replaces the headless `virtualbox-guest-utils-nox` (non-VirtualBox targets install neither) |
 | `--opencode` | off | additionally deploy the opencode web server as a systemd **user** service on port `49374` (opens the port in firewalld; see below) |
+| `--local-mirror` | off | point pacman at the local `arch-cache-mirror` sibling service on this host (host port `8282`) for the whole install — live environment and installed system; verified reachable before the install starts (see below) |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
 | `--no-subnet-scan` | off | if the rebooted target does not answer at `--target` in time, the tool scans the surrounding /24 (TCP 22 probe of the 254 host addresses, then a key-authenticated SSH login) for the machine reporting the configured hostname and continues at that address; this flag disables the fallback |
@@ -191,6 +192,39 @@ hardcodes the HTTP basic-auth username to `opencode` —
 username ...` is rejected as an unknown key — so the summary reports
 `opencode` as the connection username. Newer opencode builds honour
 `OPENCODE_SERVER_USERNAME` if a custom username is ever wanted.
+
+### Local package cache mirror (`--local-mirror`)
+
+For (re-)installs on the home LAN the sibling `arch-cache-mirror` service
+(a single Docker container on the host running this tool, host port
+`8282`) turns repeated installs into cache hits. With the flag the tool:
+
+* resolves the host's **primary (default-route) interface** and its IPv4
+  address (`ip -4 route get 1.1.1.1` → `src`) and advertises the mirror as
+  `http://<host-ip>:8282`;
+* verifies from the live environment that the mirror answers
+  (`/healthz`) **before** the install starts and aborts with a clear
+  error otherwise — e.g. the container is down, or the target is behind
+  a jump host on a different network (the mirror is a plain-LAN service);
+* replaces the live ISO's `/etc/pacman.d/mirrorlist` with the single line
+  `Server = http://<host-ip>:8282/$repo/os/$arch`, so pacstrap downloads
+  the official repos (`core`, `extra`, `multilib`) through the cache;
+* writes the same single-line mirrorlist into the installed system (in
+  the chroot, before its first `pacman -Sy`) and rewrites the extra
+  repository `Server` lines to the same server: `[xlibre-stable]` →
+  `http://<host-ip>:8282/xlibre/os/$arch`, `[sonicde]` →
+  `http://<host-ip>:8282/sonicde/os/$arch`. The literal mirror repo
+  segments are required because pacman requests the database named after
+  the pacman.conf section (`xlibre-stable`), while the mirror serves the
+  repo under its upstream name (`xlibre`) and 404s unknown names — the
+  `$repo` template only works for the sections included from the
+  mirrorlist.
+
+The mirror line is the **only** source while the flag is on (no public
+mirror fallback): if the mirror dies mid-install, the install fails.
+The third-party signing keys are still fetched from their upstream homes
+(the mirror proxies repository files, and the key `.asc` files are not
+repository content).
 
 ### Two-stage runs (`--resume`) and VirtualBox (`--vbox-vm`)
 

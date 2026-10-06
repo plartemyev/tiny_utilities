@@ -10,6 +10,7 @@ import re
 import secrets
 import shlex
 import string
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -37,6 +38,7 @@ GENERATED_PASSWORD_LENGTH = 10
 OPENCODE_PORT = 49374
 OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
 OPENCODE_WEB_USER = "opencode"  # server-side basic-auth username, fixed by opencode v2
+LOCAL_MIRROR_PORT = 8282  # arch-cache-mirror sibling project, host-published port
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -46,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.vbox_vm is not None and not vbox.vm_exists(args.vbox_vm):
         sys.exit(f"VirtualBox VM {args.vbox_vm!r} not found via vboxmanage showvminfo")
+    local_mirror = _local_mirror_url(args)
     public_key = resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
     login_password, root_password, user_password, opencode_password, generated_notes = _resolve_passwords(args)
@@ -54,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
 
     clear_stale_host_key(args.target, args.target_port)
     _run_installation(args, hostname, login_password, root_password, user_password, public_key, jump,
-                      guest_reboot=args.vbox_vm is None)
+                      guest_reboot=args.vbox_vm is None, local_mirror=local_mirror)
 
     state_path = _state_path(hostname)
     _save_state(state_path, _state_object(args, hostname, root_password, user_password,
@@ -111,6 +114,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--opencode", action="store_true",
                         help="also deploy the opencode web server as a systemd user service on "
                              f"port {OPENCODE_PORT} (opens the port in firewalld)")
+    parser.add_argument("--local-mirror", "--local_mirror", action="store_true",
+                        help="point pacman at the local arch-cache-mirror on this host "
+                             f"(http://<host-ip>:{LOCAL_MIRROR_PORT}/$repo/os/$arch) for both "
+                             "the live install and the installed system; the mirror must "
+                             "answer from the target or the install aborts")
     parser.add_argument("--install-timeout", type=int, default=7200,
                         help="seconds to wait for the install script (default: 7200)")
     parser.add_argument("--reboot-timeout", type=int, default=900,
@@ -189,6 +197,37 @@ def _private_key_path(pubkey_arg: str) -> str | None:
     else:
         candidate = path
     return candidate if os.path.isfile(candidate) else None
+
+
+def _primary_lan_address() -> tuple[str, str]:
+    """Interface and IPv4 source address of the host's default route.
+
+    The local arch-cache-mirror is published on this address, and it is
+    what a same-LAN target can reach.
+    """
+    proc = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"],
+                          capture_output=True, text=True, timeout=10, check=False)
+    match = re.search(r"\bdev (\S+) .*\bsrc (\S+)", proc.stdout)
+    if proc.returncode != 0 or match is None:
+        sys.exit("cannot determine the primary LAN interface (no dev/src in "
+                 "`ip -4 route get 1.1.1.1` output); --local-mirror needs it "
+                 "to advertise the local arch-cache-mirror address")
+    iface, ip = match.group(1), match.group(2)
+    try:
+        ipaddress.IPv4Address(ip)
+    except ValueError:
+        sys.exit(f"`ip -4 route get 1.1.1.1` reported a non-IPv4 source {ip!r}")
+    return iface, ip
+
+
+def _local_mirror_url(args: argparse.Namespace) -> str | None:
+    """Base URL of the host's arch-cache-mirror when --local-mirror is set."""
+    if not args.local_mirror:
+        return None
+    iface, ip = _primary_lan_address()
+    url = f"http://{ip}:{LOCAL_MIRROR_PORT}"
+    print(f"Local mirror: {url} (primary interface {iface})")
+    return url
 
 
 def _resolve_jump(args: argparse.Namespace) -> JumpConfig | None:
@@ -409,6 +448,7 @@ def _run_installation(
     public_key: str,
     jump: JumpConfig | None,
     guest_reboot: bool = True,
+    local_mirror: str | None = None,
 ) -> None:
     print(f"Connecting to live environment {args.target}:{args.target_port} ...")
     conn = connect_target(args.target, args.target_port, args.login_user, login_password, jump)
@@ -428,6 +468,8 @@ def _run_installation(
                   "enabling guest discard support.")
             discard = True
         _ensure_live_dns(conn.client)
+        if local_mirror is not None:
+            _ensure_local_mirror(conn.client, local_mirror)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -440,6 +482,7 @@ def _run_installation(
             graphical=args.graphical,
             virt=virt,
             discard=discard,
+            local_mirror=local_mirror,
         )
         print(f"Uploading installation script to {INSTALL_SCRIPT_PATH} ...")
         upload_text(conn.client, build_install_script(cfg), INSTALL_SCRIPT_PATH)
@@ -499,6 +542,21 @@ def _ensure_live_dns(client: paramiko.SSHClient) -> None:
                  "help; fix the target's DNS (check the hypervisor NAT/DHCP "
                  "settings) and rerun")
     print("DNS fallback is active; continuing.")
+
+
+def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str) -> None:
+    """Verify the live environment can reach the local arch-cache-mirror.
+
+    With --local-mirror the mirror is the only pacman source (the
+    mirrorlist keeps no upstream fallback), so a dead mirror must abort
+    before pacstrap starts instead of failing deep inside it.
+    """
+    _code, _ = run_capture(client, f"curl -fsS --max-time 8 {base_url}/healthz", timeout=30)
+    if _code != 0:
+        sys.exit(f"the local mirror {base_url} is not reachable from the target "
+                 "(is the arch-cache-mirror container running and publishing port "
+                 f"{LOCAL_MIRROR_PORT} on the primary interface?); rerun with a "
+                 "working mirror or without --local-mirror")
 
 
 def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> None:

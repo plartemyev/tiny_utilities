@@ -17,7 +17,8 @@ def make_args(**overrides):
         "disk": "/dev/vda", "hostname": None, "username": "nameless",
         "ssh_pubkey": "key", "locale": "en_US.UTF-8", "swap_size": "16G",
         "root_password": None, "user_password": None, "timezone": "Asia/Bangkok",
-        "graphical": False, "opencode": False, "install_timeout": 1, "reboot_timeout": 1,
+        "graphical": False, "opencode": False, "local_mirror": False,
+        "install_timeout": 1, "reboot_timeout": 1,
         "no_subnet_scan": False, "vbox_vm": None, "resume": None,
     }
     defaults.update(overrides)
@@ -80,6 +81,13 @@ def test_vbox_vm_and_resume_parsing():
     assert cli._parse_args(argv + ["--vbox-vm", "test's vm"]).vbox_vm == "test's vm"
     resumed = cli._parse_args(["--resume", "archinstaller-state-testhost.json"])
     assert resumed.resume == "archinstaller-state-testhost.json"
+
+
+def test_local_mirror_flag_parsing():
+    argv = ["--target", "192.168.56.113", "--ssh-pubkey", "k"]
+    assert cli._parse_args(argv).local_mirror is False
+    assert cli._parse_args(argv + ["--local-mirror"]).local_mirror is True
+    assert cli._parse_args(argv + ["--local_mirror"]).local_mirror is True
 
 
 def test_target_and_pubkey_optional_only_for_resume():
@@ -159,6 +167,56 @@ def test_live_dns_aborts_install_when_fallback_does_not_help(monkeypatch):
     monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (1, ""))
     with pytest.raises(SystemExit):
         cli._ensure_live_dns(None)
+
+
+def test_primary_lan_address_parses_ip_route(monkeypatch):
+    monkeypatch.setattr(
+        cli.subprocess, "run",
+        lambda cmd, **kw: SimpleNamespace(
+            returncode=0,
+            stdout="1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.10 uid 1000\n"))
+    assert cli._primary_lan_address() == ("eth0", "192.168.1.10")
+
+
+def test_primary_lan_address_aborts_without_dev_src(monkeypatch):
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=""))
+    with pytest.raises(SystemExit):
+        cli._primary_lan_address()
+
+
+def test_primary_lan_address_aborts_on_non_ip_source(monkeypatch):
+    monkeypatch.setattr(
+        cli.subprocess, "run",
+        lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="dev eth0 src bogus\n"))
+    with pytest.raises(SystemExit):
+        cli._primary_lan_address()
+
+
+def test_local_mirror_url_off_by_default(capsys):
+    assert cli._local_mirror_url(make_args()) is None
+    assert capsys.readouterr().out == ""
+
+
+def test_local_mirror_url_uses_primary_interface_and_mirror_port(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_primary_lan_address", lambda: ("eth0", "192.168.1.10"))
+    url = cli._local_mirror_url(make_args(local_mirror=True))
+    assert url == f"http://192.168.1.10:{cli.LOCAL_MIRROR_PORT}"
+    assert f"Local mirror: {url} (primary interface eth0)" in capsys.readouterr().out
+
+
+def test_local_mirror_preflight_probes_healthz(monkeypatch):
+    captured = []
+    monkeypatch.setattr(cli, "run_capture",
+                        lambda client, cmd, **kw: captured.append(cmd) or (0, ""))
+    cli._ensure_local_mirror(None, "http://192.168.1.10:8282")
+    assert captured == ["curl -fsS --max-time 8 http://192.168.1.10:8282/healthz"]
+
+
+def test_local_mirror_preflight_aborts_when_unreachable(monkeypatch):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (7, ""))
+    with pytest.raises(SystemExit):
+        cli._ensure_local_mirror(None, "http://192.168.1.10:8282")
 
 
 def test_analyze_discard_supported_on_ssd_like_disk(monkeypatch, capsys):

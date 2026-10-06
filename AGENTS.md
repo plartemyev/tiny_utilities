@@ -303,7 +303,16 @@
       heavily contended by local tools (dev servers, Jenkins, qBittorrent, ...) and 8282 is rarely
       taken (IANA: `libelle`, a rare enterprise tool) while staying below the Linux ephemeral range
       (32768-60999). Deliberate: do not "normalize" back to 8080; the container-internal listen port
-      stays 8080 (LISTEN_PORT default, Dockerfile healthcheck, e2e in-network URLs).
+      stays 8080 (LISTEN_PORT default, Dockerfile healthcheck, e2e in-network URLs);
+    - archinstaller's `--local-mirror` points installs at this mirror: pacman requests the repo
+      database named after the pacman.conf **section** (`[xlibre-stable]` → `xlibre-stable.db`),
+      while the mirror resolves repos by its own configured names and 404s unknown ones — so the
+      extra-repo `Server` lines must use literal mirror repo segments
+      (`http://<host-ip>:8282/xlibre/os/$arch`, `.../sonicde/os/$arch`) instead of the `$repo`
+      template that works for the mirrorlist-included official repos (wired in
+      `archinstaller/script.py`, `_extra_repo_servers`). Host-side helper: `ip -4 route get 1.1.1.1`
+      (its `src` field) is the cheap way to get the primary LAN interface's IPv4 for advertising a
+      host service to LAN targets.
 
 
 ## 1. Think Before Coding
