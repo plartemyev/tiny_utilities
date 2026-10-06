@@ -258,8 +258,8 @@
       vantage point: `sonicde-arch.github.io/x86_64/sonicde.db` reported `Content-Length: 21502` with
       a 21500-byte body from a docker container while the host consistently got `21500/21500` — strict
       clients (pacman's curl, aiohttp, urllib) abort with "transfer truncated" although the whole file
-      arrived. arch-cache-mirror buffers db downloads (they are small) and keeps what arrived, so
-      clients always get self-consistent responses;
+      arrived. arch-cache-mirror buffers db refresh downloads (they are small) and keeps what arrived
+      (first fetches stream chunked instead), so clients always get self-consistent responses;
     - pacman aborts any download that transfers < 1 B/s for 10 s (curl low-speed default) — a proxy
       that buffers a large db (e.g. `extra.db` 8.4 MB on a slow moment) before sending the first
       client byte gets its clients killed; this is the second reason dbs are never proxied live but
@@ -313,6 +313,13 @@
       `archinstaller/script.py`, `_extra_repo_servers`). Host-side helper: `ip -4 route get 1.1.1.1`
       (its `src` field) is the cheap way to get the primary LAN interface's IPv4 for advertising a
       host service to LAN targets.
+    - package/db fetch unification (2026-10-06): package misses, first-time db fetches and background
+      db refreshes share one `_fetch_upstream` code path in `server.py` (caller holds the per-file
+      lock); db first-fetches thereby got package-miss semantics (single-flight, latecomers served
+      from cache). Non-obvious constraint: the request handler must NOT hold the per-file lock across
+      the FRESH_WAIT wait — the background refresh takes the same non-reentrant asyncio.Lock, so that
+      would deadlock the refresh and turn every stale request into a full FRESH_WAIT stall (hence
+      double-checked locking only around the first fetch);
 
 
 ## 1. Think Before Coding

@@ -33,8 +33,11 @@ Behaviour per request:
   low-speed abort - while the retrieval continues in the background for
   the next client.  Copies younger than `DB_TTL` are served without
   upstream contact (that is what keeps N simultaneous `-Syu`s to a
-  single upstream fetch); only a first-time fetch (nothing cached yet)
-  blocks unconditionally.
+  single upstream fetch); a first-time fetch (nothing cached yet) blocks
+  unconditionally with the package-miss semantics: one shared download
+  under the per-file lock, streamed to the requesting client while it
+  fills the cache - concurrent clients wait for it and are then served
+  from the cache.
 - the repository -> upstream mapping is built at startup from
   environment variables; `core`/`extra`/`multilib` come with sensible
   defaults, `xlibre` and `sonicde` are preconfigured.
@@ -202,8 +205,9 @@ Docker everywhere nowadays.
   mirrorlist proxy-only, or use a second file for the official repos.
 - A db first-fetch (repo not cached at all) streams to the client while
   it downloads - bytes flow continuously, but pacman shows an unknown
-  size for that one transfer and a concurrent second client for the
-  same not-yet-cached file waits for the first to finish. Definitive
+  size for that one transfer (chunked, since some upstreams lie about
+  Content-Length). Concurrent first requests for the same file share the
+  one download, exactly like package misses. Definitive
   upstream 404s are negative-cached for 5 minutes (`NEGATIVE_TTL_SECONDS`
   in `server.py`): a `.db.sig` that starts to exist upstream, or a
   package released mid-window, is picked up after at most that long.
@@ -227,8 +231,8 @@ pure logic (version comparison, size/duration parsing, GC passes,
 env parsing) plus a loopback integration test with a stub upstream
 (cache miss streaming, cache hit, fresh-on-request db retrieval, the
 FRESH_WAIT stale fallback, short-body upstream, 404 pass-through with
-negative caching, unknown repo). Tests need `aiohttp` and write only to
-`./tmp`:
+negative caching, unknown repo, same-file single-flight). Tests need
+`aiohttp` and write only to `./tmp`:
 
 ```bash
 python test_mirror.py             # host, needs aiohttp

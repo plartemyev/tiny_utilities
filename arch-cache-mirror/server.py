@@ -19,12 +19,14 @@ same URL layout.  On a request the proxy:
   triggers a fresh upstream retrieval that the client waits for (bounded
   by FRESH_WAIT, so a slow or dead upstream can never trip pacman's
   10 s low-speed abort) - past that budget the cached copy is served
-  while the refresh continues in the background; a first-time fetch
-  (nothing cached yet) streams to the client chunked while it fills the
-  cache, so even a multi-MB db on a slow upstream keeps bytes flowing.
-  Definitive upstream 404s (e.g. the `.db.sig` files official repos
-  never serve) are remembered for 5 minutes so repeated requests skip
-  the doomed mirror cycle;
+  while the refresh continues in the background.  A first-time fetch
+  (nothing cached yet) follows the package-miss semantics exactly: one
+  shared download under the per-file lock, streamed to the client
+  chunked while it fills the cache, so even a multi-MB db on a slow
+  upstream keeps bytes flowing and concurrent clients are served from
+  the cache once it lands.  Definitive upstream 404s (e.g. the `.db.sig`
+  files official repos never serve) are remembered for 5 minutes so
+  repeated requests skip the doomed mirror cycle;
 * periodically prunes the cache: superseded package versions
   (KEEP_VERSIONS), files untouched for CACHE_AGE and, when CACHE_SIZE
   is set, the oldest files until the total is back under the limit.
@@ -486,118 +488,100 @@ async def handle_repo(request: web.Request) -> web.StreamResponse:
         if os.path.exists(local):
             LOG.info("hit  %s/%s/%s", repo_name, arch, filename)
             return web.FileResponse(local)
-        return await _stream_package(request, repo, arch, filename, local)
+        outcome, response, last_status = await _fetch_upstream(
+            request.app, request, repo, arch, filename, local)
+        if outcome != "ok":
+            return _upstream_failed(filename, last_status)
+        return response
 
 
-async def _fetch_metadata(app: web.Application, repo: Repo, arch: str,
-                          filename: str, local: str,
-                          skip_if_fresh: bool = False) -> tuple[str, int | None]:
-    """Download a metadata file into the cache. Metadata is buffered (it is
-    small, and some upstreams lie about Content-Length, which would abort
-    streaming clients). Returns ('ok'|'not-modified'|'fresh'|'failed',
-    last HTTP status)."""
+async def _fetch_upstream(app: web.Application, request: web.Request | None,
+                          repo: Repo, arch: str, filename: str, local: str, *,
+                          keep_partial: bool = False,
+                          revalidate: bool = False,
+                          ) -> tuple[str, web.StreamResponse | None, int | None]:
+    """Download `filename` from the first reachable upstream mirror into
+    the cache (atomic rename, so the cache only ever gains complete
+    files), streaming the bytes to the requesting client at the same time
+    when one is attached: package misses and first-time db fetches pass
+    the request, the background refresh passes None.  Callers must hold
+    the per-file lock when a concurrent fetch of the same file is
+    possible.
+
+    keep_partial (metadata only): an upstream that sends less than its
+    declared Content-Length (GitHub Pages does) still yields a complete
+    chunked response and a cached copy of what arrived; without it
+    (packages) a short body aborts the stream instead, since the cache
+    must never gain a partial package - the client retries the whole
+    file.  keep_partial also omits the Content-Length passthrough so the
+    chunked framing stays self-consistent.
+
+    revalidate (background refresh only): send If-Modified-Since from the
+    cached copy's mtime and treat 304 as done.
+
+    Returns (outcome, response, last-upstream-status) with outcome 'ok',
+    'not-modified' or 'failed' ('failed' means every mirror was exhausted
+    before any byte reached a client; response is None then)."""
     cfg: Config = app["cfg"]
     tmp = os.path.join(cfg.cache_dir, TMP_SUBDIR, uuid.uuid4().hex + ".part")
     os.makedirs(os.path.dirname(local), exist_ok=True)
     os.makedirs(os.path.dirname(tmp), exist_ok=True)
-    async with file_lock(app, local):
-        if skip_if_fresh and os.path.exists(local) and \
-                time.time() - os.stat(local).st_mtime < cfg.db_ttl:
-            return "fresh", None
-        headers = {}
-        if os.path.exists(local):
-            headers["If-Modified-Since"] = email.utils.formatdate(
-                os.stat(local).st_mtime, usegmt=True)
-        last_status = None
-        for mirror in repo.mirrors:
-            url = (mirror.replace("$repo", repo.name).replace("$arch", arch).rstrip("/")
-                   + "/" + filename)
-            # two attempts per mirror: the second covers a stale keep-alive
-            # connection (e.g. right after the upstream mirror restarted)
-            attempts = 2
-            while attempts:
-                attempts -= 1
-                try:
-                    async with app["client"].get(url, headers=headers) as upstream:
-                        if upstream.status == 304:
-                            if os.path.exists(local):
-                                LOG.info("ref  %s/%s/%s (db not modified)",
-                                         repo.name, arch, filename)
-                                return "not-modified", None
-                            break  # next mirror
-                        if upstream.status != 200:
-                            LOG.warning("upstream %s -> HTTP %d for %s",
-                                        url, upstream.status, filename)
-                            last_status = upstream.status
-                            break  # next mirror
-                        length = upstream.headers.get("Content-Length")
-                        received = 0
-                        with open(tmp, "wb") as out:
-                            try:
-                                async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
-                                    out.write(chunk)
-                                    received += len(chunk)
-                            except ClientPayloadError as exc:
-                                if received == 0:
-                                    raise  # nothing arrived: retry/next mirror
-                                LOG.warning("upstream %s sent %d of %s declared bytes; "
-                                            "keeping what arrived (%s)",
-                                            url, received, length, exc)
-                        os.replace(tmp, local)
-                        LOG.info("miss %s/%s/%s (%s) <- %s", repo.name, arch, filename,
-                                 human_size(received), url)
-                        return "ok", None
-                except (ClientError, TimeoutError, OSError) as exc:
-                    _quiet_unlink(tmp)
-                    LOG.warning("upstream %s failed for %s: %s", url, filename, exc)
-                    continue  # retry the same mirror, then fall through
-                except asyncio.CancelledError:
-                    _quiet_unlink(tmp)
-                    raise
-        _quiet_unlink(tmp)
-        _remember_missing(app, local, last_status)
-        return "failed", last_status
-
-
-async def _stream_package(request: web.Request, repo: Repo, arch: str,
-                          filename: str, local: str) -> web.StreamResponse:
-    """Cache miss for a package: stream it to the client while filling the
-    cache. The file is renamed into place only when fully downloaded."""
-    tmp = os.path.join(request.app["cfg"].cache_dir, TMP_SUBDIR,
-                       uuid.uuid4().hex + ".part")
-    os.makedirs(os.path.dirname(local), exist_ok=True)
-    os.makedirs(os.path.dirname(tmp), exist_ok=True)
+    headers = {}
+    if revalidate and os.path.exists(local):
+        headers["If-Modified-Since"] = email.utils.formatdate(
+            os.stat(local).st_mtime, usegmt=True)
     last_status = None
     for mirror in repo.mirrors:
         url = (mirror.replace("$repo", repo.name).replace("$arch", arch).rstrip("/")
                + "/" + filename)
+        # two attempts per mirror: the second covers a stale keep-alive
+        # connection (e.g. right after the upstream mirror restarted)
         attempts = 2
         while attempts:
             attempts -= 1
             prepared = False
             try:
-                async with request.app["client"].get(url) as upstream:
+                async with app["client"].get(url, headers=headers) as upstream:
+                    if revalidate and upstream.status == 304:
+                        if os.path.exists(local):
+                            LOG.info("ref  %s/%s/%s (db not modified)",
+                                     repo.name, arch, filename)
+                            return "not-modified", None, None
+                        break  # next mirror
                     if upstream.status != 200:
                         LOG.warning("upstream %s -> HTTP %d for %s",
                                     url, upstream.status, filename)
                         last_status = upstream.status
                         break  # next mirror
-                    response = web.StreamResponse(
-                        headers={"Content-Type": "application/octet-stream"})
                     length = upstream.headers.get("Content-Length")
-                    if length is not None:
-                        response.content_length = int(length)
-                    await response.prepare(request)
-                    prepared = True
+                    response = None
+                    if request is not None:
+                        response = web.StreamResponse(
+                            headers={"Content-Type": "application/octet-stream"})
+                        if length is not None and not keep_partial:
+                            response.content_length = int(length)
+                        await response.prepare(request)
+                        prepared = True
+                    received = 0
                     with open(tmp, "wb") as out:
-                        async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
-                            out.write(chunk)
-                            await response.write(chunk)
+                        try:
+                            async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
+                                out.write(chunk)
+                                received += len(chunk)
+                                if response is not None:
+                                    await response.write(chunk)
+                        except ClientPayloadError as exc:
+                            if received == 0 or not keep_partial:
+                                raise  # nothing arrived, or package: retry/next mirror
+                            LOG.warning("upstream %s sent %d of %s declared bytes; "
+                                        "keeping what arrived (%s)",
+                                        url, received, length, exc)
                     os.replace(tmp, local)
-                    await response.write_eof()
+                    if response is not None:
+                        await response.write_eof()
                     LOG.info("miss %s/%s/%s (%s) <- %s", repo.name, arch, filename,
-                             human_size(int(length or 0)), url)
-                    return response
+                             human_size(received), url)
+                    return "ok", response, None
             except (ClientError, TimeoutError, OSError) as exc:
                 _quiet_unlink(tmp)
                 if prepared:
@@ -610,9 +594,14 @@ async def _stream_package(request: web.Request, repo: Repo, arch: str,
             except asyncio.CancelledError:
                 _quiet_unlink(tmp)
                 raise
-
     _quiet_unlink(tmp)
-    _remember_missing(request.app, local, last_status)
+    _remember_missing(app, local, last_status)
+    return "failed", None, last_status
+
+
+def _upstream_failed(filename: str, last_status: int | None) -> web.Response:
+    """Response for a fetch where every mirror was exhausted before any
+    byte reached the client."""
     status = 404 if last_status == 404 else 502
     return web.Response(status=status,
                         text="all upstream mirrors failed for %s\n" % filename)
@@ -634,13 +623,12 @@ def _ensure_refresh(app: web.Application, repo: Repo, arch: str,
     if task is not None and not task.done():
         app["refresh_again"].add(local)
         return task
-    app["refreshing"].add(local)
 
     async def refresh() -> None:
         try:
             while True:
-                outcome, last_status = await _fetch_metadata(
-                    app, repo, arch, filename, local, skip_if_fresh=True)
+                outcome, last_status = await _refresh_db(
+                    app, repo, arch, filename, local)
                 if outcome == "failed":
                     LOG.warning("background refresh of %s failed (last HTTP status %s); "
                                 "keeping the cached copy", filename, last_status)
@@ -651,8 +639,6 @@ def _ensure_refresh(app: web.Application, repo: Repo, arch: str,
             raise
         except Exception:
             LOG.exception("background refresh of %s crashed", filename)
-        finally:
-            app["refreshing"].discard(local)
 
     task = asyncio.create_task(refresh())
     app["bg_tasks"].add(task)
@@ -667,95 +653,46 @@ def _ensure_refresh(app: web.Application, repo: Repo, arch: str,
     return task
 
 
-async def _fetch_metadata_to_client(request: web.Request, app: web.Application,
-                                    repo: Repo, arch: str, filename: str,
-                                    local: str) -> tuple[web.StreamResponse | None, int | None]:
-    """First fetch of a metadata file (nothing cached yet): download into
-    the cache AND stream to the client at the same time, chunked and
-    without Content-Length. The flowing bytes keep pacman's 10 s
-    low-speed abort quiet even when a big db (extra.db ~8 MB) trickles
-    in, and chunked framing is immune to upstreams that lie about
-    Content-Length. Returns (response, last-upstream-status); response is
-    None when every mirror failed."""
-    cfg: Config = app["cfg"]
-    tmp = os.path.join(cfg.cache_dir, TMP_SUBDIR, uuid.uuid4().hex + ".part")
-    os.makedirs(os.path.dirname(local), exist_ok=True)
-    os.makedirs(os.path.dirname(tmp), exist_ok=True)
-    last_status = None
-    for mirror in repo.mirrors:
-        url = (mirror.replace("$repo", repo.name).replace("$arch", arch).rstrip("/")
-               + "/" + filename)
-        attempts = 2
-        while attempts:
-            attempts -= 1
-            prepared = False
-            try:
-                async with app["client"].get(url) as upstream:
-                    if upstream.status != 200:
-                        LOG.warning("upstream %s -> HTTP %d for %s",
-                                    url, upstream.status, filename)
-                        last_status = upstream.status
-                        break  # next mirror
-                    length = upstream.headers.get("Content-Length")
-                    response = web.StreamResponse(
-                        headers={"Content-Type": "application/octet-stream"})
-                    await response.prepare(request)
-                    prepared = True
-                    received = 0
-                    with open(tmp, "wb") as out:
-                        try:
-                            async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
-                                out.write(chunk)
-                                received += len(chunk)
-                                await response.write(chunk)
-                        except ClientPayloadError as exc:
-                            if received == 0:
-                                raise  # nothing arrived: retry/next mirror
-                            LOG.warning("upstream %s sent %d of %s declared bytes; "
-                                        "keeping what arrived (%s)",
-                                        url, received, length, exc)
-                    os.replace(tmp, local)
-                    await response.write_eof()
-                    LOG.info("miss %s/%s/%s (%s) <- %s", repo.name, arch, filename,
-                             human_size(received), url)
-                    return response, None
-            except (ClientError, TimeoutError, OSError) as exc:
-                _quiet_unlink(tmp)
-                if prepared:
-                    # partial chunked body already went out; drop the
-                    # connection so the client treats it as failed transfer
-                    LOG.warning("stream interrupted for %s: %s", filename, exc)
-                    raise
-                LOG.warning("upstream %s failed for %s: %s", url, filename, exc)
-                continue  # retry the same mirror, then fall through
-            except asyncio.CancelledError:
-                _quiet_unlink(tmp)
-                raise
-    _quiet_unlink(tmp)
-    _remember_missing(app, local, last_status)
-    return None, last_status
+async def _refresh_db(app: web.Application, repo: Repo, arch: str,
+                      filename: str, local: str) -> tuple[str, int | None]:
+    """One background refresh round under the per-file lock.  Skips when
+    the cached copy is already fresh again (an earlier round of this
+    refresh, or a first-time fetch, renewed it while further requests
+    were queued)."""
+    async with file_lock(app, local):
+        if os.path.exists(local) and \
+                time.time() - os.stat(local).st_mtime < app["cfg"].db_ttl:
+            LOG.info("ref  %s/%s/%s (db already fresh)", repo.name, arch, filename)
+            return "ok", None
+        outcome, _, last_status = await _fetch_upstream(
+            app, None, repo, arch, filename, local,
+            keep_partial=True, revalidate=True)
+    return outcome, last_status
 
 
 async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
                            filename: str, local: str) -> web.StreamResponse:
-    """Databases are metadata requests that only happen on sync, so every
-    request for a copy older than DB_TTL triggers a fresh upstream
-    retrieval that the client waits for (bounded by FRESH_WAIT; a slow
+    """Databases are metadata requests that only happen on sync.  A
+    first-time fetch (nothing cached yet) follows the package-miss
+    semantics exactly: one shared download under the per-file lock,
+    streamed to the client chunked while it fills the cache - even a
+    multi-MB db on a slow upstream keeps bytes flowing, and concurrent
+    clients wait for it and are then served from the cache.  A request
+    for a copy older than DB_TTL triggers a single-flight background
+    refresh that the client waits for (bounded by FRESH_WAIT; a slow
     upstream must never trip pacman's 10 s low-speed abort - past that
     budget the cached copy is served while the refresh continues in the
     background).  Copies younger than DB_TTL are served without upstream
-    contact; a first-time fetch (nothing cached yet) streams to the
-    client while it fills the cache, so even a multi-MB db on a slow
-    upstream keeps bytes flowing."""
+    contact."""
     app = request.app
     if not os.path.exists(local):
-        response, last_status = await _fetch_metadata_to_client(
-            request, app, repo, arch, filename, local)
-        if response is None:
-            status = 404 if last_status == 404 else 502
-            return web.Response(status=status,
-                                text="all upstream mirrors failed for %s\n" % filename)
-        return response
+        async with file_lock(app, local):
+            if not os.path.exists(local):  # a concurrent client may have won
+                outcome, response, last_status = await _fetch_upstream(
+                    app, request, repo, arch, filename, local, keep_partial=True)
+                if outcome != "ok":
+                    return _upstream_failed(filename, last_status)
+                return response
     age = time.time() - os.stat(local).st_mtime
     if age >= app["cfg"].db_ttl:
         task = _ensure_refresh(app, repo, arch, filename, local)
@@ -828,7 +765,6 @@ def build_app(cfg: Config | None = None) -> web.Application:
     app["file_locks"] = {}
     app["locks_guard"] = asyncio.Lock()
     app["stats"] = {}  # GC results; mutated in place by the gc loop
-    app["refreshing"] = set()  # db paths with a background refresh in flight
     app["refresh_again"] = set()  # paths whose schedule arrived during one
     app["refresh_tasks"] = {}  # db path -> in-flight refresh task
     app["negative"] = {}  # path -> expiry of a remembered upstream 404

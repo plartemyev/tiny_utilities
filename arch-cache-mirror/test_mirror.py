@@ -488,6 +488,56 @@ def test_from_env(base: str) -> None:
                 os.environ[k] = v
 
 
+async def _get(http: ClientSession, url: str) -> tuple[bytes, int]:
+    async with http.get(url) as r:
+        return await r.read(), r.status
+
+
+async def test_single_flight(base: str) -> None:
+    """Concurrent first requests for the same uncached file share one
+    upstream download (per-file lock, package-miss semantics for packages
+    and dbs alike): the other clients wait for the first and are then
+    served from the cache."""
+    upstream: dict[str, dict] = {}
+
+    async def stub(request: web.Request) -> web.Response:
+        rec = upstream[request.match_info["filename"]]
+        rec["calls"] += 1
+        await asyncio.sleep(0.3)  # let the concurrent clients pile up
+        return web.Response(body=rec["body"], headers={
+            "Last-Modified": email.utils.formatdate(rec["mtime"], usegmt=True)})
+
+    up_app = web.Application()
+    up_app.router.add_get("/testrepo/{arch}/{filename}", stub)
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir, extra_repos=[
+        Repo("test", ["http://127.0.0.1:%d/testrepo/$arch" % up.port])])
+    app = build_app(cfg)
+    mirror = TestServer(app)
+    await mirror.start_server()
+    try:
+        now = time.time()
+        async with ClientSession() as http:
+            for filename, body in (("test.db", b"DB1"),
+                                   ("solo-1.0-1-x86_64.pkg.tar.zst", b"PKG1")):
+                upstream[filename] = dict(body=body, mtime=now - 60, calls=0)
+                url = str(mirror.make_url("/test/os/x86_64/" + filename))
+                cached = os.path.join(cache_dir, "test/os/x86_64/" + filename)
+                results = await asyncio.gather(*[_get(http, url)] * 3)
+                assert [status for _, status in results] == [200, 200, 200], results
+                assert [body_ for body_, _ in results] == [body] * 3, results
+                assert upstream[filename]["calls"] == 1, \
+                    "concurrent first fetches must share one upstream download"
+                assert open(cached, "rb").read() == body
+    finally:
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
 TESTS = [
     ("vercmp", test_vercmp),
     ("parsers", test_parsers),
@@ -496,6 +546,7 @@ TESTS = [
     ("mirror-flow", test_mirror_flow),
     ("db-ttl", test_db_ttl),
     ("fresh-wait", test_fresh_wait),
+    ("single-flight", test_single_flight),
 ]
 
 
