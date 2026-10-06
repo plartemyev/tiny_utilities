@@ -17,9 +17,8 @@ the live environment; the install aborts with a clear error if that
 still does not resolve). Then, on the Arch ISO console:
 
 ```bash
-passwd              # set the live environment root password
-systemctl start sshd
-ip a                # note the address to pass as --target
+passwd -s <<< "local0instaLl" # set the live environment root password
+ip a                          # note the address to pass as --target
 ```
 
 ### Supported targets

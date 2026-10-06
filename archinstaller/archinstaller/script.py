@@ -178,7 +178,7 @@ texlive-latexrecommended thunderbird thunderbird-i18n-en-us thunderbird-i18n-ru
 virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all vulkan-broadcom
 vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-intel vulkan-radeon
 vulkan-tools vulkan-virtio wine wine-gecko xarchiver xcb-proto
-xfce4-clipman-plugin xorg-xprop xorg-xrandr xorg-xset xorgproto
+xorg-xprop xorg-xrandr xorg-xset xorgproto
 xreader zed zvbi vulkan-mesa-layers vulkan-headers memtest_vulkan
 firefox-ublock-origin gwenview
 """
