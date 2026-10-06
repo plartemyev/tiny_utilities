@@ -65,14 +65,6 @@ SIZE_GC_TARGET = 0.9  # once over CACHE_SIZE, shrink to 90% of it
 UPSTREAM_TIMEOUT = ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=60)
 
 DEFAULT_OFFICIAL_REPOS = "core extra multilib"
-DEFAULT_OFFICIAL_MIRRORS = (
-    "https://geo.mirror.pkgbuild.com/$repo/os/$arch "
-    "https://mirror.rackspace.com/archlinux/$repo/os/$arch"
-)
-DEFAULT_EXTRA_REPOS = (
-    "xlibre=https://packages.xlibre.net/arch/stable/$arch;"
-    "sonicde=https://sonicde-arch.github.io/$arch"
-)
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9._+:~-]+$")
 METADATA_SUFFIXES = (".db", ".db.sig", ".files", ".files.sig")
@@ -140,7 +132,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         extra = []
-        for pair in os.environ.get("EXTRA_REPOS", DEFAULT_EXTRA_REPOS).replace("\n", ";").split(";"):
+        for pair in os.environ.get("EXTRA_REPOS", "").replace("\n", ";").split(";"):
             pair = pair.strip()
             if not pair:
                 continue
@@ -159,7 +151,7 @@ class Config:
             db_ttl=parse_duration(os.environ.get("DB_TTL", DEFAULT_DB_TTL)),
             fresh_wait=parse_duration(os.environ.get("FRESH_WAIT", DEFAULT_FRESH_WAIT)),
             official_repos=os.environ.get("OFFICIAL_REPOS", DEFAULT_OFFICIAL_REPOS).split(),
-            official_mirrors=os.environ.get("OFFICIAL_MIRRORS", DEFAULT_OFFICIAL_MIRRORS).split(),
+            official_mirrors=os.environ.get("OFFICIAL_MIRRORS", "").split(),
             extra_repos=extra,
         )
 
