@@ -85,8 +85,15 @@ Without docker compose:
 docker build -t arch-cache-mirror .
 docker run -d --name arch-cache-mirror -p 8080:8080 \
     -v /var/cache/arch-mirror:/var/cache/arch-mirror \
+    -e OFFICIAL_MIRRORS='https://geo.mirror.pkgbuild.com/$repo/os/$arch https://mirror.rackspace.com/archlinux/$repo/os/$arch' \
+    -e 'EXTRA_REPOS=xlibre=https://packages.xlibre.net/arch/stable/$arch;sonicde=https://sonicde-arch.github.io/$arch' \
     arch-cache-mirror
 ```
+
+The `-e` lines carry the repo configuration that compose provides; without
+them the mirror serves the official repos only (their mirrors default in
+code), while the extra repositories are deployment configuration whose
+home is docker-compose.yml.
 
 ## Configuration (environment)
 
@@ -102,10 +109,12 @@ docker run -d --name arch-cache-mirror -p 8080:8080 \
 | `DB_TTL`           | `10m`                                      | max age of cached db copies; requests for older copies fetch fresh from upstream; `0` = on every request |
 | `FRESH_WAIT`       | `5`                                        | max seconds such a db request waits for the fresh retrieval before being served the cached copy; `0` = serve cached immediately |
 | `OFFICIAL_REPOS`   | `core extra multilib`                      | repos served from `OFFICIAL_MIRRORS`                                                                  |
-| `OFFICIAL_MIRRORS` | geo.mirror.pkgbuild.com, mirror.rackspace.com (space-separated, tried in order) | upstream URL templates containing `$repo` and/or `$arch`         |
-| `EXTRA_REPOS`      | `xlibre=...;sonicde=...` (see below)       | additional repos as `name=url` pairs separated by `;` or newlines; the url is a template containing `$arch` |
+| `OFFICIAL_MIRRORS` | geo.mirror.pkgbuild.com, mirror.rackspace.com (code default; also pinned in docker-compose.yml; space-separated, tried in order) | upstream URL templates containing `$repo` and/or `$arch` |
+| `EXTRA_REPOS`      | *none in code* — defined in docker-compose.yml | additional repos as `name=url` pairs separated by `;` or newlines; the url is a template containing `$arch` |
 
-Defaults for the extra repos:
+The extra repositories are **deployment configuration, not code**:
+`docker-compose.yml` ships them via `EXTRA_REPOS` (note the `$$`
+escaping compose requires):
 
 ```
 xlibre  = https://packages.xlibre.net/arch/stable/$arch
@@ -185,11 +194,12 @@ Docker everywhere nowadays.
 ## Development
 
 `server.py` is a single-file aiohttp app; `test_mirror.py` covers the
-pure logic (version comparison, size/duration parsing, GC passes) plus
-a loopback integration test with a stub upstream (cache miss streaming,
-cache hit, fresh-on-request db retrieval, the FRESH_WAIT stale fallback,
-short-body upstream, 404 pass-through, unknown repo). Tests need
-`aiohttp` and write only to `./tmp`:
+pure logic (version comparison, size/duration parsing, GC passes,
+env parsing) plus a loopback integration test with a stub upstream
+(cache miss streaming, cache hit, fresh-on-request db retrieval, the
+FRESH_WAIT stale fallback, short-body upstream, 404 pass-through with
+negative caching, unknown repo). Tests need `aiohttp` and write only to
+`./tmp`:
 
 ```bash
 python test_mirror.py             # host, needs aiohttp
@@ -200,11 +210,47 @@ The version-comparison port is additionally verified by a differential
 test against the `vercmp` binary from the `pacman` package (2500
 version pairs, 0 mismatches at the time of writing).
 
+### End-to-end test
+
+`./e2e.sh` exercises the real thing: it builds the image, runs the
+in-image unit/integration tests, boots the mirror on a throwaway docker
+network next to a genuine `archlinux:latest` client and checks the full
+path - health/status endpoints, db cache miss → upstream fetch → cache
+hit, a cold `pacman -Sy` (including the `xlibre`/`sonicde` repos and
+real signature verification), a warm sync that must not touch upstream
+databases (DB_TTL), a package install through the proxy, and the
+negative cache. Eight PASS lines mean everything worked:
+
+```bash
+./e2e.sh                 # full run (~2-4 min), cleans up after itself
+./e2e.sh --skip-build    # reuse the already-built image
+./e2e.sh --keep          # keep containers + cache for debugging
+                         # (proxy stays on 127.0.0.1:<printed port>)
+```
+
+Notes:
+
+- needs docker and outbound network to the Arch mirrors plus
+  `packages.xlibre.net` / `sonicde-arch.github.io` (the client image is
+  pulled automatically);
+- the mirror container's environment is taken from
+  `docker-compose.yml` (`docker compose config` resolves it to an
+  env-file, including the `$$` → `$` unescaping), so the e2e run tests
+  exactly the deployment configuration - the repo list therefore lives
+  in one place only;
+- first syncs depend on upstream mirror speed; the client never aborts
+  early (databases stream through the proxy), but a full cold run on a
+  slow mirror can take a few minutes;
+- on failure the stage header, the client output and `FAIL: <reason>`
+  point at the broken step; rerun with `--keep` and inspect
+  `docker logs e2e-acm-proxy`.
+
 ## Files
 
 | File                 | Purpose                                                     |
 |----------------------|-------------------------------------------------------------|
 | `server.py`          | the whole mirror: config, serving, caching, GC               |
 | `test_mirror.py`     | unit + loopback integration tests                            |
+| `e2e.sh`             | full-stack e2e test (build, real pacman client, assertions)  |
 | `Dockerfile`         | Arch-based image (`python-aiohttp` from pacman, healthcheck) |
-| `docker-compose.yml` | LAN deployment defaults (port, volume, env)                  |
+| `docker-compose.yml` | LAN deployment defaults (port, volume, env, repo config)     |

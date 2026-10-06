@@ -452,10 +452,47 @@ async def test_mirror_flow(base: str) -> None:
             await up.close()
 
 
+def test_from_env(base: str) -> None:
+    """from_env() defaults: repository/mirror lists are deployment
+    configuration (docker-compose.yml), not code defaults."""
+    keys = ("EXTRA_REPOS", "OFFICIAL_REPOS", "OFFICIAL_MIRRORS",
+            "CACHE_SIZE", "CACHE_AGE", "DB_TTL", "FRESH_WAIT",
+            "KEEP_VERSIONS", "GC_INTERVAL", "LISTEN_ADDR", "LISTEN_PORT",
+            "CACHE_DIR")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            os.environ.pop(k, None)
+        cfg = Config.from_env()
+        assert cfg.official_repos == ["core", "extra", "multilib"]
+        assert cfg.official_mirrors == [
+            "https://geo.mirror.pkgbuild.com/$repo/os/$arch",
+            "https://mirror.rackspace.com/archlinux/$repo/os/$arch",
+        ]
+        assert cfg.extra_repos == [], "extra repos belong to the deployment env"
+
+        os.environ["OFFICIAL_REPOS"] = "core extra multilib core-testing"
+        os.environ["OFFICIAL_MIRRORS"] = "https://a/$$repo/os/$$arch https://b/$$repo/os/$$arch"
+        os.environ["EXTRA_REPOS"] = "x=https://x.example/$arch ;\ny=https://y.example/$arch"
+        cfg = Config.from_env()
+        assert cfg.official_repos == ["core", "extra", "multilib", "core-testing"]
+        assert cfg.official_mirrors == ["https://a/$$repo/os/$$arch",
+                                        "https://b/$$repo/os/$$arch"]
+        assert [(r.name, r.mirrors) for r in cfg.extra_repos] == [
+            ("x", ["https://x.example/$arch"]), ("y", ["https://y.example/$arch"])]
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 TESTS = [
     ("vercmp", test_vercmp),
     ("parsers", test_parsers),
     ("gc", test_gc),
+    ("from-env", test_from_env),
     ("mirror-flow", test_mirror_flow),
     ("db-ttl", test_db_ttl),
     ("fresh-wait", test_fresh_wait),

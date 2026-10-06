@@ -30,7 +30,9 @@ same URL layout.  On a request the proxy:
   is set, the oldest files until the total is back under the limit.
 
 The repository -> upstream mirror map is built from environment
-variables (OFFICIAL_REPOS/OFFICIAL_MIRRORS/EXTRA_REPOS, see README.md).
+variables (OFFICIAL_REPOS/OFFICIAL_MIRRORS in the environment or code
+defaults; EXTRA_REPOS is deployment configuration defined in
+docker-compose.yml).
 """
 
 from __future__ import annotations
@@ -65,6 +67,12 @@ SIZE_GC_TARGET = 0.9  # once over CACHE_SIZE, shrink to 90% of it
 UPSTREAM_TIMEOUT = ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=60)
 
 DEFAULT_OFFICIAL_REPOS = "core extra multilib"
+DEFAULT_OFFICIAL_MIRRORS = (
+    "https://geo.mirror.pkgbuild.com/$repo/os/$arch "
+    "https://mirror.rackspace.com/archlinux/$repo/os/$arch"
+)
+# NOTE: the xlibre/sonicde repo list is NOT defaulted here - it is
+# deployment configuration, defined in docker-compose.yml (EXTRA_REPOS).
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9._+:~-]+$")
 METADATA_SUFFIXES = (".db", ".db.sig", ".files", ".files.sig")
@@ -151,7 +159,8 @@ class Config:
             db_ttl=parse_duration(os.environ.get("DB_TTL", DEFAULT_DB_TTL)),
             fresh_wait=parse_duration(os.environ.get("FRESH_WAIT", DEFAULT_FRESH_WAIT)),
             official_repos=os.environ.get("OFFICIAL_REPOS", DEFAULT_OFFICIAL_REPOS).split(),
-            official_mirrors=os.environ.get("OFFICIAL_MIRRORS", "").split(),
+            official_mirrors=os.environ.get(
+                "OFFICIAL_MIRRORS", DEFAULT_OFFICIAL_MIRRORS).split(),
             extra_repos=extra,
         )
 

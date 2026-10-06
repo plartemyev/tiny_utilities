@@ -268,6 +268,16 @@
       published there) and gitlab.archlinux.org is Anubis-walled; the algorithm is unchanged in 7.x —
       port from the 6.0.2 tarball (`lib/libalpm/version.c`) and differential-test against the 7.x
       binary in the container (`tmp/difftest_vercmp.py`, 2500 pairs, 0 mismatches);
+    - `docker compose config --format json` does NOT unescape `$$` in environment values (it emits a
+      valid compose representation), so deriving an env-file from it for `docker run --env-file`
+      needs an explicit `value.replace("$$", "$")` (done in `arch-cache-mirror/e2e.sh`, which sources
+      the repo/mirror env from docker-compose.yml to keep a single source of truth); watch out for
+      stale leftovers when debugging: a failed `docker run --network <new-net>` leaves the previously
+      created container serving on the same name, and its old logs look like fresh failures;
+    - unit tests that construct the Config object directly never exercise `Config.from_env()` env
+      defaults — a lost default constant there produced empty mirror lists (instant 502s with no
+      upstream attempt logged) and only surfaced in e2e; `test_from_env` in
+      `arch-cache-mirror/test_mirror.py` now locks the defaults contract;
     - aiohttp: mutating `app[...]` after the application started emits "Changing state of started or
       joined application is deprecated" (3.14) — share a plain dict set before startup and mutate it
       in place instead.
