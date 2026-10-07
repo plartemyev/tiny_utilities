@@ -3,9 +3,23 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from archpkg.cli import main
-from archpkg.core import sort_packages, classify_packages, _has_graphical_dep
-from archpkg.pacman import _strip_version, _query_via_pacman, _resolve_groups
+from archpkg.core import (
+    sort_packages,
+    classify_packages,
+    minimize_packages,
+    _has_graphical_dep,
+    PackageInfo,
+)
+from archpkg.pacman import (
+    _strip_version,
+    _query_via_pacman,
+    _query_info_via_pacman,
+    _parse_sync_output,
+    _resolve_groups,
+)
 
 
 def _fake_query_fn(packages: list[str]) -> dict[str, list[str]]:
@@ -415,3 +429,259 @@ Depends On      : glibc  ncurses"""
         assert "python-build-backend" in captured.out
         assert "Graphical packages: (none)" in captured.out
         assert "Missing packages: (none)" in captured.out
+
+
+_MINIMIZE_KNOWN: dict[str, tuple[list[str], list[str]]] = {
+    "sonicde-meta": (["sonic-win", "sonic-terminal", "sonic-login-manager"], []),
+    "sonic-win": (["glibc"], []),
+    "sonic-terminal": (["glibc"], []),
+    "sonic-login-manager": (["glibc"], []),
+    "glibc": ([], []),
+    "chain-a": (["chain-b"], []),
+    "chain-b": (["chain-c"], []),
+    "chain-c": ([], []),
+    "diamond-a": (["diamond-b", "diamond-c"], []),
+    "diamond-b": (["diamond-d"], []),
+    "diamond-c": (["diamond-d"], []),
+    "diamond-d": ([], []),
+    "cycle-x": (["cycle-y"], []),
+    "cycle-y": (["cycle-x"], []),
+    "solo-1": (["glibc"], []),
+    "solo-2": (["glibc"], []),
+    "ghost-user": (["ghost-pkg"], []),
+    "loner": ([], []),
+    "ver-user": (["ver-target>=2.0"], []),
+    "ver-target": ([], []),
+    "alt-user": (["alt-a|alt-b"], []),
+    "alt-a": ([], []),
+    "alt-b": ([], []),
+    "sonic-fonts": ([], ["ttf-font"]),
+    "top": (["mid"], []),
+    "mid": (["font-provider"], []),
+    "font-provider": ([], ["ttf-font"]),
+    "y-pkg": (["z-pkg"], []),
+    "z-pkg": ([], []),
+}
+
+
+def _fake_info_fn(
+    known: dict[str, tuple[list[str], list[str]]],
+):
+    def query(packages: list[str]) -> dict[str, PackageInfo]:
+        return {p: PackageInfo(*known[p]) for p in packages if p in known}
+
+    return query
+
+
+class TestParseSyncOutput:
+    def test_deps_and_provides(self) -> None:
+        output = """Name            : bash
+Depends On      : glibc  ncurses>=8.0
+Provides        : sh
+
+Name            : sonic-fonts
+Provides        : ttf-font
+Depends On      : None"""
+        result = _parse_sync_output(output)
+        assert result["bash"] == PackageInfo(
+            deps=["glibc", "ncurses"], provides=["sh"],
+        )
+        assert result["sonic-fonts"] == PackageInfo(
+            deps=[], provides=["ttf-font"],
+        )
+
+    def test_no_depends_no_provides(self) -> None:
+        output = "Name            : glibc\nDepends On      : None\nProvides        : None"
+        result = _parse_sync_output(output)
+        assert result["glibc"] == PackageInfo(deps=[], provides=[])
+
+    def test_empty_output(self) -> None:
+        assert _parse_sync_output("") == {}
+
+
+class TestQueryInfoPacman:
+    def test_query_info_and_groups(self) -> None:
+        si_output = """Name            : bash
+Depends On      : glibc  ncurses
+Provides        : sh"""
+        sg_output = "build-base make\nbuild-base gcc"
+
+        def run_side_effect(*args, **kwargs):
+            cmd = args[0]
+            if "-Si" in cmd:
+                return MagicMock(returncode=0, stdout=si_output, stderr="")
+            if "-Sg" in cmd:
+                return MagicMock(returncode=0, stdout=sg_output, stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with patch.object(subprocess, "run", side_effect=run_side_effect):
+            result = _query_info_via_pacman(["bash", "build-base"])
+        assert result["bash"] == PackageInfo(
+            deps=["glibc", "ncurses"], provides=["sh"],
+        )
+        assert result["build-base"] == PackageInfo(
+            deps=["make", "gcc"], provides=[],
+        )
+
+
+class TestMinimizePackages:
+    def test_spec_example(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["sonic-win", "sonic-terminal", "sonic-login-manager", "sonicde-meta"],
+            query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["sonicde-meta"]
+        assert dropped == [
+            "sonic-login-manager", "sonic-terminal", "sonic-win",
+        ]
+        assert missing == []
+
+    def test_chain(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["chain-a", "chain-b", "chain-c"],
+            query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["chain-a"]
+        assert dropped == ["chain-b", "chain-c"]
+        assert missing == []
+
+    def test_diamond(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["diamond-a", "diamond-b", "diamond-c", "diamond-d"],
+            query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["diamond-a"]
+        assert dropped == ["diamond-b", "diamond-c", "diamond-d"]
+
+    def test_mutual_cycle_keeps_one(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["cycle-x", "cycle-y"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["cycle-x"]
+        assert dropped == ["cycle-y"]
+        assert missing == []
+
+    def test_cycle_prefers_listed_member(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["cycle-y"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["cycle-y"]
+        assert dropped == []
+
+    def test_disjoint_roots_all_kept(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["solo-1", "solo-2"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["solo-1", "solo-2"]
+        assert dropped == []
+        assert missing == []
+
+    def test_missing_excluded_and_reported(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["solo-1", "nope"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["solo-1"]
+        assert dropped == []
+        assert missing == ["nope"]
+
+    def test_empty_input(self) -> None:
+        assert minimize_packages([], query_fn=_fake_info_fn(_MINIMIZE_KNOWN)) == (
+            [],
+            [],
+            [],
+        )
+
+    def test_unknown_dep_is_leaf(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["ghost-user", "loner"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["ghost-user", "loner"]
+        assert dropped == []
+        assert missing == []
+
+    def test_versioned_dep_matches(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["ver-user", "ver-target"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["ver-user"]
+        assert dropped == ["ver-target"]
+
+    def test_alternative_dep_not_inferred(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["alt-user", "alt-a", "alt-b"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["alt-a", "alt-b", "alt-user"]
+        assert dropped == []
+
+    def test_virtual_satisfied_by_provider(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["ttf-font", "sonic-fonts"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["sonic-fonts"]
+        assert dropped == ["ttf-font"]
+        assert missing == []
+
+    def test_virtual_satisfied_by_transitive_provider(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["ttf-font", "top"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["top"]
+        assert dropped == ["ttf-font"]
+        assert missing == []
+
+    def test_virtual_without_provider_missing(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["ttf-font"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == []
+        assert dropped == []
+        assert missing == ["ttf-font"]
+
+    def test_external_dep_not_reported(self) -> None:
+        minimal, dropped, missing = minimize_packages(
+            ["y-pkg"], query_fn=_fake_info_fn(_MINIMIZE_KNOWN),
+        )
+        assert minimal == ["y-pkg"]
+        assert dropped == []
+        assert missing == []
+
+
+class TestCLIMinimize:
+    def test_minimize_output(self, capsys) -> None:
+        with patch(
+            "archpkg.cli.query_pkg_info",
+            side_effect=_fake_info_fn(_MINIMIZE_KNOWN),
+        ):
+            main([
+                "--minimize",
+                "sonic-win",
+                "sonic-terminal",
+                "sonic-login-manager",
+                "sonicde-meta",
+            ])
+        captured = capsys.readouterr()
+        assert "===MINIMAL SET:===" in captured.out
+        assert "sonicde-meta" in captured.out
+        assert "Pulled as dependencies:" in captured.out
+        assert "sonic-terminal" in captured.out
+        assert "Missing packages: (none)" in captured.out
+
+    def test_minimize_all_missing(self, capsys) -> None:
+        with patch(
+            "archpkg.cli.query_pkg_info",
+            side_effect=_fake_info_fn(_MINIMIZE_KNOWN),
+        ):
+            main(["--minimize", "nope"])
+        captured = capsys.readouterr()
+        assert "===MINIMAL SET:===" in captured.out
+        assert "(none)" in captured.out
+        assert "Missing packages:" in captured.out
+        assert "nope" in captured.out
+
+    def test_minimize_and_console_only_rejected(self, capsys) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--minimize", "--console-only", "bash"])
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "--minimize" in captured.err
+        assert "--console-only" in captured.err

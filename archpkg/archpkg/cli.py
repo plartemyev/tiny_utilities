@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from archpkg.core import sort_packages, classify_packages
-from archpkg.pacman import query_packages
+from archpkg.core import sort_packages, classify_packages, minimize_packages
+from archpkg.pacman import query_packages, query_pkg_info
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -17,17 +17,34 @@ def main(argv: list[str] | None = None) -> None:
         metavar="PKG",
         help="package names to sort",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--console-only",
         action="store_true",
         help="separate console-only packages from those requiring X11/Wayland",
+    )
+    mode.add_argument(
+        "--minimize",
+        action="store_true",
+        help="drop packages already pulled in as dependencies of the others",
     )
 
     args = parser.parse_args(argv)
 
     dropped = len(args.packages) - len(set(args.packages))
 
-    if args.console_only:
+    if args.minimize:
+        minimal, pulled, missing = minimize_packages(
+            args.packages, query_fn=query_pkg_info,
+        )
+        print()
+        print("===MINIMAL SET:===")
+        print(" ".join(minimal) if minimal else "(none)")
+        print()
+        _print_group("Pulled as dependencies", pulled)
+        print()
+        _print_group("Missing packages", missing)
+    elif args.console_only:
         console, graphical, missing = classify_packages(
             args.packages, query_fn=query_packages,
         )
