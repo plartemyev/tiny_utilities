@@ -3,145 +3,39 @@ from __future__ import annotations
 import dataclasses
 
 BASE_PACKAGES = """
-acl acpid alsa-firmware alsa-lib alsa-topology-conf alsa-ucm-conf alsa-utils
-amd-ucode arch-install-scripts archinstall archlinux-keyring argon2 attr audit
-aws-cli-v2 b43-fwcutter base bash bash-completion bc bcachefs-tools bind
-binutils bluez-libs bolt btrfs-progs bzip2 ca-certificates
-ca-certificates-mozilla ca-certificates-utils ccid cifs-utils clamav clonezilla
-cloud-init coreutils cryptsetup curl db5.3 dbus dbus-broker dbus-broker-units
-dbus-units ddrescue device-mapper dhclient dhcpcd diffutils ding-libs dmidecode
-dmraid dnsmasq dnssec-anchors dosfstools drbl duktape e2fsprogs ecryptfs-utils
-edk2-shell efibootmgr efivar ell ethtool exfatprogs expat f2fs-tools fatresize
-file filesystem findutils flac flex foot-terminfo fsarchiver fuse-common fuse2
-fuse3 gawk gcc-libs gdbm gettext glib2 glibc glibc-locales gmp gnupg gnutls
-gpart gpgme gpm gptfdisk grep grml-zsh-config groff grub gssproxy guestfs-tools
-gzip hdparm hicolor-icon-theme hidapi htop hwdata hyperv iana-etc icu iftop
-inetutils intel-ucode iotop iproute2 iptables iputils irssi iw iwd jansson
-jemalloc jfsutils json-c kbd keyutils kitty-terminfo kmod krb5 lame lbzip2 ldns
-less lftp libaio libarchive libassuan libasyncns libbpf libbsd libcap libcap-ng
-libcbor libdnet libedit libelf libevent libffi libfido2 libgcrypt libgpg-error
-libgudev libimobiledevice libimobiledevice-glue libinih libjpeg-turbo libksba
-libldap liblouis libmaxminddb libmbim libmd libmspack libnetfilter_conntrack
-libnewt libnfnetlink libnftnl libnghttp2 libnghttp3 libnl libnsl libnss_nis
-libnvme libogg libotr libp11-kit libpcap libpipeline libplist libproxy libpsl
-libqmi libqrtr-glib libsamplerate libsasl libseccomp libsecret libsigc++
-libsndfile libsodium libsonic libspeechd libssh2 libsysprof-capture libtasn1
-libtirpc libtool libunistring libunrar liburcu liburing libutempter libuv
-libverto libvorbis libwbclient libxcrypt libxml2 libxslt libyaml libzip
-licenses linux linux-api-headers linux-atm linux-firmware linux-firmware-intel
-linux-firmware-marvell linux-firmware-whence livecd-sounds lmdb lrzip
-lsb-release lsscsi lua lvm2 lynx lz4 lzo lzop m4 man-db man-pages mc mdadm
-memtest86+ memtest86+-efi mkinitcpio mkinitcpio-archiso mkinitcpio-busybox
-mkinitcpio-nfs-utils mobile-broadband-provider-info modemmanager mpdecimal mpfr
-mpg123 mtools mtr nano nbd ncurses ndisc6 nettle networkmanager nfs-utils
-nfsidmap nftables nilfs-utils nmap npth nspr nss nss-mdns ntfs-3g numactl
-nvme-cli oath-toolkit open-iscsi open-isns openbsd-netcat openconnect
-openpgp-card-tools openssh openssl openvpn opus p11-kit pacman pacman-contrib
-pacman-mirrorlist pam pambase partclone parted partimage pbzip2 pciutils pcre
-pcre2 pcsclite perl pigz pinentry pixz popt ppp pptpclient procps-ng psmisc pv
-python python-attrs python-babel python-cffi python-charset-normalizer
-python-configobj python-cryptography python-docutils python-idna
-python-imagesize python-jinja python-jsonpatch python-jsonpointer
-python-jsonschema python-jsonschema-specifications python-markupsafe
-python-netifaces python-oauthlib python-packaging python-pycparser
-python-pygments python-pyparted python-pyserial python-pytz python-referencing
-python-requests python-rpds-py python-six python-snowballstemmer python-sphinx
-python-sphinx-alabaster-theme python-sphinx_rtd_theme
-python-sphinxcontrib-applehelp python-sphinxcontrib-devhelp
-python-sphinxcontrib-htmlhelp python-sphinxcontrib-jquery
-python-sphinxcontrib-jsmath python-sphinxcontrib-qthelp
-python-sphinxcontrib-serializinghtml python-typing_extensions python-urllib3
-python-yaml qemu-guest-agent readline refind reflector rp-pppoe rpcbind rsync
-run-parts rxvt-unicode-terminfo screen sdparm sed sequoia-sq sg3_utils shadow
-slang smartmontools smbclient smbnetfs sof-firmware sqlite squashfs-tools
-ssh-tools sshfs stoken sudo sysfsutils syslinux systemd systemd-libs
-systemd-resolvconf systemd-sysvcompat talloc tar tcl tcpdump terminus-font
-terraform terragrunt testdisk tflint thin-provisioning-tools tmux tpm2-tools
-tpm2-tss traceroute ttf-fira-code ttf-fira-mono ttf-fira-sans tzdata udftools
-udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils util-linux
-util-linux-libs vim vim-runtime virtualbox-guest-utils-nox vpnc which
-wireguard-tools wireless-regdb wireless_tools wpa_supplicant wvdial wvstreams
-xdg-utils xfsprogs xl2tpd xmlsec xxhash xz zlib zsh zsh-autosuggestions zstd
+acpid amd-ucode archinstall argon2 base bash-completion bcachefs-tools bind  cloud-init dhclient dhcpcd dmidecode
+dmraid dnsmasq edk2-shell ethtool exfatprogs fatresize fsarchiver glibc-locales gpart grml-zsh-config grub  hdparm
+hyperv inetutils intel-ucode iotop iptables iwd jfsutils ldns lftp linux linux-firmware lsb-release lsscsi memtest86+
+memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils modemmanager mtools mtr nbd ndisc6 networkmanager nfs-utils nmap
+nss-mdns nvme-cli open-iscsi openconnect openpgp-card-tools openvpn pptpclient qemu-guest-agent refind reflector
+rp-pppoe rsync sdparm sequoia-sq sg3_utils smartmontools smbnetfs sof-firmware squashfs-tools ssh-tools syslinux
+systemd-resolvconf testdisk tmux tpm2-tools traceroute udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd
+usbutils vim virtualbox-guest-utils-nox wireguard-tools wireless-regdb wireless_tools wvdial xl2tpd zsh-autosuggestions
 """
 
 CONSOLE_PACKAGES = """
-7zip acl acpid adwaita-cursors adwaita-icon-theme alsa-firmware alsa-lib
-alsa-topology-conf alsa-ucm-conf alsa-utils amd-ucode android-tools android-udev
-arch-install-scripts archinstall archlinux-keyring argon2 aribb24 aribb25 aspell
-aspell-en aspell-ru attr audit b43-fwcutter base base-devel bash bash-completion
-bash-language-server bc bcachefs-tools bind binutils blendr bluez bluez-libs
-bluez-tools bluez-utils bolt btrfs-progs bzip2 ca-certificates
-ca-certificates-mozilla ca-certificates-utils ccid cfr cifs-utils clamav clang
-clonezilla cloud-init container-diff corepack coreutils cryptsetup curl db5.3
-dbus dbus-broker dbus-broker-units dbus-units ddrescue device-mapper dhclient
-dhcpcd diffutils ding-libs dive dmidecode dmraid dnsmasq dnssec-anchors
-dosfstools docker-compose docker-buildx drbl drone-cli drone-runner-docker
-duktape e2fsprogs ecryptfs-utils
-edk2-aarch64 edk2-ovmf edk2-shell efibootmgr efivar ell ethtool evtest
-exfatprogs expat f2fs-tools fatresize file filesystem findutils flac flex
-foot-terminfo fsarchiver fuse-common fuse2 fuse3 gawk gcc-libs gdbm gettext git
-git-lfs git-repair glib2 glibc glibc-locales gmp gnupg gnutls gopls gpart gpgme
-gpm gptfdisk grep grml-zsh-config groff grub gssproxy guestfs-tools gzip hdparm
-hicolor-icon-theme hidapi htop hwdata hyperv iana-etc icu iftop imvirt
-inetutils intel-ucode iotop iproute2 iptables iputils irssi iso-codes iw iwd
-jadx jansson jdk-openjdk jedi-language-server jemalloc jfsutils json-c kbd
-keyutils kitty-terminfo kmod kompose krb5 lame lbzip2 ldns less lftp libaemu
-libaio libarchive libassuan libasyncns libbpf libbsd libcap libcap-ng libcbor
-libcdio libcdr libdc1394 libdnet libdvdcss libdvdnav libdvdread libedit libelf
-libevent libffi libfido2 libgcrypt libgme libgpg-error libgudev libguestfs
-libimobiledevice libimobiledevice-glue libinih libjpeg-turbo libkate libksba
-libldap liblockfile liblouis libmaxminddb libmbim libmd libmicrodns libmirage
-libmspack libmtp libnetfilter_conntrack libnewt libnfnetlink libnfs libnftnl
-libnghttp2 libnghttp3 libnl libnsl libnss_nis libnvme libp11-kit libpcap
-libpipeline libplist libproxy libpsl libqmi libqrtr-glib libsamplerate libsasl
-libseccomp libsecret libsigc++ libsndfile libsodium libsonic libspeechd libssh2
-libsysprof-capture libtasn1 libtirpc libtool libunistring libunrar liburcu
-liburing libutempter libuv libverto libvirt libvirt-dbus libvirt-python libvorbis
-libwbclient libxcrypt libxml2 libxslt libyaml libzip licenses linux
-linux-api-headers linux-atm linux-firmware linux-firmware-marvell
-linux-firmware-whence live-media livecd-sounds lmdb lrzip lsb-release lsscsi lua
-lua-language-server lua-socket lvm2 lynx lz4 lzo lzop m4 man-db man-pages mc
-mdadm memtest86+ memtest86+-efi mkinitcpio mkinitcpio-archiso
-mkinitcpio-busybox mkinitcpio-nfs-utils mobile-broadband-provider-info
-modemmanager mpdecimal mpfr mpg123 mtools mtr nano nbd ncurses ndisc6 nettle
-networkmanager nfs-utils nfsidmap nftables nilfs-utils nmap nodejs npm npth nspr
-nss nss-mdns ntfs-3g numactl nvme-cli nvtop oath-toolkit open-iscsi open-isns
-openbsd-netcat openconnect opencode openjdk-doc openpgp-card-tools openssh openssl
-openvpn opus osinfo-db otf-fira-mono otf-fira-sans p11-kit pacman pacman-contrib
-pacman-mirrorlist pam pambase pandoc-cli pandoc-crossref pandoc-plot partclone
-parted partimage passff-host pbzip2 pciutils pcre pcre2 pcsclite perl pigz
-pinentry pipewire pipewire-alsa pipewire-audio pipewire-pulse pipewire-v4l2
-pixz plantuml
-plantuml-ascii-math popt power-profiles-daemon ppp pptpclient procps-ng
-protobuf psmisc pv python python-attrs python-babel python-build-backend
-python-cffi python-charset-normalizer python-configobj python-cryptography
-python-docker python-docutils python-idna python-imagesize python-jinja
-python-jsonpatch python-jsonpointer python-jsonschema
-python-jsonschema-specifications python-markupsafe python-netifaces
-python-oauthlib python-packaging python-pandocfilters python-poetry
-python-psycopg python-psycopg-pool python-pycparser python-pygments python-libguestfs extra-cmake-modules
-python-pypandoc python-pyparted python-pyserial python-pytest-ruff python-pytz
-python-referencing python-requests python-rpds-py python-ruff python-ruff-api
-python-six python-snowballstemmer python-sphinx python-sphinx-alabaster-theme
-python-sphinx_rtd_theme python-sphinxcontrib-applehelp
-python-sphinxcontrib-devhelp python-sphinxcontrib-htmlhelp
-python-sphinxcontrib-jquery python-sphinxcontrib-jsmath
-python-sphinxcontrib-qthelp python-sphinxcontrib-serializinghtml
-python-typing_extensions python-urllib3 python-yaml qemu-audio-pipewire
-qemu-block-nfs qemu-docs qemu-tools qemu-user-static
-qemu-user-static-binfmt read-edid readline refind reflector repo rp-pppoe
-rpcbind rsync run-parts rust-analyzer rxvt-unicode-terminfo screen sdl_image
-sdparm sed sequoia-sq sg3_utils shadow slang smartmontools smbclient smbnetfs
-squashfs-tools ssh-tools sshfs stoken sudo sysfsutils syslinux systemd
-systemd-libs systemd-resolvconf systemd-sysvcompat talloc tar tcl tcpdump
-terminus-font testdisk thin-provisioning-tools tmux tpm2-tools tpm2-tss
-traceroute ttf-dejavu ttf-droid ttf-fira-mono ttf-fira-sans ttf-liberation
-tzdata udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils
-util-linux util-linux-libs uv vcdimager vim vim-runtime virt-firmware
-virt-install virt-what virtualbox-guest-utils-nox vkd3d vpnc which
-wireguard-tools wireless-regdb wireless_tools wireplumber wit
-wpa_supplicant wvdial wvstreams xdg-utils xfsprogs xl2tpd xmlsec xxhash xz
-yaml-language-server yarn yt-dlp zsh-autosuggestions zstd b3sum
+7zip acpid adwaita-icon-theme alsa-firmware alsa-utils amd-ucode android-tools android-udev archinstall argon2 aribb24
+aribb25 aspell-en aspell-ru aws-cli-v2 b3sum b43-fwcutter base base-devel bash-completion bash-language-server
+bcachefs-tools bind blendr bluez-tools bluez-utils bolt cfr clamav clang clonezilla cloud-init container-diff corepack
+ddrescue dhclient dhcpcd dive dmraid dnsmasq docker-buildx docker-compose drone-cli drone-runner-docker edk2-aarch64
+edk2-ovmf edk2-shell ethtool evtest exfatprogs extra-cmake-modules fatresize fsarchiver git-lfs
+git-repair glibc-locales gopls gpart grml-zsh-config grub guestfs-tools hdparm htop hyperv iftop imvirt inetutils
+intel-ucode iotop iptables irssi iso-codes iwd jadx jdk-openjdk jedi-language-server jfsutils kompose
+ldns lftp libaemu libcdr libdc1394 libdnet libdvdcss libdvdnav libgme libkate liblockfile liblouis libmicrodns
+libmirage libnss_nis libsigc++ libsonic libspeechd libunrar libverto libvirt-dbus libzip linux linux-atm linux-firmware
+linux-firmware-marvell live-media livecd-sounds lsb-release lsscsi lua-language-server lua-socket lynx man-db man-pages
+mc memtest86+ memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils modemmanager mtools mtr nano nbd ndisc6
+networkmanager nfs-utils nmap npm nss-mdns nvme-cli nvtop open-iscsi opencode openconnect openjdk-doc
+openpgp-card-tools openvpn otf-fira-mono otf-fira-sans pandoc-cli pandoc-crossref pandoc-plot passff-host pipewire-alsa
+pipewire-v4l2 plantuml-ascii-math power-profiles-daemon pptpclient pv python-build-backend python-docker
+python-libguestfs python-pandocfilters python-poetry python-psycopg-pool python-pypandoc python-pytest-ruff
+python-ruff-api python-sphinx_rtd_theme python-yaml qemu-audio-pipewire qemu-block-nfs qemu-docs qemu-tools
+qemu-user-static-binfmt read-edid refind reflector repo rp-pppoe rsync rust-analyzer sdl_imagesdparm sequoia-sq
+sg3_utils smartmontools smbnetfs squashfs-tools ssh-tools syslinux systemd-resolvconf tcpdump terminus-font terraform
+terragrunt testdisk tflint tmux tpm2-tools traceroute ttf-dejavu ttf-droid ttf-fira-code ttf-fira-mono ttf-fira-sans
+ttf-liberation udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils uv vcdimager vim virt-firmware
+virt-install virt-what virtualbox-guest-utils-nox vkd3d wireguard-tools wireless-regdb wireless_tools wit wvdial xl2tpd
+yaml-language-server yarn yt-dlp zsh-autosuggestions
 """
 
 # Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
@@ -149,38 +43,26 @@ yaml-language-server yarn yt-dlp zsh-autosuggestions zstd b3sum
 # the server installed first that dependency resolves to the xlibre build
 # instead of pulling in the conflicting stock xorg-server.
 XLIBRE_PACKAGES = """
-xlibre-input-evdev xlibre-input-libinput xlibre-input-wacom xlibre-meta
-xlibre-video-amdgpu xlibre-video-ati xlibre-video-qxl xlibre-xserver
+xlibre-input-evdev xlibre-input-wacom xlibre-meta xlibre-video-amdgpu xlibre-video-ati xlibre-video-qxl
 """
 
 # Installed before GRAPHICAL_PACKAGES: the sonic packages conflict with (and
 # provide) the stock KDE/Plasma ones, so having them installed first makes
 # pacman resolve those dependencies to the sonic replacements.
 SONICDE_PACKAGES = """
-sonicde-meta sonic-ecco sonic-win sonic-workspace
+sonicde-meta
 """
 
 GRAPHICAL_PACKAGES = """
-audacious audacious-plugins audacity blender brltty cdrdao chromium colord-gtk
-dleyna sonic-ecco dolphin-plugins espeak-ng espeakup ffmpeg filelight firefox
-firefox-i18n-en-ca firefox-i18n-ru firefox-spell-ru fluidsynth gameconqueror
-gimp graphviz gst-libav gst-plugin-dav1d gst-plugin-rav1e guvcview-qt
-intel-media-driver joyutils kate kgraphviewer lib32-libva lib32-mesa libcanberra
-libpulse libreoffice-fresh-ru libsm libtiger libva libva-utils libvdpau-va-gl
-libx11 libxau libxcb libxdmcp libxext libxmu libxss libxt mesa-utils
-modem-manager-gui mono mono-msbuild mono-msbuild-sdkresolver
-network-manager-applet networkmanager-openconnect nm-connection-editor okular
-open-vm-tools pavucontrol pcaudiolib peek
-pycharm-community-edition qbittorrent qt6-webengine radeontop renderdoc scrcpy
-sdl12-compat sdl2
-spice-vdagent systray-x-common telegram-desktop texlive-latexextra
-texlive-latexrecommended thunderbird thunderbird-i18n-en-us thunderbird-i18n-ru
-virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all vulkan-broadcom
-vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-intel vulkan-radeon
-vulkan-tools vulkan-virtio wine wine-gecko xarchiver xcb-proto
-xorg-xprop xorg-xrandr xorg-xset xorgproto
-xreader zed zvbi vulkan-mesa-layers vulkan-headers memtest_vulkan
-firefox-ublock-origin gwenview
+audacious audacity blender brltty cdrdao chromium colord-gtk dleyna dolphin-plugins espeakup filelight
+firefox-i18n-en-ca firefox-i18n-ru firefox-spell-ru firefox-ublock-origin gameconqueror gimp gst-libav gst-plugin-dav1d
+gst-plugin-rav1e guvcview-qt gwenview intel-media-driver joyutils kate kgraphviewer lib32-libva lib32-mesa
+libreoffice-fresh-ru libva-utils libvdpau-va-gl memtest_vulkan modem-manager-gui mono-msbuild-sdkresolver
+network-manager-applet networkmanager-openconnect okular open-vm-tools pavucontrol peek pycharm-community-edition
+pipewire-pulse qbittorrent radeontop renderdoc scrcpy spice-vdagent systray-x-common telegram-desktop texlive-latexextra
+thunderbird-i18n-en-us thunderbird-i18n-ru virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all
+vulkan-broadcom vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-headers vulkan-intel vulkan-mesa-layers
+vulkan-radeon vulkan-virtio wine-gecko xarchiver xorg-xset xreader zed
 """
 
 IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"
