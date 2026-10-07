@@ -105,14 +105,14 @@ def test_console_only_seeds_no_power_button_profile():
 
 def test_console_only_by_default():
     script = build_install_script(make_cfg())
-    assert "systemctl enable sddm" not in script
+    assert "systemctl enable soniclogin" not in script
     assert "blender" not in script
     assert "pacman -Sy --needed --noconfirm" in script
 
 
 def test_graphical_flag_installs_desktop():
     script = build_install_script(make_cfg(graphical=True))
-    assert "systemctl enable sddm" in script
+    assert "systemctl enable soniclogin" in script
     assert "pacman -S --needed --noconfirm" in script
     assert "blender" in script
     assert "virtualbox-guest-utils" in script.split()
@@ -120,7 +120,7 @@ def test_graphical_flag_installs_desktop():
     assert "'User=nameless' \"Session=$session_name\"" in script
 
 
-def test_sddm_autologin_session_is_detected_from_installed_sessions():
+def test_soniclogin_autologin_session_is_detected_from_installed_sessions():
     script = build_install_script(make_cfg(graphical=True))
     assert "find /usr/share/xsessions /usr/share/wayland-sessions" in script
     assert 'session_name=$(basename "$session")' in script
@@ -220,9 +220,9 @@ def test_graphical_installs_sonicde_stack_before_graphical_packages():
     assert "sonic-x11-session" not in tokens
 
 
-def test_no_sddm_autologin_without_graphical():
+def test_no_soniclogin_autologin_without_graphical():
     script = build_install_script(make_cfg())
-    assert "sddm.conf.d" not in script
+    assert "soniclogin.conf.d" not in script
 
 
 def test_pacman_tuning_and_repos_present():

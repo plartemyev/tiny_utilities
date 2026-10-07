@@ -172,7 +172,7 @@ modem-manager-gui mono mono-msbuild mono-msbuild-sdkresolver
 network-manager-applet networkmanager-openconnect nm-connection-editor okular
 open-vm-tools pavucontrol pcaudiolib peek
 pycharm-community-edition qbittorrent qt6-webengine radeontop renderdoc scrcpy
-sddm sdl12-compat sdl2
+sdl12-compat sdl2
 spice-vdagent systray-x-common telegram-desktop texlive-latexextra
 texlive-latexrecommended thunderbird thunderbird-i18n-en-us thunderbird-i18n-ru
 virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all vulkan-broadcom
@@ -501,11 +501,11 @@ def _chroot(cfg: InstallConfig) -> str:
             "retry pacman -S --needed --noconfirm \\",
             f"    {_wrapped(_select_graphical_packages(GRAPHICAL_PACKAGES, cfg))}",
             "",
-            "log 'Enabling SDDM display manager'",
-            "systemctl enable sddm",
+            "log 'Enabling sonic-login-manager display manager'",
+            "systemctl enable soniclogin",
             "",
-            f"log 'Enabling SDDM autologin for {cfg.username}'",
-            "mkdir -p /etc/sddm.conf.d",
+            f"log 'Enabling sonic-login-manager autologin for {cfg.username}'",
+            "mkdir -p /etc/soniclogin.conf.d",
             # || true: find exits 1 when one of the two directories is missing
             # (the current sonicde set ships no Wayland session file), and
             # pipefail + set -e would abort before the empty check below.
@@ -519,7 +519,7 @@ def _chroot(cfg: InstallConfig) -> str:
             "session_name=$(basename \"$session\")",
             (f"printf '%s\\n' '[Autologin]' 'User={cfg.username}'"
              " \"Session=$session_name\""
-             " > /etc/sddm.conf.d/10-archinstaller.conf"),
+             " > /etc/soniclogin.conf.d/10-archinstaller.conf"),
         ]
     lines += [
         "",
