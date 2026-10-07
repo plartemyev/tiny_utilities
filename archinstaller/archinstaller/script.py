@@ -293,6 +293,11 @@ def _header() -> str:
 
 def _partitioning(disk: str) -> str:
     return (
+        # A previous FAILED run leaves /mnt/new-root (plus its /boot ESP)
+        # mounted and the guest swapfile swapon'ed; sfdisk refuses to
+        # repartition a busy disk, so release first (no-ops on a fresh ISO).
+        "swapoff -a 2>/dev/null || true\n"
+        "umount -R /mnt/new-root 2>/dev/null || true\n"
         f"log 'Partitioning {disk} (1G ESP + rest for root)'\n"
         f"wipefs -af {_sh(disk)}\n"
         f"sfdisk {_sh(disk)} <<'SFDISK'\n"
@@ -501,8 +506,12 @@ def _chroot(cfg: InstallConfig) -> str:
             "",
             f"log 'Enabling SDDM autologin for {cfg.username}'",
             "mkdir -p /etc/sddm.conf.d",
+            # || true: find exits 1 when one of the two directories is missing
+            # (the current sonicde set ships no Wayland session file), and
+            # pipefail + set -e would abort before the empty check below.
             ("session=$(find /usr/share/xsessions /usr/share/wayland-sessions"
-             " -maxdepth 1 -name '*.desktop' 2>/dev/null | sort | head -n 1)"),
+             " -maxdepth 1 -name '*.desktop' 2>/dev/null | sort | head -n 1"
+             " || true)"),
             "if [ -z \"$session\" ]; then",
             "    echo 'no session desktop files found' >&2",
             "    exit 1",

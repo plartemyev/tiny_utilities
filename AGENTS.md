@@ -133,6 +133,18 @@
     - SDDM autologin requires `Session=` in `[Autologin]`: with only `User=` set the journal shows
       "Unable to find autologin session entry" and the greeter appears instead (hit on a fresh install — the tool now
       detects the session via `find` over `/usr/share/{x,wayland}-sessions` at install time);
+    - the autologin session-detection `find` must carry `|| true` under the install script's `set -euo pipefail`
+      (hit 2026-10-07 on a libvirt target): the current sonicde set is X11-only (`sonic-workspace` ships
+      `/usr/share/xsessions/sonicde.desktop`; nothing creates `/usr/share/wayland-sessions/`), and `find` exits 1
+      when any of its path arguments is missing — pipefail turns that into a failing `session=$(...)` assignment
+      and `set -e` aborts the script with code 1 BEFORE the `[ -z "$session" ]` guard, printing no diagnostic;
+      find's partial output (the xsessions hit) still flows through the pipeline, so the fix keeps semantics;
+    - rerunning archinstaller against a live ISO that already ran a FAILED install dies at the first step
+      (`sfdisk`: "Checking that no-one is using this disk right now ... FAILED"): the failed run leaves
+      `/mnt/new-root` (plus `/mnt/new-root/boot`) mounted and the guest swapfile swapon'ed, and sfdisk refuses
+      to repartition a busy disk (hit 2026-10-07 on a libvirt target); the install script now releases the
+      leftovers itself (`swapoff -a` + `umount -R /mnt/new-root`, both `|| true`, before `wipefs` — no-ops on
+      a fresh ISO); the manual fallback is `ssh root@<target> 'swapoff -a; umount -R /mnt/new-root'`;
     - SDDM autologin also cannot auto-unlock password-encrypted secret stores — pam_kwallet5 logs
       "Couldn't get password (it is empty)" and the wallet stays locked until the first app prompts
       (ksecretd, which ships inside the `kwallet` package since 6.x, has the same encrypted backing store);
