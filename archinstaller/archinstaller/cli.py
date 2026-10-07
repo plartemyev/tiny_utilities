@@ -13,6 +13,7 @@ import string
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime
 
 import paramiko
@@ -662,43 +663,46 @@ def _print_summary(conn: SshConnection, args: argparse.Namespace, hostname: str,
                    generated_notes: list[str], opencode_password: str | None = None) -> None:
     print()
     print("=" * 60)
-    print("INSTALLATION COMPLETE")
+    print("RUN COMPLETE")
     print("=" * 60)
-    for note in generated_notes:
-        print(note)
-    _code, private = run_capture(conn.client, "ip -4 -o addr show scope global")
-    public_code, public = run_capture(
-        conn.client,
-        "attempt=1; while true; do curl -4 -sf --max-time 15 https://ifconfig.me && break;"
-        " [ \"$attempt\" -ge 3 ] && exit 1;"
-        " echo \"curl failed (attempt $attempt/3), retrying in 5s...\";"
-        " attempt=$((attempt + 1)); sleep 5; done",
-    )
-    key_code, public_key = run_capture(conn.client, "cat $HOME/.ssh/id_ed25519.pub")
-    if key_code != 0:
-        sys.exit("failed to read the newly generated public key on the target")
-    interfaces = [
-        f"{fields[1]} {fields[3]}"
-        for fields in (line.split() for line in private.splitlines())
-        if len(fields) >= 4
-    ]
-    jump_note = f"ssh -J {args.jump_host} {args.username}@{args.target}" if args.jump_host \
-        else f"ssh {args.username}@{args.target}"
-    print()
-    print("=" * 60)
-    print("INSTALLATION COMPLETE")
-    print("=" * 60)
-    print(f"Target host:    {args.target} (hostname: {hostname})")
-    print(f"Private IP(s):  {'; '.join(interfaces) if interfaces else '(none found)'}")
-    if public_code == 0 and public.strip():
-        print(f"Public IP:      {public.strip()}")
-    else:
-        print("Public IP:      (unavailable)")
-    print(f"Created user:   {args.username}")
-    print("New SSH key:    $HOME/.ssh/id_ed25519 (ed25519, empty passphrase)")
-    print(f"Public key:\n{public_key.strip()}")
-    if opencode_password is not None:
-        print(f"opencode web:   http://{args.target}:{OPENCODE_PORT}")
-        print(f"opencode user:  {OPENCODE_WEB_USER}")
-        print(f"opencode pass:  {opencode_password}")
-    print(f"Connect with:\n    {jump_note}")
+    try:
+        _code, private = run_capture(conn.client, "ip -4 -o addr show scope global")
+        public_code, public = run_capture(
+            conn.client,
+            "attempt=1; while true; do curl -4 -sf --max-time 15 https://ifconfig.me && break;"
+            " [ \"$attempt\" -ge 3 ] && exit 1;"
+            " echo \"curl failed (attempt $attempt/3), retrying in 5s...\";"
+            " attempt=$((attempt + 1)); sleep 5; done",
+        )
+        key_code, public_key = run_capture(conn.client, "cat $HOME/.ssh/id_ed25519.pub")
+        if key_code != 0:
+            sys.exit("failed to read the newly generated public key on the target")
+        interfaces = [
+            f"{fields[1]} {fields[3]}"
+            for fields in (line.split() for line in private.splitlines())
+            if len(fields) >= 4
+        ]
+        jump_note = f"ssh -J {args.jump_host} {args.username}@{args.target}" if args.jump_host \
+            else f"ssh {args.username}@{args.target}"
+        print()
+        print("=" * 60)
+        print("INSTALLATION COMPLETE")
+        print("=" * 60)
+        print(f"Target host:    {args.target} (hostname: {hostname})")
+        print(f"Private IP(s):  {'; '.join(interfaces) if interfaces else '(none found)'}")
+        if public_code == 0 and public.strip():
+            print(f"Public IP:      {public.strip()}")
+        else:
+            print("Public IP:      (unavailable)")
+        print(f"Created user:   {args.username}")
+        for note in generated_notes:
+            print(note)
+        print("New SSH key:    $HOME/.ssh/id_ed25519 (ed25519, empty passphrase)")
+        print(f"Public key:\n{public_key.strip()}")
+        if opencode_password is not None:
+            print(f"opencode web:   http://{args.target}:{OPENCODE_PORT}")
+            print(f"opencode user:  {OPENCODE_WEB_USER}")
+            print(f"opencode pass:  {opencode_password}")
+        print(f"Connect with:\n    {jump_note}")
+    except Exception as e:
+        print(f"Final result gathering error {e}: {traceback.format_exc()}")
