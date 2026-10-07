@@ -128,7 +128,7 @@ python-sphinxcontrib-devhelp python-sphinxcontrib-htmlhelp
 python-sphinxcontrib-jquery python-sphinxcontrib-jsmath
 python-sphinxcontrib-qthelp python-sphinxcontrib-serializinghtml
 python-typing_extensions python-urllib3 python-yaml qemu-audio-pipewire
-qemu-block-nfs qemu-docs qemu-guest-agent qemu-user-static
+qemu-block-nfs qemu-docs qemu-tools qemu-user-static
 qemu-user-static-binfmt read-edid readline refind reflector repo rp-pppoe
 rpcbind rsync run-parts rust-analyzer rxvt-unicode-terminfo screen sdl_image
 sdparm sed sequoia-sq sg3_utils shadow slang smartmontools smbclient smbnetfs
