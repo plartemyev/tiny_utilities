@@ -10,6 +10,8 @@
 #            status page respond
 #   stage 3  db cache-miss -> upstream fetch -> cache-hit on second request;
 #            cache files on the host are owned by the calling user
+#   stage 3b byte-range resume support: 206 + exact window on a cached
+#            file, 206 relayed from upstream (no cache write) on a miss
 #   stage 4  pacman -Sy on a cold client (core/extra/multilib through the
 #            proxy, real signature verification)
 #   stage 5  xlibre + sonicde repos sync through the proxy (default
@@ -136,6 +138,38 @@ cmp -s "$SCRATCH/core.db.1" "$SCRATCH/core.db.2" || fail "cached db differs from
 [ "$(stat -c %u "$SCRATCH/cache/core/os/x86_64/core.db")" = "$HOST_UID" ] \
 	|| fail "cached file must be owned by the calling user on the host"
 ok "core.db miss -> upstream fetch -> cache hit (identical bytes, host-user owned)"
+
+echo "== stage 3b: byte-range resume support"
+# pacman resumes interrupted downloads with a Range request: the mirror
+# must answer 206 (a plain 200 makes curl abort the resume with error 33,
+# "HTTP server does not seem to support byte ranges")
+HDRS=$(curl -sS -D - -o "$SCRATCH/core.db.range" -r 100-199 \
+	"http://127.0.0.1:$HOST_PORT/core/os/x86_64/core.db" | tr -d '\r')
+grep -q '^HTTP/.* 206' <<<"$HDRS" \
+	|| fail "cached file: range must answer 206 (got: $(head -1 <<<"$HDRS"))"
+grep -qi '^Content-Range: bytes 100-199/' <<<"$HDRS" \
+	|| fail "cached file: 206 must carry Content-Range"
+[ "$(stat -c %s "$SCRATCH/core.db.range")" = 100 ] \
+	|| fail "cached file: 206 body must be exactly the 100 requested bytes"
+dd if="$SCRATCH/core.db.1" of="$SCRATCH/core.db.range.want" \
+	bs=1 skip=100 count=100 status=none
+cmp -s "$SCRATCH/core.db.range" "$SCRATCH/core.db.range.want" \
+	|| fail "cached file: 206 bytes differ from the cached copy"
+ok "cached file: Range 100-199 answered 206 with the exact bytes"
+
+# uncached file: the range is relayed to the upstream (which supports
+# ranges itself) and a partial transfer must not land in the cache
+HDRS=$(curl -sS -D - -o "$SCRATCH/multilib.db.range" -r 0-99 \
+	"http://127.0.0.1:$HOST_PORT/multilib/os/x86_64/multilib.db" | tr -d '\r')
+grep -q '^HTTP/.* 206' <<<"$HDRS" \
+	|| fail "uncached file: range must relay a 206 (got: $(head -1 <<<"$HDRS"))"
+grep -qi '^Content-Range: bytes 0-99/' <<<"$HDRS" \
+	|| fail "uncached file: relayed 206 must carry the upstream Content-Range"
+[ "$(stat -c %s "$SCRATCH/multilib.db.range")" = 100 ] \
+	|| fail "uncached file: relayed 206 body must be the requested window"
+[ ! -e "$SCRATCH/cache/multilib/os/x86_64/multilib.db" ] \
+	|| fail "a ranged relay must not write the cache"
+ok "uncached file: range relayed from upstream 206, cache untouched"
 
 echo "== stages 4-6: pacman client (cold sync, extra repos, install)"
 # client config lives on the host so both client runs share it

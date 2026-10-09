@@ -10,6 +10,7 @@ import asyncio
 import email.utils
 import inspect
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -102,6 +103,33 @@ def test_parsers(_base: str) -> None:
                 pass
             else:
                 raise AssertionError("%s accepted %r" % (fn.__name__, bad))
+
+
+def test_range_math(_base: str) -> None:
+    f = server.parse_range
+    # the forms pacman's curl sends when resuming
+    assert f(None) is None
+    assert f("bytes=0-0") == (0, 0)
+    assert f("bytes=5-") == (5, None)
+    assert f("bytes=10-19") == (10, 19)
+    assert f("bytes=-5") == (-5, None)
+    # ignored forms (full 200 response, like a server without range support)
+    for ignored in ("", "bytes=", "bytes=-0", "bytes=abc", "items=1-2",
+                    "bytes=1-2,5-9", "bytes=9-5"):
+        assert f(ignored) is None, ignored
+
+    r = server.resolve_range
+    assert r((0, 0), 64) == (0, 0)
+    assert r((5, None), 64) == (5, 63)
+    assert r((10, 19), 64) == (10, 19)
+    assert r((10, 100), 64) == (10, 63)  # end clamped to EOF
+    assert r((-5, None), 64) == (59, 63)  # suffix: last 5 bytes
+    assert r((-100, None), 64) == (0, 63)  # oversized suffix: whole file
+    # unsatisfiable: 416
+    assert r((64, None), 64) is None
+    assert r((100, None), 64) is None
+    assert r((0, None), 0) is None  # empty file
+    assert r((-5, None), 0) is None
 
 
 def test_gc(base: str) -> None:
@@ -546,15 +574,145 @@ async def test_single_flight(base: str) -> None:
             await up.close()
 
 
+async def test_ranges(base: str) -> None:
+    """Byte-range support: pacman resumes interrupted downloads by
+    re-requesting the missing tail with a Range header; a plain 200
+    answer makes curl abort the resume ('HTTP server does not seem to
+    support byte ranges')."""
+    upstream: dict[str, dict] = {}
+    seen_ranges: dict[str, list] = {}
+
+    async def stub(request: web.Request) -> web.Response:
+        filename = request.match_info["filename"]
+        rec = upstream[filename]
+        rec["calls"] += 1
+        body: bytes = rec["body"]
+        rng = request.headers.get("Range")
+        seen_ranges.setdefault(filename, []).append(rng)
+        if rng is not None and rec.get("honor", True):
+            m = re.match(r"^bytes=(\d*)-(\d*)$", rng)
+            if m and (m[1] or m[2]):
+                if m[1]:
+                    start, end = int(m[1]), int(m[2] or len(body) - 1)
+                else:  # suffix: last N bytes
+                    start, end = max(0, len(body) - int(m[2])), len(body) - 1
+                end = min(end, len(body) - 1)
+                return web.Response(status=206, body=body[start:end + 1],
+                                    headers={"Content-Range": "bytes %d-%d/%d"
+                                             % (start, end, len(body))})
+        return web.Response(body=body)
+
+    up_app = web.Application()
+    up_app.router.add_get("/testrepo/{arch}/{filename}", stub)
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir, extra_repos=[
+        Repo("test", ["http://127.0.0.1:%d/testrepo/$arch" % up.port])])
+    app = build_app(cfg)
+    mirror = TestServer(app)
+    await mirror.start_server()
+    try:
+        body = bytes(range(64))
+        now = time.time()
+        upstream[PKG] = dict(body=body, mtime=now - 60, calls=0)
+        upstream["stubborn-1.0-1-x86_64.pkg.tar.zst"] = dict(
+            body=body, mtime=now - 60, calls=0, honor=False)
+        upstream["test.db"] = dict(body=body, mtime=now - 60, calls=0)
+        base_url = str(mirror.make_url(""))
+        pkg_url = base_url + "/test/os/x86_64/" + PKG
+        cached_pkg = os.path.join(cache_dir, "test/os/x86_64/" + PKG)
+        stubborn_url = base_url + "/test/os/x86_64/stubborn-1.0-1-x86_64.pkg.tar.zst"
+        cached_stubborn = os.path.join(
+            cache_dir, "test/os/x86_64/stubborn-1.0-1-x86_64.pkg.tar.zst")
+        db_url = base_url + "/test/os/x86_64/test.db"
+        cached_db = os.path.join(cache_dir, "test/os/x86_64/test.db")
+
+        async with ClientSession() as http:
+            # resume against an uncached file: the range is relayed to the
+            # upstream (the 206 comes from there) and nothing is cached
+            async with http.get(pkg_url, headers={"Range": "bytes=10-19"}) as r:
+                assert r.status == 206, r.status
+                assert r.headers["Content-Range"] == "bytes 10-19/64"
+                assert await r.read() == body[10:20]
+            assert seen_ranges[PKG] == ["bytes=10-19"], "range must reach upstream"
+            assert not os.path.exists(cached_pkg), \
+                "a partial transfer cannot fill the cache"
+
+            # plain GET fills the cache and advertises range support
+            async with http.get(pkg_url) as r:
+                assert r.status == 200 and await r.read() == body
+                assert r.headers["Accept-Ranges"] == "bytes"
+
+            # cached file: slices are served locally, upstream never asked
+            for header, want in (("bytes=0-3", body[0:4]),
+                                 ("bytes=60-", body[60:]),
+                                 ("bytes=-5", body[59:]),
+                                 ("bytes=10-100", body[10:])):
+                async with http.get(pkg_url, headers={"Range": header}) as r:
+                    assert r.status == 206, (header, r.status)
+                    assert await r.read() == want, header
+            assert upstream[PKG]["calls"] == 2
+
+            # resuming past EOF (a .part for a smaller, replaced file): 416
+            async with http.get(pkg_url, headers={"Range": "bytes=64-"}) as r:
+                assert r.status == 416, r.status
+                assert r.headers["Content-Range"] == "bytes */64"
+
+            # multi-range and other unsupported headers: ignored, full 200
+            async with http.get(pkg_url, headers={"Range": "bytes=0-1,5-9"}) as r:
+                assert r.status == 200 and await r.read() == body
+
+            # HEAD must answer 206 headers without any body bytes (aiohttp
+            # does not suppress StreamResponse writes itself)
+            reader, writer = await asyncio.open_connection(mirror.host, mirror.port)
+            writer.write(("HEAD /test/os/x86_64/%s HTTP/1.1\r\n"
+                          "Host: x\r\nRange: bytes=0-3\r\n"
+                          "Connection: close\r\n\r\n" % PKG).encode())
+            await writer.drain()
+            raw = await reader.read()
+            writer.close()
+            head, _, rest = raw.partition(b"\r\n\r\n")
+            assert b" 206 " in head.split(b"\r\n")[0], raw
+            assert rest == b"", "HEAD response must not carry a body: %r" % raw
+
+            # upstream ignores the range (answers 200 full): the proxy
+            # fetches the whole file into the cache while forwarding only
+            # the requested window
+            async with http.get(stubborn_url, headers={"Range": "bytes=10-19"}) as r:
+                assert r.status == 206
+                assert r.headers["Content-Range"] == "bytes 10-19/64"
+                assert await r.read() == body[10:20]
+            assert open(cached_stubborn, "rb").read() == body, \
+                "the range-ignoring upstream fetch must still fill the cache"
+            # ...so the retry (or the next client) resumes from the cache
+            async with http.get(stubborn_url, headers={"Range": "bytes=20-"}) as r:
+                assert r.status == 206 and await r.read() == body[20:]
+
+            # a db resumes the same way: relayed 206, nothing cached
+            async with http.get(db_url, headers={"Range": "bytes=-7"}) as r:
+                assert r.status == 206
+                assert r.headers["Content-Range"] == "bytes 57-63/64"
+                assert await r.read() == body[57:]
+            assert not os.path.exists(cached_db)
+    finally:
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
 TESTS = [
     ("vercmp", test_vercmp),
     ("parsers", test_parsers),
+    ("range-math", test_range_math),
     ("gc", test_gc),
     ("from-env", test_from_env),
     ("mirror-flow", test_mirror_flow),
     ("db-ttl", test_db_ttl),
     ("fresh-wait", test_fresh_wait),
     ("single-flight", test_single_flight),
+    ("byte-ranges", test_ranges),
 ]
 
 

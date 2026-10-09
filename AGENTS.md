@@ -337,6 +337,36 @@
       the FRESH_WAIT wait — the background refresh takes the same non-reentrant asyncio.Lock, so that
       would deadlock the refresh and turn every stale request into a full FRESH_WAIT stall (hence
       double-checked locking only around the first fetch);
+    - byte-range (pacman resume) support (2026-10-09, hit live: a first big download
+      died mid-stream leaving nothing cached, pacman's retry resumed its `.part`
+      with `Range: bytes=N-`, the mirror answered a plain 200, and curl aborts
+      exactly that with error 33 - pacman prints "HTTP server does not seem to
+      support byte ranges. Cannot resume." and fails the transaction). Serving
+      rules now: cached files are sliced locally (206 + Content-Range, 416 +
+      `Content-Range: bytes */size` past EOF); on a miss the client's Range is
+      relayed upstream and the 206 streams through with NO cache write
+      (partials never land in the cache); an upstream that ignores the range
+      (200) is still fetched whole into the cache while only the requested
+      window is forwarded - the resumer can hit its 10 s low-speed abort on a
+      far window (no bytes flow until the chew reaches `start`), but its retry
+      then resumes from the now-cached file (self-healing). Peculiarities:
+      aiohttp 3.14's `web.FileResponse` handles single ranges natively (cached
+      files were never broken), BUT it answers multi-range headers with its own
+      416, so `_serve_local` serves unsupported Range forms itself (plain 200
+      full body) instead of delegating - otherwise the multi-range answer would
+      depend on which code path serves the file; aiohttp 3.14 does NOT suppress
+      `StreamResponse` body writes for HEAD (probed: the HEAD reply carried the
+      whole "body" on the wire), so both 206 paths guard
+      `request.method != "HEAD"`; pacman never sends multi-range/other units,
+      so 200-for-unsupported is enough; a stale db + Range skips the
+      FRESH_WAIT refresh deliberately (the resume must come from the same
+      content the `.part` started with - refresh-then-slice could stitch two
+      db generations into one corrupt file);
+    - e2e stage 3b covers the resume path (cached 206 slice + uncached 206
+      relay, asserting the cache stays untouched); shell gotcha hit there:
+      `tail -c +N bigfile | head -c M` inside e2e.sh kills the whole script
+      with SIGPIPE (exit 141, silently - no FAIL line) under
+      `set -o pipefail` once `head` exits; use `dd bs=1 skip= count=` instead;
 
 
 ## 1. Think Before Coding

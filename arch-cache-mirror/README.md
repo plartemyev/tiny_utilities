@@ -38,6 +38,15 @@ Behaviour per request:
   under the per-file lock, streamed to the requesting client while it
   fills the cache - concurrent clients wait for it and are then served
   from the cache.
+- **byte ranges** (pacman resumes an interrupted download by
+  re-requesting its missing tail with a `Range:` header - a server that
+  answers that with a plain 200 aborts the resume): cached files are
+  sliced locally (206 + `Content-Range`, 416 past EOF); on a miss the
+  range is relayed to the upstream and its 206 streams through without
+  caching (partials never land in the cache); an upstream that ignores
+  the range is downloaded whole into the cache while only the requested
+  window is forwarded - a resuming client may give up on a far window,
+  but its retry then resumes from the now-cached copy;
 - the repository -> upstream mapping is built at startup from
   environment variables; `core`/`extra`/`multilib` come with sensible
   defaults, `xlibre` and `sonicde` are preconfigured.
@@ -231,12 +240,14 @@ Docker everywhere nowadays.
 ## Development
 
 `server.py` is a single-file aiohttp app; `test_mirror.py` covers the
-pure logic (version comparison, size/duration parsing, GC passes,
-env parsing) plus a loopback integration test with a stub upstream
-(cache miss streaming, cache hit, fresh-on-request db retrieval, the
-FRESH_WAIT stale fallback, short-body upstream, 404 pass-through with
-negative caching, unknown repo, same-file single-flight). Tests need
-`aiohttp` and write only to `./tmp`:
+pure logic (version comparison, size/duration parsing, Range
+parsing/resolution, GC passes, env parsing) plus a loopback integration
+test with a stub upstream (cache miss streaming, cache hit,
+fresh-on-request db retrieval, the FRESH_WAIT stale fallback, short-body
+upstream, 404 pass-through with negative caching, unknown repo,
+same-file single-flight, byte-range resume: cached slices, upstream 206
+relay, a range-ignoring upstream still filling the cache, 416, HEAD
+without a body). Tests need `aiohttp` and write only to `./tmp`:
 
 ```bash
 python test_mirror.py             # host, needs aiohttp
@@ -254,11 +265,12 @@ in-image unit/integration tests (as the non-root `mirror` user), boots
 the mirror on a throwaway docker network - as the uid:gid mapped from
 `docker-compose.yml` - next to a genuine `archlinux:latest` client and
 checks the full path - health/status endpoints, db cache miss →
-upstream fetch → cache hit with host-user-owned cache files, a cold
+upstream fetch → cache hit with host-user-owned cache files, byte-range
+resume (cached slice, uncached relay), a cold
 `pacman -Sy` (including the `xlibre`/`sonicde` repos and real signature
 verification), a warm sync that must not touch upstream databases
 (DB_TTL), a package install through the proxy, and the negative cache.
-Eight PASS lines mean everything worked:
+Ten PASS lines mean everything worked:
 
 ```bash
 ./e2e.sh                 # full run (~2-4 min), cleans up after itself

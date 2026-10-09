@@ -27,6 +27,14 @@ same URL layout.  On a request the proxy:
   the cache once it lands.  Definitive upstream 404s (e.g. the `.db.sig`
   files official repos never serve) are remembered for 5 minutes so
   repeated requests skip the doomed mirror cycle;
+* honors byte-range requests - pacman resumes interrupted downloads by
+  re-requesting the missing tail with a `Range:` header, and a server
+  that answers such a request with a plain 200 aborts the resume (curl
+  error 33, "HTTP server does not seem to support byte ranges"): cached
+  files are sliced locally (206), an uncached one is fetched ranged from
+  upstream and relayed, and an upstream that ignores the range is
+  downloaded whole into the cache while only the requested window is
+  forwarded;
 * periodically prunes the cache: superseded package versions
   (KEEP_VERSIONS), files untouched for CACHE_AGE and, when CACHE_SIZE
   is set, the oldest files until the total is back under the limit.
@@ -83,6 +91,7 @@ PACKAGE_FILE_RE = re.compile(
 )
 SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kmgtp]?)b?$")
 DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhd]?)$")
+RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 DEFAULT_DB_TTL = "10m"
 DEFAULT_FRESH_WAIT = "5"  # < pacman's 10 s low-speed abort
 NEGATIVE_TTL_SECONDS = 300  # remember upstream 404s this long
@@ -403,6 +412,42 @@ def _is_metadata(filename: str) -> bool:
     return filename.endswith(METADATA_SUFFIXES)
 
 
+def parse_range(header: str | None) -> tuple[int, int] | None:
+    """Parse a single-range Range header into (start, end): start >= 0 is
+    an absolute offset with end None for an open range ('bytes=N-');
+    start < 0 requests the last -start bytes ('bytes=-N').  Returns None
+    for absent, malformed, multi-range or empty-suffix headers - those
+    get a full 200 response, which a resuming pacman never sends."""
+    if not header:
+        return None
+    m = RANGE_RE.match(header.strip())
+    if not m or (m[1] == "" and (m[2] == "" or m[2] == "0")) \
+            or (m[1] and m[2] and int(m[2]) < int(m[1])):
+        return None
+    if m[1] == "":
+        return -int(m[2]), None
+    return int(m[1]), int(m[2]) if m[2] else None
+
+
+def resolve_range(rng: tuple[int, int], size: int) -> tuple[int, int] | None:
+    """Clamp a parsed range against a known size into an inclusive
+    (start, end) window, or None when it cannot be satisfied (HTTP 416)."""
+    start, end = rng
+    if start < 0:  # suffix: the last -start bytes (all of it if bigger)
+        start = max(0, size + start)
+    if start >= size:
+        return None
+    return start, min(end, size - 1) if end is not None else size - 1
+
+
+def _range_header(rng: tuple[int, int]) -> str:
+    """The Range header value to forward upstream for a parsed range."""
+    start, end = rng
+    if start < 0:
+        return "bytes=%d" % start
+    return "bytes=%d-%s" % (start, "" if end is None else end)
+
+
 def _quiet_unlink(path: str) -> None:
     try:
         os.unlink(path)
@@ -463,6 +508,51 @@ async def handle_status(request: web.Request) -> web.Response:
 
 
 
+async def _serve_local(request: web.Request, local: str,
+                       rng: tuple[int, int] | None) -> web.StreamResponse:
+    """Serve a cached file: a plain FileResponse without a range, a 206
+    slice for one (pacman resumes interrupted downloads this way - a 200
+    answer would abort the resume), 416 when the window is past EOF.  A
+    Range header the parser does not support (multi-range, other units,
+    malformed) gets a full 200 body served here instead of running into
+    the FileResponse's own range handling, so the mirror's answers stay
+    self-consistent."""
+    if rng is None and request.headers.get("Range") is None:
+        return web.FileResponse(local, headers={"Accept-Ranges": "bytes"})
+    try:
+        f = open(local, "rb")
+    except FileNotFoundError:
+        return web.Response(status=404, text="file left the cache\n")
+    with f:
+        size = os.fstat(f.fileno()).st_size
+        window = resolve_range(rng, size) if rng is not None else (0, size - 1)
+        if window is None:
+            return web.Response(status=416, headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": "bytes */%d" % size})
+        start, end = window
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(end - start + 1)}
+        if rng is not None:
+            headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, size)
+        response = web.StreamResponse(status=206 if rng is not None else 200,
+                                      headers=headers)
+        await response.prepare(request)
+        if request.method != "HEAD":  # aiohttp does not suppress body writes
+            remaining = end - start + 1
+            f.seek(start)
+            while remaining > 0:
+                chunk = f.read(min(CHUNK_SIZE, remaining))
+                if not chunk:
+                    break
+                await response.write(chunk)
+                remaining -= len(chunk)
+            await response.write_eof()
+    return response
+
+
 async def handle_repo(request: web.Request) -> web.StreamResponse:
     repo_name = request.match_info["repo"]
     arch = request.match_info["arch"]
@@ -476,27 +566,77 @@ async def handle_repo(request: web.Request) -> web.StreamResponse:
             text="unknown repository %r (serving: %s)\n"
                  % (repo_name, ", ".join(sorted(request.app["repos"]))))
     local = os.path.join(request.app["cfg"].cache_dir, repo_name, "os", arch, filename)
+    rng = parse_range(request.headers.get("Range"))
     negative_until = request.app["negative"].get(local)
     if negative_until and time.time() < negative_until and not os.path.exists(local):
         LOG.info("neg  %s/%s/%s (recent upstream 404)", repo_name, arch, filename)
         return web.Response(status=404,
                             text="upstream reported %s as missing recently\n" % filename)
     if _is_metadata(filename):
-        return await _handle_metadata(request, repo, arch, filename, local)
+        return await _handle_metadata(request, repo, arch, filename, local, rng)
     async with file_lock(request.app, local):
         if os.path.exists(local):
-            LOG.info("hit  %s/%s/%s", repo_name, arch, filename)
-            return web.FileResponse(local)
+            LOG.info("hit  %s/%s/%s%s", repo_name, arch, filename,
+                     " (resume %s)" % request.headers["Range"] if rng is not None else "")
+            return await _serve_local(request, local, rng)
         outcome, response, last_status = await _fetch_upstream(
-            request.app, request, repo, arch, filename, local)
+            request.app, request, repo, arch, filename, local, rng=rng)
         if outcome != "ok":
             return _upstream_failed(filename, last_status)
         return response
 
 
+def _client_response(length: str | None, window: tuple[int, int] | None,
+                     total: int | None) -> web.StreamResponse:
+    """The client response for a full upstream 200 (plain 200 stream, or a
+    206 when the upstream ignored our Range and the proxy forwards just
+    the requested window out of the body it is caching anyway)."""
+    if window is None:
+        response = web.StreamResponse(headers={
+            "Content-Type": "application/octet-stream",
+            "Accept-Ranges": "bytes"})
+        if length is not None:
+            response.content_length = int(length)
+        return response
+    start, end = window
+    return web.StreamResponse(status=206, headers={
+        "Content-Type": "application/octet-stream",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(end - start + 1),
+        "Content-Range": "bytes %d-%d/%d" % (start, end, total)})
+
+
+async def _relay_range(request: web.Request, upstream, repo: Repo, arch: str,
+                       filename: str, url: str) -> web.StreamResponse:
+    """Relay an upstream 206 (honored resume range) to the client: bytes
+    flow straight through and nothing lands in the cache (it only ever
+    gains complete files).  A truncated relay raises ClientPayloadError;
+    the caller's interruption handling applies."""
+    response = web.StreamResponse(status=206, headers={
+        "Content-Type": "application/octet-stream",
+        "Accept-Ranges": "bytes"})
+    content_range = upstream.headers.get("Content-Range")
+    if content_range is not None:
+        response.headers["Content-Range"] = content_range
+    length = upstream.headers.get("Content-Length")
+    if length is not None:
+        response.content_length = int(length)
+    await response.prepare(request)
+    relayed = 0
+    if request.method != "HEAD":  # aiohttp does not suppress body writes
+        async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
+            await response.write(chunk)
+            relayed += len(chunk)
+        await response.write_eof()
+    LOG.info("rng  %s/%s/%s (%s, %s) <- %s", repo.name, arch, filename,
+             human_size(relayed), content_range or "no Content-Range", url)
+    return response
+
+
 async def _fetch_upstream(app: web.Application, request: web.Request | None,
                           repo: Repo, arch: str, filename: str, local: str, *,
                           revalidate: bool = False,
+                          rng: tuple[int, int] | None = None,
                           ) -> tuple[str, web.StreamResponse | None, int | None]:
     """Download `filename` from the first reachable upstream mirror into
     the cache (atomic rename, so the cache only ever gains complete
@@ -508,6 +648,14 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
 
     revalidate (background refresh only): send If-Modified-Since from the
     cached copy's mtime and treat 304 as done.
+
+    rng (a resume request - pacman retries interrupted downloads with a
+    Range header, and a plain 200 answer aborts the resume with curl
+    error 33): an upstream 206 is relayed to the client untouched and
+    caches nothing; if the upstream ignores the range (200), the whole
+    file is still fetched into the cache while only the requested window
+    is forwarded - the client may give up on a far window, but its retry
+    then hits the cache.  Unsatisfiable windows answer 416.
 
     The upstream session requests identity encoding, so a body shorter
     than the declared Content-Length can only be a genuinely truncated
@@ -526,6 +674,8 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
     if revalidate and os.path.exists(local):
         headers["If-Modified-Since"] = email.utils.formatdate(
             os.stat(local).st_mtime, usegmt=True)
+    if rng is not None:
+        headers["Range"] = _range_header(rng)
     last_status = None
     for mirror in repo.mirrors:
         url = (mirror.replace("$repo", repo.name).replace("$arch", arch).rstrip("/")
@@ -544,32 +694,82 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
                                      repo.name, arch, filename)
                             return "not-modified", None, None
                         break  # next mirror
+                    if rng is not None and upstream.status == 206:
+                        # honored range: relay the window untouched
+                        prepared = True  # bytes may flow from here on
+                        return "ok", await _relay_range(
+                            request, upstream, repo, arch, filename, url), None
+                    if rng is not None and upstream.status == 416:
+                        # the window is past the upstream file's end (it was
+                        # replaced by a smaller one): mirrors share the file,
+                        # so trying further ones is pointless
+                        LOG.warning("upstream %s -> HTTP 416 for %s (%s)",
+                                    url, filename, headers["Range"])
+                        last_status = 416
+                        break  # next mirror
                     if upstream.status != 200:
                         LOG.warning("upstream %s -> HTTP %d for %s",
                                     url, upstream.status, filename)
                         last_status = upstream.status
                         break  # next mirror
                     length = upstream.headers.get("Content-Length")
+                    total = int(length) if length is not None else None
+                    window = None
+                    if rng is not None:
+                        if total is None:
+                            # no Content-Range is possible without a size:
+                            # serve the full body (the resuming client will
+                            # see its range as unsupported)
+                            LOG.warning("upstream %s ignored %s without a "
+                                        "Content-Length for %s; serving it all",
+                                        url, headers["Range"], filename)
+                        else:
+                            window = resolve_range(rng, total)
+                            if window is None:
+                                LOG.warning("upstream %s: %s is past the end "
+                                            "of %s (%d B)", url,
+                                            headers["Range"], filename, total)
+                                last_status = 416
+                                break  # next mirror
                     response = None
                     if request is not None:
-                        response = web.StreamResponse(
-                            headers={"Content-Type": "application/octet-stream"})
-                        if length is not None:
-                            response.content_length = int(length)
+                        response = _client_response(length, window, total)
                         await response.prepare(request)
                         prepared = True
                     received = 0
+                    client_gone = False
                     with open(tmp, "wb") as out:
                         async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
                             out.write(chunk)
-                            received += len(chunk)
-                            if response is not None:
-                                await response.write(chunk)
+                            base, received = received, received + len(chunk)
+                            if response is not None and not client_gone:
+                                piece = chunk
+                                if window is not None:
+                                    start, end = window
+                                    lo, hi = max(start, base), min(end, received - 1)
+                                    piece = chunk[lo - base:hi - base + 1] \
+                                        if lo <= hi else b""
+                                if piece:
+                                    try:
+                                        await response.write(piece)
+                                    except ConnectionError:
+                                        if window is None:
+                                            raise
+                                        # a resuming client hangs up once its
+                                        # window is delivered: keep filling
+                                        # the cache for the next request
+                                        client_gone = True
                     os.replace(tmp, local)
                     if response is not None:
-                        await response.write_eof()
-                    LOG.info("miss %s/%s/%s (%s) <- %s", repo.name, arch, filename,
-                             human_size(received), url)
+                        try:
+                            await response.write_eof()
+                        except ConnectionError:
+                            if window is None:
+                                raise
+                    LOG.info("miss %s/%s/%s (%s%s) <- %s", repo.name, arch,
+                             filename, human_size(received),
+                             ", window %d-%d" % window if window is not None else "",
+                             url)
                     return "ok", response, None
             except (ClientError, TimeoutError, OSError) as exc:
                 _quiet_unlink(tmp)
@@ -591,6 +791,9 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
 def _upstream_failed(filename: str, last_status: int | None) -> web.Response:
     """Response for a fetch where every mirror was exhausted before any
     byte reached the client."""
+    if last_status == 416:
+        return web.Response(status=416, headers={"Accept-Ranges": "bytes"},
+                            text="requested range is past the end of %s\n" % filename)
     status = 404 if last_status == 404 else 502
     return web.Response(status=status,
                         text="all upstream mirrors failed for %s\n" % filename)
@@ -659,7 +862,8 @@ async def _refresh_db(app: web.Application, repo: Repo, arch: str,
 
 
 async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
-                           filename: str, local: str) -> web.StreamResponse:
+                           filename: str, local: str,
+                           rng: tuple[int, int] | None) -> web.StreamResponse:
     """Databases are metadata requests that only happen on sync.  A
     first-time fetch (nothing cached yet) follows the package-miss
     semantics exactly: one shared download under the per-file lock,
@@ -671,18 +875,25 @@ async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
     upstream must never trip pacman's 10 s low-speed abort - past that
     budget the cached copy is served while the refresh continues in the
     background).  Copies younger than DB_TTL are served without upstream
-    contact."""
+    contact.  A Range request (pacman resuming an interrupted sync) is
+    answered from the cached copy as-is without triggering a refresh -
+    the resume must come from the same content the client's partial
+    download started with; with nothing cached it falls back to a ranged
+    upstream fetch, like a package miss."""
     app = request.app
     if not os.path.exists(local):
         async with file_lock(app, local):
             if not os.path.exists(local):  # a concurrent client may have won
                 outcome, response, last_status = await _fetch_upstream(
-                    app, request, repo, arch, filename, local)
+                    app, request, repo, arch, filename, local, rng=rng)
                 if outcome != "ok":
                     return _upstream_failed(filename, last_status)
                 return response
     age = time.time() - os.stat(local).st_mtime
-    if age >= app["cfg"].db_ttl:
+    if rng is not None:
+        LOG.info("hit  %s/%s/%s (resume %s)", repo.name, arch, filename,
+                 request.headers["Range"])
+    elif age >= app["cfg"].db_ttl:
         task = _ensure_refresh(app, repo, arch, filename, local)
         if app["cfg"].fresh_wait > 0:
             done, _ = await asyncio.wait({task}, timeout=app["cfg"].fresh_wait)
@@ -698,7 +909,7 @@ async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
                      repo.name, arch, filename)
     else:
         LOG.info("hit  %s/%s/%s (db fresh)", repo.name, arch, filename)
-    return web.FileResponse(local)
+    return await _serve_local(request, local, rng)
 
 
 # ---------------------------------------------------------------------------
