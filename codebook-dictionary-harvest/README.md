@@ -17,7 +17,8 @@ this Codebook dictionary and the JetBrains/IntelliJ spellchecker dictionary (see
 ```
 [0] targets → file list      files pass through; a directory yields git-tracked files
                              (`git ls-files`) when inside a git work tree, otherwise
-                             a recursive walk (skipping .git/)
+                             a recursive walk (skipping .git/ and typically hash-ridden
+                             files: *.lock, package-lock.json, go.sum, …)
 [1] codebook-lsp lint        flagged words, deduplicated; every occurrence is kept
                              and each word is expanded to its full source token(s) —
                              codebook-lsp splits tokens at digit boundaries

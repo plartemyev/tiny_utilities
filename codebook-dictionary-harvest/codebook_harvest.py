@@ -35,6 +35,7 @@ No third-party dependencies (urllib, tomllib, subprocess only).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -53,6 +54,18 @@ CODEBOOK_LSP_FALLBACKS = sorted(
 LLM_DEADLINE_S = 300  # hard deadline for a single LLM call (laptop, slow models)
 CACHE_DIR = Path.home() / ".cache" / "codebook-harvest"
 PM_NAMES_TTL_S = 24 * 3600
+# Glob patterns of typically hash-ridden file names, skipped by directory-
+# targeting routes: their hex fragments/hashes would flood the LLM round and
+# the remainder. Explicitly named files still pass through.
+HASH_RIDDEN_PATTERNS = frozenset({
+    "*.lock",               # generic lockfile suffix (poetry, Cargo, flake, uv, mix, ...)
+    "package-lock.json",    # npm
+    "npm-shrinkwrap.json",  # npm (published lockfile)
+    "pnpm-lock.yaml",       # pnpm
+    "bun.lockb",            # bun (binary)
+    "packages.lock.json",   # NuGet
+    "go.sum",               # Go module checksums
+})
 
 
 def find_codebook_lsp(explicit: str | None) -> Path:
@@ -73,10 +86,17 @@ def find_codebook_lsp(explicit: str | None) -> Path:
 # ---------------------------------------------------------------- harvesting
 
 
+def is_hash_ridden(path: str) -> bool:
+    """True when the file name matches a typically hash-ridden file pattern."""
+    return any(fnmatch.fnmatch(os.path.basename(path), pattern)
+               for pattern in HASH_RIDDEN_PATTERNS)
+
+
 def expand_targets(entries: list[str]) -> list[str]:
     """Expand target paths: files pass through; directories yield either git
     tracked files (when the directory is inside a git work tree) or all files
-    from a recursive walk (skipping .git internals)."""
+    from a recursive walk (skipping .git internals and typically hash-ridden
+    files, see HASH_RIDDEN_PATTERNS)."""
     git = shutil.which("git")
     files: list[str] = []
     for entry in entries:
@@ -104,7 +124,8 @@ def expand_targets(entries: list[str]) -> list[str]:
             candidates = walk_files
             source = "recursive walk"
         before = len(files)
-        files.extend(candidate for candidate in candidates if os.path.isfile(candidate))
+        files.extend(candidate for candidate in candidates
+                     if os.path.isfile(candidate) and not is_hash_ridden(candidate))
         print(f"[0] {entry}: {len(files) - before} files ({source})")
     return list(dict.fromkeys(files))  # dedupe, keep order
 
