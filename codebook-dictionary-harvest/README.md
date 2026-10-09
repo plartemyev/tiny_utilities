@@ -18,19 +18,45 @@ this Codebook dictionary and the JetBrains/IntelliJ spellchecker dictionary (see
 [0] targets → file list      files pass through; a directory yields git-tracked files
                              (`git ls-files`) when inside a git work tree, otherwise
                              a recursive walk (skipping .git/)
-[1] codebook-lsp lint -u     unique flagged words, deduplicated
-[2] package filter           term ∈ package names (pacman/dnf/apt/zypper, one-shot
-                             subshell lists) OR equals a whole component of an
-                             installed package's file path (paths split on - / . _
-                             space)              → packages set
-[3] LLM round                remainder judged "valid technical term vs spelling
-                             issue" by a local LLM (ollama by default) → llm_validated
-[4] codebook-lsp add -g      packages + llm_validated in ONE batched call
+[1] codebook-lsp lint        flagged words, deduplicated; every occurrence is kept
+                             and each word is expanded to its full source token(s) —
+                             codebook-lsp splits tokens at digit boundaries
+                             (`aribb24` is flagged as `aribb`)
+[2] package filter           the word OR its full token ∈ package names (pacman/dnf/
+                             apt/zypper, one-shot subshell lists) OR equals a whole
+                             component of an installed package's file path (paths
+                             split on - / . _ space)     → packages + full tokens
+[3] possessives              tokens like `workspace's`/`swapon'ed` (codebook-lsp
+                             keeps the apostrophe inside words, its dictionaries
+                             carry no possessive forms) validated by their stem
+                             against packages/paths      → possessives (token→stem)
+[4] LLM round                remainder judged "valid technical term vs spelling
+                             issue" by a local LLM (ollama by default); possessive
+                             tokens are judged via their stem → llm_validated
+[5] codebook-lsp add -g      packages + full tokens + possessives (token AND stem)
+                             + llm_validated in ONE batched call
                              (dry run unless --apply)          → remainder printed
 ```
 
-Stage `[2]` errs toward inclusion; stage `[3]` errs toward exclusion: anything the LLM
+Stage `[2]` errs toward inclusion; stage `[4]` errs toward exclusion: anything the LLM
 fails to parse or times out on lands in the *remainder*, never in the dictionary.
+
+### codebook-lsp tokenizer facts (probed 2026-10-09, v0.3.42)
+
+Both quirks are why the harvest reconstructs source tokens instead of using the flagged
+word as-is:
+
+- **Digits split words**: `aribb24` is flagged — and dictionary-looked-up — as `aribb`.
+  Adding the real name `aribb24` to the dictionary silences *nothing*; only the fragment
+  `aribb` does. The package filter therefore matches the word *and* its full token and
+  adds both (`aribb` silences, `aribb24` documents the real name).
+- **Apostrophes stay inside words, possessives are not in the dictionaries**:
+  `workspace's` flags although `workspace` is a perfectly good word (`don't` passes only
+  because contractions ship in the word list). Silencing requires adding the exact token
+  (`VM's`, `bdd's` in the global dict were added that way). The harvest classifies such
+  tokens by stemming `'s`/`'d`/`'ed` and validates the stem — against packages/paths, or
+  via the LLM — then adds token + stem together. Tokens with an internal apostrophe
+  (string literals like the test password `ro'ot`) are left to the LLM/remainder.
 
 ## Requirements
 
@@ -63,10 +89,12 @@ Key options (`harvest`): `--pm`, `--skip-pkg`, `--skip-llm`, `--provider ollama`
 `--think`, `--timeout` (per-call LLM deadline, default 300 s), `--apply`,
 `--codebook-lsp`.
 
-Output: the **packages set**, the **llm_validated set** and the **remainder**
+Output: the **packages set** (+ matched **full tokens**), the **possessives**
+(`token -> stem`, both added), the **llm_validated set** and the **remainder**
 (unclassified — candidates for manual review; a real typo stays here, so it never
 silences future warnings). The remainder block prints a ready-to-paste
-`codebook-lsp add -g …` line with those words — trim the invalid ones before running it.
+`codebook-lsp add -g …` line with those words (apostrophe tokens double-quoted) —
+trim the invalid ones before running it.
 
 ## Caching
 

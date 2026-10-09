@@ -2,21 +2,30 @@
 """Harvest spelling issues from codebook-lsp and auto-classify the flagged words.
 
 Pipeline (subcommand `harvest`):
-  1. `codebook-lsp lint -u <files>` -> deduplicated set of flagged words.
+  1. `codebook-lsp lint <files>` -> deduplicated set of flagged words, each
+     expanded to its full source token (codebook-lsp splits tokens at digit
+     boundaries: `aribb24` is flagged as `aribb`).
   2. Package-manager filter: pacman / dnf / apt / zypper. Each package manager is
      queried ONCE (single subshell per list; direct DB parsing needs PM-specific
      libraries/format parsers — one C-speed `pacman -Slq` beats them for
      portability). All names go into a Python set: per-term membership is O(1),
-     i.e. the batching happens at the DB-read level, not per term.
+     i.e. the batching happens at the DB-read level, not per term. A word hits
+     when it OR its full source token equals a package name; both forms are
+     added (the fragment is what silences codebook, the full token is the name).
   3. Path filter: terms that EQUAL a whole component of an installed package's
      file path, after splitting every path on realistic separators
      (- / . _ space). Paths are read once (`pacman -Qlq`) and exploded into a
      component set; per-term membership is O(1) whole-word matching.
-  4. LLM filter for the remainder: an LLM judges "valid technical term vs
+  4. Possessives: tokens like `workspace's`/`swapon'ed` (codebook-lsp keeps the
+     apostrophe inside words, its dictionaries carry no possessive forms) are
+     validated by their stem — directly against packages/paths, else by the
+     LLM; token + stem are added together.
+  5. LLM filter for the remainder: an LLM judges "valid technical term vs
      spelling issue". Serial (one term per call) or batched (N terms per call).
      Default provider: ollama on 127.0.0.1:11434.
-  5. `codebook-lsp add -g <terms...>` (batched: one process for all terms) for
-     packages + llm_validated sets. Only with --apply; otherwise dry run.
+  6. `codebook-lsp add -g <terms...>` (batched: one process for all terms) for
+     packages + possessives + llm_validated sets. Only with --apply; otherwise
+     dry run.
 
 Subcommand `benchmark` measures correctness and latency of LLM models on a
 labeled corpus (serial vs batch, thinking on vs off).
@@ -100,19 +109,64 @@ def expand_targets(entries: list[str]) -> list[str]:
     return list(dict.fromkeys(files))  # dedupe, keep order
 
 
-def lint_words(cb: Path, files: list[str]) -> set[str]:
-    """Run `codebook-lsp lint -u` and collect the unique flagged words."""
+PATH_LINES: dict[str, list[str]] = {}
+
+
+def full_source_token(path: str, lineno: int, col: int, fragment: str) -> str:
+    """Expand a flagged fragment to the full alphanumeric token it sits in.
+
+    codebook-lsp reports 1-based columns and only the letter-run of tokens like
+    `aribb24` (digits split words; `-`, `_` etc. end them). Returns the
+    fragment unchanged when the spot cannot be re-located.
+    """
+    lines = PATH_LINES.get(path)
+    if lines is None:
+        try:
+            lines = Path(path).read_text(errors="replace").splitlines()
+        except OSError:
+            return fragment
+        PATH_LINES[path] = lines
+    try:
+        line = lines[lineno - 1]
+    except IndexError:
+        return fragment
+    start, end = col - 1, col - 1 + len(fragment)
+    if line[start:end].lower() != fragment.lower():
+        return fragment
+    while start > 0 and line[start - 1].isalnum():
+        start -= 1
+    while end < len(line) and line[end].isalnum():
+        end += 1
+    return line[start:end]
+
+
+def lint_words(cb: Path, files: list[str]) -> tuple[set[str], dict[str, set[str]]]:
+    """Run `codebook-lsp lint` (every occurrence) and collect unique words.
+
+    Also maps every word to its distinct FULL source token(s): codebook-lsp
+    splits tokens at digit boundaries (`aribb24` is flagged as `aribb`), and
+    only the full token can match a package name or path component. A word
+    flagged in several spots may reconstruct several tokens (`aribb24`,
+    `aribb25`) — one spot per word (lint -u) is not enough, the digit-bearing
+    occurrence is not always the first one.
+    """
     result = subprocess.run(
-        [str(cb), "lint", "-u", *files], capture_output=True, text=True, timeout=600
+        [str(cb), "lint", *files], capture_output=True, text=True, timeout=600
     )
     if result.returncode not in (0, 1):
         sys.exit(f"error: codebook-lsp lint failed: {result.stderr.strip()}")
-    words = set()
+    words: set[str] = set()
+    spots: dict[str, list[tuple[str, int, int]]] = {}
     for line in result.stdout.splitlines():
-        match = re.match(r"^.+:\d+:\d+\s+(\S+)\s*$", line)
+        match = re.match(r"^\s*(.+):(\d+):(\d+)\s+(\S+)\s*$", line)
         if match:
-            words.add(match.group(1))
-    return words
+            word = match.group(4)
+            words.add(word)
+            spots.setdefault(word, []).append(
+                (match.group(1), int(match.group(2)), int(match.group(3))))
+    fulls = {word: {full_source_token(*spot, word) for spot in spots[word]} - {word}
+             for word in words}
+    return words, fulls
 
 
 def add_words(cb: Path, words: set[str], global_dict: bool) -> None:
@@ -247,23 +301,54 @@ class PackageDB:
 
 
 PATH_SEPARATORS = re.compile(r"[-/._ ]+")
+CONTRACTION = re.compile(r"^(?P<stem>.+?)('s|'d|'ed)$", re.IGNORECASE)
 
 
-def classify_by_packages(words: set[str], db: PackageDB) -> tuple[set[str], set[str]]:
-    """Split words into (packages_set, remainder) using names + installed paths.
+def classify_by_packages(words: set[str], fulls: dict[str, set[str]],
+                         db: PackageDB) -> tuple[set[str], set[str], set[str]]:
+    """Split words into (packages, matched full tokens, remainder).
 
-    A path hit requires the term to equal a WHOLE path component after splitting
-    on realistic separators (- / . _ space) — plain substring matching let
-    fragments like `insta` (from install*) slip through.
+    A hit is: the flagged word OR one of its full source tokens equals a
+    package name, or equals a WHOLE path component of an installed package
+    after splitting on realistic separators (- / . _ space) — plain substring
+    matching let fragments like `insta` (from install*) slip through. Both
+    forms are reported because the fragment is what silences codebook
+    (`aribb`), while the full token is the real name (`aribb24`).
     """
     names = db.available_names()
-    packages = {word for word in words if word.lower() in names}
+
+    def word_known(word: str, known: set[str]) -> bool:
+        return word.lower() in known or any(
+            full.lower() in known for full in fulls.get(word, ()))
+
+    packages = {word for word in words if word_known(word, names)}
     remainder = words - packages
     if not remainder:
-        return packages, remainder
+        return packages, set(), remainder
     components = db.installed_components()
-    path_hits = {word for word in remainder if word.lower() in components}
-    return packages | path_hits, remainder - path_hits
+    path_hits = {word for word in remainder if word_known(word, names | components)}
+    packages |= path_hits
+    full_hits = {full for word in packages for full in fulls.get(word, ())
+                 if full.lower() in names | components}
+    return packages, full_hits, remainder - path_hits
+
+
+def classify_possessives(words: set[str], db: PackageDB) -> dict[str, str]:
+    """Map possessive/contraction tokens to stems known as package names or
+    installed-path components (`startplasma's` -> `startplasma`).
+
+    codebook-lsp keeps the apostrophe inside words but its dictionaries carry
+    no possessive forms, so valid words flag as `workspace's`. The stem proves
+    the token is one. Tokens with an unknown stem, or an internal apostrophe
+    (string literals like `ro'ot`), are left for the LLM round.
+    """
+    known = db.available_names() | db.installed_components()
+    found: dict[str, str] = {}
+    for word in words:
+        match = CONTRACTION.match(word)
+        if match and match.group("stem").lower() in known:
+            found[word] = match.group("stem")
+    return found
 
 
 # ------------------------------------------------------------------ LLM step
@@ -440,50 +525,87 @@ def benchmark(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------- main
 
 
+PLAIN_WORD = re.compile(r"^[\w']+$")  # \w is unicode: Cyrillic etc. count as plain
+
+
+def tip_quote(word: str) -> str:
+    """Quote a word for the copy-paste `add -g` tip line.
+
+    shlex's apostrophe escaping (`'reinstall'"'"'s'`) is correct but hard to
+    read; apostrophe tokens are safe inside double quotes, so those get
+    `"reinstall's"` instead. codebook-lsp takes one word per argv element, so
+    per-word quoting is also the only correct form — a single double-quoted
+    blob would land in the dictionary as one space-bearing entry. Word
+    characters (Unicode letters incl. Cyrillic — shell-safe bare, shlex is
+    just over-conservative here) print bare; anything genuinely unsafe falls
+    back to shlex.quote.
+    """
+    if PLAIN_WORD.match(word):
+        return f'"{word}"' if "'" in word else word
+    return shlex.quote(word)
+
+
 def harvest(args: argparse.Namespace) -> None:
     cb = find_codebook_lsp(args.codebook_lsp)
     files = expand_targets(args.files)
     if not files:
         sys.exit("error: no files to check")
-    words = lint_words(cb, files)
+    words, fulls = lint_words(cb, files)
     print(f"[1] codebook-lsp flagged {len(words)} unique words")
+    full_hits: set[str] = set()
+    possessives: dict[str, str] = {}
     if args.skip_pkg:
         packages, remainder = set(), words
     else:
         try:
             db = PackageDB(args.pm)
-            packages, remainder = classify_by_packages(words, db)
-            print(f"[2] package names: {len([w for w in packages if w.lower() in db.available_names()])}, "
-                  f"installed-path matches: {len(packages)}")
+            packages, full_hits, remainder = classify_by_packages(words, fulls, db)
+            possessives = classify_possessives(remainder, db)
+            remainder -= possessives.keys()
+            print(f"[2] package names: "
+                  f"{len([w for w in packages if w.lower() in db.available_names()])}, "
+                  f"installed-path matches: {len(packages)}, "
+                  f"full tokens: {len(full_hits)}, possessives: {len(possessives)}")
         except RuntimeError as error:
             print(f"warning: package filter skipped ({error})", file=sys.stderr)
             packages, remainder = set(), words
     llm_validated: set[str] = set()
     if remainder and not args.skip_llm:
+        # Judge the stem of every remaining possessive token: the token itself
+        # (`workspace's`) is what needs adding to silence codebook, the stem
+        # (`workspace`) is the word the LLM should judge.
+        judged = {}
+        for word in remainder:
+            match = CONTRACTION.match(word)
+            judged[word] = match.group("stem") if match else word
         verdicts, stats = llm_verdicts(
-            args.base_url, args.model, sorted(remainder), args.batch_size, args.think, args.timeout
+            args.base_url, args.model, sorted(set(judged.values())), args.batch_size, args.think, args.timeout
         )
         llm_validated = {term for term, bit in verdicts.items() if bit == 0}
-        remainder -= llm_validated
+        possessives.update(
+            {word: term for word, term in judged.items()
+             if term != word and term in llm_validated})
+        remainder -= llm_validated | possessives.keys()
         print(f"[3] llm ({args.model}, batch={args.batch_size}, think={args.think}): "
               f"{stats['calls']} calls, {stats['parse_fail']} parse failures -> "
               f"{len(llm_validated)} validated")
-    to_add = packages | llm_validated
+    to_add = packages | full_hits | llm_validated | possessives.keys() | set(possessives.values())
     if args.apply:
         add_words(cb, to_add, global_dict=True)
         print(f"[4] added {len(to_add)} words via codebook-lsp add --global")
     else:
         print(f"[4] dry run: {len(to_add)} words would be added (use --apply)")
-    print(f"\n--- packages set ({len(packages)}) ---")
-    print(" ".join(sorted(packages)))
+    print(f"\n--- packages set ({len(packages)} + {len(full_hits)} full tokens) ---")
+    print(" ".join(sorted(packages | full_hits)))
+    print(f"\n--- possessives token -> stem ({len(possessives)}) ---")
+    print(" ".join(f"{word}->{stem}" for word, stem in sorted(possessives.items())))
     print(f"\n--- llm_validated set ({len(llm_validated)}) ---")
     print(" ".join(sorted(llm_validated)))
     print(f"\n--- remainder / unidentified ({len(remainder)}) ---")
     if remainder:
-        quoted = " ".join(shlex.quote(word) for word in sorted(remainder))
+        quoted = " ".join(tip_quote(word) for word in sorted(remainder))
         print("tip: spot more valid words below? add them in one batch (trim first):")
         print(f"  {cb} add -g {quoted}")
-    print(" ".join(sorted(remainder)))
 
 
 def parse_args() -> argparse.Namespace:
