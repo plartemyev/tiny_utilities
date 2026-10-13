@@ -27,3 +27,9 @@ services:
       EXTRA_REPOS: "xlibre=https://packages.xlibre.net/arch/stable/$$arch;sonicde=https://sonicde-arch.github.io/$$arch"
     volumes:
       - ./cache:/var/cache/arch-mirror
+      # glibc-controlled resolvers (see dns-resolv.conf + README "DNS
+      # resilience"): Docker's embedded resolver snapshots the host
+      # nameservers at container start and never refreshes them, so a
+      # roaming host leaves the container on a dead resolver (~4s fixed
+      # failover); a mounted file hot-reloads on in-place rewrite
+      - ./dns-resolv.conf:/etc/resolv.conf:ro

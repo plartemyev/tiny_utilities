@@ -66,13 +66,16 @@ ENV LISTEN_ADDR=0.0.0.0 \
 VOLUME /var/cache/arch-mirror
 EXPOSE 8080
 
-# stdlib-only check so no curl/wget dependency is needed
+# stdlib-only check so no curl/wget dependency is needed; getent adds the
+# DNS dimension (resolution breakage must surface as unhealthy - the mirror
+# would otherwise keep serving stale dbs silently, see README "DNS
+# resilience")
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 	CMD python -c "import os,sys,urllib.request; \
 	sys.exit(\
 	0 if urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('LISTEN_PORT','8080'), \
 	timeout=4\
-	).status == 200 else 1)"
+	).status == 200 else 1)" && getent hosts archlinux.org >/dev/null
 
 # Non-root (mirror, uid/gid 1000): port 8080 is unprivileged and the cache
 # is a bind mount whose host side is owned by the mapped user.

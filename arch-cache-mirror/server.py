@@ -732,6 +732,15 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
                 async with app["client"].get(url, headers=headers) as upstream:
                     if revalidate and upstream.status == 304:
                         if os.path.exists(local):
+                            # the cached copy is confirmed current: renew its
+                            # mtime so DB_TTL treats it as fresh again (an
+                            # unchanged upstream db must not re-contact the
+                            # upstream on every request past the TTL).  The
+                            # next revalidation's If-Modified-Since moves
+                            # forward with it, which stays correct (newer
+                            # than an unchanged upstream file -> 304 again;
+                            # a changed upstream file is newer still -> 200)
+                            os.utime(local, None)
                             LOG.info("ref  %s/%s/%s (db not modified)",
                                      repo.name, arch, filename)
                             return "not-modified", None, None
@@ -936,12 +945,19 @@ async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
         LOG.info("hit  %s/%s/%s (resume %s)", repo.name, arch, filename,
                  request.headers["Range"])
     elif age >= app["cfg"].db_ttl:
+        mtime_before = os.stat(local).st_mtime
         task = _ensure_refresh(app, repo, arch, filename, local)
         if app["cfg"].fresh_wait > 0:
             done, _ = await asyncio.wait({task}, timeout=app["cfg"].fresh_wait)
-            if done:
+            if done and os.stat(local).st_mtime != mtime_before:
                 LOG.info("hit  %s/%s/%s (db refreshed from upstream)",
                          repo.name, arch, filename)
+            elif done:
+                # the refresh round finished within the budget but left the
+                # copy untouched: upstream failed (e.g. every mirror dead,
+                # quickly) - "refreshed from upstream" would be a lie
+                LOG.info("hit  %s/%s/%s (db stale, upstream refresh failed; "
+                         "serving cached copy)", repo.name, arch, filename)
             else:
                 LOG.info("hit  %s/%s/%s (db stale, upstream slower than %.1fs, "
                          "refreshing in background)", repo.name, arch, filename,

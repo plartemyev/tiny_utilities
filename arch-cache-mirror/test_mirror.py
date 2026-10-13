@@ -350,6 +350,87 @@ async def test_fresh_wait(base: str) -> None:
             await up.close()
 
 
+async def test_db_revalidation(base: str) -> None:
+    """A 304 revalidation renews the cached copy's freshness: an unchanged
+    upstream db must not be re-contacted on every request past DB_TTL.
+    Also locks the serving-line honesty: a refresh that finishes fast but
+    failed must not be logged as 'refreshed from upstream'."""
+    upstream: dict[str, dict] = {}
+    log_calls: list[str] = []
+    real_log = server.LOG.info
+
+    def log_capture(fmt: str, *args) -> None:
+        log_calls.append(fmt % args if args else fmt)
+
+    server.LOG.info = log_capture  # type: ignore[method-assign]
+
+    async def stub(request: web.Request) -> web.Response:
+        rec = upstream[request.match_info["filename"]]
+        rec["calls"] += 1
+        ims = request.headers.get("If-Modified-Since")
+        if ims:
+            since = email.utils.mktime_tz(email.utils.parsedate_tz(ims))
+            if rec["mtime"] <= since:
+                return web.Response(status=304)
+        return web.Response(body=rec["body"], headers={
+            "Last-Modified": email.utils.formatdate(rec["mtime"], usegmt=True)})
+
+    up_app = web.Application()
+    up_app.router.add_get("/testrepo/{arch}/{filename}", stub)
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir, db_ttl=3600, extra_repos=[
+        Repo("test", ["http://127.0.0.1:%d/testrepo/$arch" % up.port])])
+    app = build_app(cfg)
+    mirror = TestServer(app)
+    await mirror.start_server()
+    try:
+        now = time.time()
+        # upstream db unchanged for two hours; TTL is one hour
+        upstream["test.db"] = dict(body=b"DB1", mtime=now - 7200, calls=0)
+        db_url = str(mirror.make_url("/test/os/x86_64/test.db"))
+        cached_db = os.path.join(cache_dir, "test/os/x86_64/test.db")
+
+        async with ClientSession() as http:
+            async with http.get(db_url) as r:  # first fetch: blocking
+                assert await r.read() == b"DB1"
+            assert upstream["test.db"]["calls"] == 1
+
+            # past TTL but unchanged upstream: the refresh revalidates
+            # (304) and must renew the cached copy's mtime...
+            past = now - 5000  # older than the TTL, newer than upstream
+            os.utime(cached_db, (past, past))
+            async with http.get(db_url) as r:
+                assert await r.read() == b"DB1"
+            assert upstream["test.db"]["calls"] == 2
+            assert time.time() - os.stat(cached_db).st_mtime < 30, \
+                "304 revalidation must renew the cached copy's mtime"
+
+            # ...so the copy counts as fresh again: no upstream contact
+            async with http.get(db_url) as r:
+                assert await r.read() == b"DB1"
+            assert upstream["test.db"]["calls"] == 2
+
+            # a fast-failing refresh (dead upstream) must be logged as a
+            # failure, not as a successful refresh
+            log_calls.clear()
+            await up.close()
+            os.utime(cached_db, (past, past))
+            async with http.get(db_url) as r:
+                assert r.status == 200 and await r.read() == b"DB1"
+            assert any("upstream refresh failed" in c for c in log_calls), \
+                log_calls
+            assert not any("refreshed from upstream" in c for c in log_calls), \
+                log_calls
+    finally:
+        server.LOG.info = real_log
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
 async def test_mirror_flow(base: str) -> None:
     upstream: dict[str, dict] = {}
 
@@ -801,6 +882,7 @@ TESTS = [
     ("alarm-routing", test_alarm_routing),
     ("db-ttl", test_db_ttl),
     ("fresh-wait", test_fresh_wait),
+    ("db-revalidation", test_db_revalidation),
     ("single-flight", test_single_flight),
     ("byte-ranges", test_ranges),
 ]

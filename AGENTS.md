@@ -438,6 +438,63 @@
         clients must use the proxy's `/$repo/os/$arch` mirrorlist form -
         ALARM's native `/$arch/$repo` two-segment form would hit the
         3-segment local fallback and swap repo/arch.
+    - Docker embedded-DNS snapshot vs roaming hosts (2026-10-13, diagnosed
+      from a real "pacman said nothing to do while 4 days of updates were
+      pending" incident): dockerd's resolver (127.0.0.11) snapshots the
+      HOST nameservers at container CREATE and never refreshes them (see
+      the container resolv.conf `ExtServers: [host(...)]` comment); a host
+      roam leaves the container querying a dead resolver with a FIXED ~4 s
+      failover (measured: blackhole-first + alive-second = 4.03 s per
+      lookup; not configurable anywhere) while the host itself resolves
+      fine - upstream db refreshes then all fail and the design's
+      stale-serve past FRESH_WAIT does the rest silently. Fix (baked in):
+      bypass the embedded resolver with a bind-mounted /etc/resolv.conf
+      (`dns-resolv.conf` + the docker-compose.yml volume) and manage it
+      from the host like archinstaller manages its guests' DNS:
+      - docker honors the mount verbatim (never rewrites it);
+      - glibc hot-reloads the file: a long-running python process picked
+        up an in-place rewrite within one lookup (verified with a probe
+        loop, `tmp/resolv_probe.py`) - NO container restarts (a restart
+        would abort in-flight downloads for nothing);
+      - per-server failover becomes glibc-controlled: `options timeout:1
+        attempts:2` (dead-first penalty ~2 s for A+AAAA vs 4 s embedded) -
+        this is why the embedded resolver had to go: its timeout is not
+        tunable and the user wanted 1 s local-first failover;
+      - glibc reads at most MAXNS=3 nameservers - cap the list;
+      - single-FILE bind mounts track the inode: mv / `sed -i` (rename)
+        swap the file out from under the mount - only in-place writes
+        (`printf > file`; `cmp -s` for idempotence) are safe;
+      - `dns-roam-hook.sh` (NM dispatcher hook, install as
+        /etc/NetworkManager/dispatcher.d/90-arch-cache-mirror-dns) rewrites
+        the file on up|reapply|dhcp[46]-change|manual events: flock-
+        serialized (ACM_DNS_LOCK override for non-root test runs), target
+        path resolved via `docker inspect` .Mounts (no hardcoded paths),
+        loop-free (it never touches NM state); lease servers come from
+        $DHCP[46]_DOMAIN_NAME_SERVERS env or a `nmcli -f DHCP[46] dev show`
+        parse - the `-g DHCP4.DOMAIN-NAME-SERVERS` field DOES NOT EXIST
+        (allowed group field is only DHCP4.OPTION) and the parse must
+        exclude the requested_domain_name_servers echo lines
+        (`s/.*[^_a-z]domain_name_servers *= *//p`); each lease server is
+        probed with `timeout 1 drill archlinux.org @srv` before inclusion,
+        publics (1.1.1.1, 8.8.8.8) always fill the remaining slots;
+      - the image healthcheck additionally runs `getent hosts
+        archlinux.org`, so DNS breakage shows as unhealthy in `docker ps`
+        instead of being discovered through pacman behavior;
+      - server.py fixes from the same audit: a 304 revalidation now
+        renews the cached db's mtime (os.utime) - previously an unchanged
+        upstream db was re-validated on EVERY sync past DB_TTL forever
+        (sonicde.db sat with an Oct 9 mtime despite repeated successful
+        304s; the If-Modified-Since forward-move stays correct: newer
+        than an unchanged upstream file -> 304 again, changed upstream ->
+        200); _handle_metadata's serving line is outcome-aware:
+        mtime-renewed -> "db refreshed from upstream",
+        finished-but-failed -> "db stale, upstream refresh failed" (the
+        old unconditional line lied on quick-fail upstreams - DNS-dead
+        upstreams were slow enough to mask it, which is why it never
+        showed in the logs);
+      - diagnosis helpers kept: `tmp/resolv_probe.py` (long-running glibc
+        hot-reload probe) + `tmp/resolv-test.conf` (throwaway resolver
+        file for the probe container).
 
 
 ## 1. Think Before Coding

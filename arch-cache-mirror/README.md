@@ -327,8 +327,12 @@ services:
   stale dbs and delivers it whenever upstream answers within
   `FRESH_WAIT`; only when the upstream is slower than that does a
   client see the cached copy (and the fresh one lands for the next
-  sync). Set `FRESH_WAIT=0` for strictly-non-blocking behavior or
-  raise it if your upstream is reliably slow.
+  sync).  A 304 revalidation renews the cached copy's mtime, so an
+  unchanged upstream db counts as fresh for another `DB_TTL` - repos
+  whose upstream honors `If-Modified-Since` (e.g. GitHub Pages) are not
+  re-contacted on every sync.  Set `FRESH_WAIT=0` for
+  strictly-non-blocking behavior or raise it if your upstream is
+  reliably slow.
 - Upstream content negotiation: the proxy requests
   `Accept-Encoding: identity` from upstreams. CDN-fronted repos (GitHub
   Pages on Fastly) otherwise serve gzip variants whose `Content-Length`
@@ -340,6 +344,52 @@ services:
   the stream and nothing lands in the cache.
 - On upstream mirror rotation the local layout stays stable; clients
   never need a mirrorlist change.
+
+## DNS resilience
+
+Docker's embedded resolver (`127.0.0.11`) snapshots the host's
+nameservers when the container is created and never refreshes them: a
+host that roams networks leaves the container querying a dead resolver
+(fixed ~4 s failover, not configurable).  On such a host every upstream
+db refresh fails and the mirror silently serves stale dbs - pacman then
+reports "nothing to do" while days of updates are pending (this is how a
+real roam outage looked: `Temporary failure in name resolution` for every
+upstream at 07:45 UTC, healthy again hours later after the host returned
+to the resolver's network).
+
+The mirror therefore bypasses the embedded resolver with a bind-mounted
+resolver file and manages it like archinstaller manages its guests' DNS:
+
+- `dns-resolv.conf` (mounted read-only as `/etc/resolv.conf`) gives the
+  container glibc resolver semantics: per-server `timeout:1` failover and
+  hot reload - glibc re-reads the file on change, so a long-running
+  server picks up edits without a restart (verified).  The shipped
+  content is the network-independent baseline (public resolvers only).
+- `dns-roam-hook.sh` is a NetworkManager dispatcher hook that rewrites
+  that file in place on every network event: the current connection's
+  DNS servers first (each probed alive with a 1 s `drill` query), public
+  fallbacks last, capped at glibc's `MAXNS=3`.  Same sources as
+  archinstaller's DNS fallback hook (dispatcher env, `nmcli -f DHCP4/6
+  dev show` parse fallback).  Install it with:
+
+      sudo install -m755 dns-roam-hook.sh \
+           /etc/NetworkManager/dispatcher.d/90-arch-cache-mirror-dns
+
+  Test run without installing: `ACM_DNS_LOCK=./tmp/l ./dns-roam-hook.sh
+  <iface> manual`.  The rewrite is in place only (`printf > file`) and
+  idempotent: renaming (mv, `sed -i`) would swap the inode out from
+  under the bind mount, and the container never needs a restart, so
+  in-flight downloads are never aborted.  The hook rewrites the tracked
+  `dns-resolv.conf` with this host's resolvers; `git checkout --
+  dns-resolv.conf` restores the shipped baseline.
+- The image healthcheck additionally requires `getent hosts
+  archlinux.org` to succeed, so resolution breakage surfaces as
+  `(health: unhealthy)` in `docker ps` instead of being discovered
+  through pacman behavior.
+
+On networks that block outbound DNS to the public resolvers the hook's
+probing keeps the lease server first; with the hook not installed, the
+shipped baseline still works on any network with working internet DNS.
 
 ## Development
 
@@ -414,6 +464,8 @@ Notes:
 | `e2e.sh`             | full-stack e2e test (build, real pacman client, assertions)  |
 | `Dockerfile`         | Arch-based image (`python-aiohttp` from pacman, healthcheck) |
 | `Dockerfile.alarm`   | arm64 image variant (Arch Linux ARM rootfs tarball as base)  |
-| `docker-compose.yml` | LAN deployment defaults (port, volume, env, repo config)     |
+| `docker-compose.yml` | LAN deployment defaults (port, volumes, env, repo config) |
 | `docker-compose.arm64.yml` | compose override for the arm64 image (build file + platform only) |
+| `dns-resolv.conf`    | resolver file bind-mounted into the container (glibc-controlled DNS) |
+| `dns-roam-hook.sh`   | NM dispatcher hook rewriting the resolver file on network roams  |
 | `release.sh`         | build + push both arch images, assemble the multi-arch `latest` index |
