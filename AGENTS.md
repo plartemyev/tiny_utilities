@@ -367,6 +367,77 @@
       `tail -c +N bigfile | head -c M` inside e2e.sh kills the whole script
       with SIGPIPE (exit 141, silently - no FAIL line) under
       `set -o pipefail` once `head` exits; use `dd bs=1 skip= count=` instead;
+    - arm64 / Arch Linux ARM support (added 2026-10-13; verified live via
+      manifest inspection + HTTP probes, not docs):
+      - the official `archlinux` OCI images are amd64 ONLY (docker.io
+        library index lists just amd64 + attestation; ghcr/quay serve
+        single-platform manifests) - `FROM archlinux:latest` cannot build
+        or run natively on aarch64;
+      - community ALARM base images are dead: `agners/archlinuxarm` last
+        built 2021-05, `lopsided98/archlinux-docker` discontinued (its
+        README's "Arch Linux ARM is nearly dead" is contradicted by live
+        package activity - ALARM tracks Arch closely, e.g. python-aiohttp
+        3.14.3 built 10 days after the Arch build of the same version);
+      - the only sustainable ALARM container base is the official rolling
+        rootfs tarball `os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz`
+        (HTTP 302 from os.archlinuxarm.org to a country mirror);
+        Docker remote `ADD` does NOT auto-extract tarballs -> busybox
+        unpack stage in `Dockerfile.alarm`; `FROM --platform=$BUILDPLATFORM
+        busybox` keeps the extraction native even in qemu cross-builds
+        (the host has qemu-aarch64 binfmt registered, so
+        `docker build --platform linux/arm64` works from the dev box);
+      - ALARM mirrors serve ONLY the `/$arch/$repo` layout: the Arch-style
+        `$repo/os/$arch` form 302s through the `mirror.archlinuxarm.org`
+        geo redirector to country mirrors that 404 it (verified
+        `core/os/aarch64/core.db` -> 404 vs `aarch64/core/core.db` -> 200);
+        the redirector preserves the path, aiohttp follows redirects;
+      - ALARM ships no database signatures (`core.db.sig` -> 404) - its
+        pacman.conf default `SigLevel = Required DatabaseOptional` covers
+        that, same string as Arch's; repos are `core extra alarm aur`
+        (not community - merged into extra like upstream Arch);
+      - ALARM's `docker` package does NOT pull in `docker-buildx` (optional
+        dep): bare installs run the legacy builder, where BuildKit's
+        predeclared `$BUILDPLATFORM` is empty and a
+        `FROM --platform=$BUILDPLATFORM ...` line dies at parse time with
+        `failed to parse platform : "" is an invalid OS component ...`;
+        Dockerfile.alarm therefore avoids the BUILDPLATFORM trick (the
+        busybox unpack just runs per-stage-platform - emulated on x86
+        cross-builds, native on the Pi), and Pi deployments install
+        `docker-buildx` anyway (compose builds then use buildkit);
+      - ALARM's base tarball ships an ACTIVE pacman download sandbox
+        (`DownloadUser = alpm` in /etc/pacman.conf - upstream Arch ships it
+        commented): build-time `pacman -Sy` dies with "restricting
+        filesystem access failed because Landlock is not supported by the
+        kernel!" + "switching to sandbox user 'alpm' failed" (qemu-user
+        cannot answer the Landlock probe; the alpm user may be missing in
+        the tarball too) - Dockerfile.alarm seds the line out before the
+        sync; the mirror never runs pacman at runtime;
+      - the ALARM base tarball (unlike Arch's) already occupies GID 1000 -
+        `groupadd -g 1000 mirror` fails with "GID '1000' already exists"
+        (shadow exit 4); Dockerfile.alarm creates the mirror user with
+        `-o` (non-unique ids) - only the numbers matter for the compose
+        `user:` mapping anyway, never the names;
+      - the ALARM tarball is a bootable-system image: it ships the kernel
+        (linux-aarch64), modules, ~1 GB firmware AND their local pacman db
+        entries - every build-time -Syu re-downloads the kernel and runs
+        depmod + double mkinitcpio (default+fallback initramfs); strip the
+        files AND the /var/lib/pacman/local entries at unpack time
+        (busybox stage) or the db entries alone make -Syu reinstall them;
+        image 6.8 GB -> 1.96 GB, no mkinitcpio hooks ever run (this is the
+        same reason the official archlinux rootfs ships kernel-less);
+      - in-image test runs (`docker run IMAGE python /app/test_mirror.py`)
+        work despite root-owned `/app` because the image has no WORKDIR:
+        cwd=/ puts the suite's TMP_BASE at the container's /tmp (1777) -
+        disposable-container-safe, but README's "tests write only to
+        ./tmp" is a host-perspective claim;
+      - ALARM tier in server.py: `ALARM_ARCHES`/`ALARM_REPOS`/
+        `ALARM_MIRRORS` (all three emptyable -> tier off); routing is a
+        per-arch override map on Repo (`repo_mirrors(repo, arch)` is the
+        single mirror-selection point; keep it that way - _fetch_upstream
+        and handle_repo's unknown-repo 404 both go through it); ALARM
+        clients must use the proxy's `/$repo/os/$arch` mirrorlist form -
+        ALARM's native `/$arch/$repo` two-segment form would hit the
+        3-segment local fallback and swap repo/arch.
 
 
 ## 1. Think Before Coding

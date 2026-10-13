@@ -1,0 +1,79 @@
+# arch-cache-mirror: arm64 variant based on Arch Linux ARM
+#
+# archlinux:latest is amd64-only (no official Arch container image exists
+# for aarch64), and the community ALARM base images (agners, lopsided98)
+# are dead - so the base is built from the official rolling ALARM rootfs
+# tarball instead.  A remote ADD does not auto-extract tarballs, hence the
+# busybox unpack stage.  (No --platform=$BUILDPLATFORM trick here on
+# purpose: it silently breaks on docker setups without the buildx plugin -
+# e.g. a bare ALARM docker package runs the legacy builder, where
+# $BUILDPLATFORM is empty and the FROM line fails to parse.)
+#
+# Build on the Raspberry Pi (or any arm64 host):
+#   docker build -f Dockerfile.alarm -t arch-cache-mirror:arm64 .
+# Cross-builds work too wherever qemu-user binfmt is registered:
+#   docker build -f Dockerfile.alarm --platform linux/arm64 -t arch-cache-mirror:arm64 .
+FROM busybox:latest AS rootfs
+ADD http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz /tmp/rootfs.tar.gz
+# The ALARM tarball is a bootable-system image: it ships the kernel, modules
+# and ~1 GB of firmware that a container never uses, and their pacman db
+# entries would make every build-time -Syu re-download the kernel and
+# rebuild initramfs images (mkinitcpio hooks) - the archlinux-docker rootfs
+# equivalent ships without a kernel, so drop both the files and the local
+# db entries here (no initramfs/depmod hooks ever run, ~1.4 GB smaller).
+RUN mkdir /rootfs \
+	&& tar xzf /tmp/rootfs.tar.gz -C /rootfs \
+	&& rm -rf /rootfs/boot /rootfs/usr/lib/modules /rootfs/usr/lib/firmware \
+	&& rm -rf /rootfs/var/lib/pacman/local/linux-aarch64-* \
+	          /rootfs/var/lib/pacman/local/linux-firmware-*
+
+FROM scratch
+COPY --from=rootfs /rootfs /
+
+# Same keyring-first pattern as the x86_64 Dockerfile: the rolling tarball
+# can lag behind the ALARM repos and otherwise fail signature checks.
+# (archlinuxarm-keyring ships preinstalled in the tarball; this refreshes it.)
+# ALARM's pacman.conf enables the download sandbox (DownloadUser = alpm +
+# Landlock filesystem restriction), which cannot work in a container build
+# (no landlock probe under qemu-user, no meaningful sandbox user); the
+# mirror itself never runs pacman at runtime.
+RUN sed -i '/^DownloadUser/d' /etc/pacman.conf \
+	&& pacman-key --init \
+	&& pacman-key --populate archlinuxarm \
+	&& pacman -Sy --noconfirm archlinuxarm-keyring \
+	&& pacman -Syu --noconfirm python-aiohttp \
+	&& pacman -Scc --noconfirm
+
+# Unprivileged runtime user; docker-compose.yml maps this uid:gid to the
+# calling host user so the bind-mounted cache stays host-user owned
+# (see README.md "Caveats"). Default 1000 also matches a bare
+# `docker run` on typical single-user hosts.  Unlike the Arch base, the
+# ALARM base tarball already occupies GID 1000, so -o allows the mirror
+# group/user to share the numeric id - only the numbers matter here (the
+# compose user mapping), never the names.
+RUN groupadd -o -g 1000 mirror \
+	&& useradd -o -u 1000 -g mirror -M -d /var/cache/arch-mirror -s /usr/bin/nologin mirror \
+	&& install -d -o mirror -g mirror /var/cache/arch-mirror
+
+COPY server.py test_mirror.py /app/
+
+USER mirror
+
+ENV LISTEN_ADDR=0.0.0.0 \
+	LISTEN_PORT=8080 \
+	CACHE_DIR=/var/cache/arch-mirror
+
+VOLUME /var/cache/arch-mirror
+EXPOSE 8080
+
+# stdlib-only check so no curl/wget dependency is needed
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+	CMD python -c "import os,sys,urllib.request; \
+	sys.exit(\
+	0 if urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('LISTEN_PORT','8080'), \
+	timeout=4\
+	).status == 200 else 1)"
+
+# Non-root (mirror, uid/gid 1000): port 8080 is unprivileged and the cache
+# is a bind mount whose host side is owned by the mapped user.
+CMD ["python", "/app/server.py"]

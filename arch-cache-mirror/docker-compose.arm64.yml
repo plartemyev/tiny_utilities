@@ -1,0 +1,16 @@
+# arch-cache-mirror on arm64: same deployment configuration as
+# docker-compose.yml (which stays the single source for ports, volumes and
+# env), but built from the Arch Linux ARM base image (Dockerfile.alarm).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.arm64.yml up -d --build
+#
+# The ALARM tier (ALARM_REPOS/ALARM_ARCHES/ALARM_MIRRORS) needs no compose
+# entry: code defaults already serve Arch Linux ARM's core/extra/alarm/aur
+# from mirror.archlinuxarm.org for aarch64/armv7h clients.
+services:
+  arch-cache-mirror:
+    build:
+      context: .
+      dockerfile: Dockerfile.alarm
+    image: arch-cache-mirror:arm64
+    platform: linux/arm64

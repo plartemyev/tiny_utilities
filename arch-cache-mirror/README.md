@@ -1,10 +1,10 @@
 # arch-cache-mirror
 
-A caching Arch Linux repository mirror for the home LAN, shipped as a
-single Arch-based Docker image. Point every machine's
-`/etc/pacman.d/mirrorlist` at it once and all of them download packages
-and databases from your LAN; the upstream mirrors are only hit on the
-first request of any file.
+A caching Arch Linux repository mirror for the home LAN, shipped as
+Docker images (x86_64 Arch Linux base, arm64 Arch Linux ARM base). Point
+every machine's `/etc/pacman.d/mirrorlist` at it once and all of them
+download packages and databases from your LAN; the upstream mirrors are
+only hit on the first request of any file.
 
 ```
 LAN clients (pacman)                 arch-cache-mirror (Docker)         upstream mirrors
@@ -49,7 +49,9 @@ Behaviour per request:
   but its retry then resumes from the now-cached copy;
 - the repository -> upstream mapping is built at startup from
   environment variables; `core`/`extra`/`multilib` come with sensible
-  defaults, `xlibre` and `sonicde` are preconfigured.
+  defaults, `xlibre` and `sonicde` are preconfigured, and Arch Linux
+  ARM's repos are served for ARM clients (see the ALARM tier in
+  [Raspberry Pi / arm64](#raspberry-pi--arm64-arch-linux-arm)).
 - concurrent requests for the same file are served by one shared
   download (per-file locks), so five machines running `pacman -Syu` at
   once still produce a single upstream fetch per file.
@@ -139,6 +141,9 @@ home is docker-compose.yml.
 | `OFFICIAL_REPOS`   | `core extra multilib`                      | repos served from `OFFICIAL_MIRRORS`                                                                  |
 | `OFFICIAL_MIRRORS` | geo.mirror.pkgbuild.com, mirror.rackspace.com (code default; also pinned in docker-compose.yml; space-separated, tried in order) | upstream URL templates containing `$repo` and/or `$arch` |
 | `EXTRA_REPOS`      | *none in code* — defined in docker-compose.yml | additional repos as `name=url` pairs separated by `;` or newlines; the url is a template containing `$arch` |
+| `ALARM_ARCHES`     | `aarch64 armv7h`                           | client architectures served from the Arch Linux ARM tier; empty = tier off                             |
+| `ALARM_REPOS`      | `core extra alarm aur`                     | repos of the ALARM tier (shared names become per-arch mirror overrides; ARM-only names exist for those arches only) |
+| `ALARM_MIRRORS`    | `http://mirror.archlinuxarm.org/$arch/$repo` | ALARM upstream URL templates containing `$repo` and/or `$arch`; empty = tier off                      |
 
 The extra repositories are **deployment configuration, not code**:
 `docker-compose.yml` ships them via `EXTRA_REPOS` (note the `$$`
@@ -187,6 +192,105 @@ host-user owned) and the env defaults. Healthcheck comes from the Dockerfile (a 
 `/healthz` probe), so `docker ps` shows mirror health without extra
 packages. The only cost is the compose plugin itself, which ships with
 Docker everywhere nowadays.
+
+## Raspberry Pi / arm64 (Arch Linux ARM)
+
+`Dockerfile.alarm` builds the same mirror on top of **Arch Linux ARM**
+(the official `archlinux` image is amd64-only, and no community ALARM
+base image is maintained anymore - the base is the official rolling
+rootfs tarball from os.archlinuxarm.org):
+
+```bash
+cd arch-cache-mirror
+docker compose -f docker-compose.yml -f docker-compose.arm64.yml up -d --build
+```
+
+Ports, volumes, cache limits and `EXTRA_REPOS` all come from
+`docker-compose.yml` (the arm64 file only swaps the build). Cross-building
+from an x86 host also works wherever qemu-user binfmt is registered
+(`docker build -f Dockerfile.alarm --platform linux/arm64 .`).
+
+Arch Linux ARM is a separate distribution from Arch Linux: its own
+mirrors (`mirror.archlinuxarm.org`, upstream layout `/$arch/$repo`), its
+own keyring, no database signatures, repos `core`/`extra`/`alarm`/`aur`.
+The mirror absorbs the differences through the **ALARM tier** (code
+defaults, no extra configuration): requests whose `$arch` is `aarch64`
+or `armv7h` fetch `core`/`extra` - and the ARM-only `alarm`/`aur` - from
+ALARM mirrors, while the same repo names keep the x86_64 upstreams for
+x86_64 clients. The cache layout is per-arch anyway, so one instance
+serves the whole LAN and every machine still uses the same one-line
+mirrorlist:
+
+```
+Server = http://<pi>:8282/$repo/os/$arch
+```
+
+(on the Pi itself, `<pi>` is `127.0.0.1`; keeping the previous ALARM
+mirror as a second `Server` line preserves the upstream fallback)
+
+ALARM clients must use this `/$repo/os/$arch` form: ALARM's native
+`/$arch/$repo` shape is an *upstream* layout and would be misread as the
+proxy's local `/<repo>/<arch>/<file>` fallback. Otherwise an ALARM
+machine stays stock - `/etc/pacman.conf` sections (`core`, `extra`,
+`alarm`, `aur`) untouched, package verification against
+`archlinuxarm-keyring` exactly as with the upstream directly. The
+x86_64-only `xlibre`/`sonicde` repos are simply never requested by ARM
+clients.
+
+SD-card note: a pacman cache is write-heavy over a long life (the 20G
+`CACHE_SIZE` cap trades eviction-driven re-downloads for bounded
+growth); if the card is small or precious, point the `./cache` bind
+mount at a USB SSD instead.
+
+## Publishing to Docker Hub
+
+`./release.sh` builds and pushes both images and re-assembles the shared
+tag - amd64 on the releasing host, arm64 on the Pi (the qemu
+cross-build is an order of magnitude slower) - and finally creates the
+`latest` **OCI image index** referencing both. `docker run
+<repo>:latest` (or compose without `platform:`) then picks the right
+architecture automatically; the semantics are identical on both (same
+env, ports, healthcheck).
+
+    ./release.sh    # defaults: HUB_REPO=plartemyev/arch-cache-mirror
+                    #            PI_HOST=root@10.11.0.22  PI_DIR=/root/arch-cache-mirror
+
+Requirements: `docker login` on the releasing host *and* on the Pi (each
+machine pushes its own build). The script always rebuilds and re-pushes
+both architectures before re-creating the index - an index re-pointed at
+only one freshly pushed arch would silently serve stale code to the
+other platform - so `latest` always points at the index, never at a
+bare image (the `:amd64`/`:arm64` tags remain as per-arch escape
+hatches). Note the index has no `linux/arm/v7` entry: armv7h userlands
+get a clean "no matching manifest" pull error.
+
+Using the Hub image instead of building it - the same deployment
+configuration as `docker-compose.yml`, minus the build:
+
+```yaml
+services:
+  arch-cache-mirror:
+    image: plartemyev/arch-cache-mirror:latest
+    # run as the calling host user so ./cache stays host-user owned
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
+    ports:
+      - "8282:8080"
+    environment:
+      CACHE_SIZE: "20G"
+      CACHE_AGE: "0"
+      KEEP_VERSIONS: "0"
+      GC_INTERVAL: "3600"
+      DB_TTL: "10m"
+      FRESH_WAIT: "5"
+      OFFICIAL_MIRRORS: "https://geo.mirror.pkgbuild.com/$$repo/os/$$arch https://mirror.rackspace.com/archlinux/$$repo/os/$$arch"
+      EXTRA_REPOS: "xlibre=https://packages.xlibre.net/arch/stable/$$arch;sonicde=https://sonicde-arch.github.io/$$arch"
+    volumes:
+      - ./cache:/var/cache/arch-mirror
+```
+
+(On arm64 hosts this pulls the Arch Linux ARM image from the same tag -
+`docker-compose.arm64.yml` is only needed when building from source.)
 
 ## Caveats
 
@@ -294,7 +398,12 @@ Notes:
   slow mirror can take a few minutes;
 - on failure the stage header, the client output and `FAIL: <reason>`
   point at the broken step; rerun with `--keep` and inspect
-  `docker logs e2e-acm-proxy`.
+  `docker logs e2e-acm-proxy`;
+- `e2e.sh` builds and exercises the amd64 image; on the Pi (or any arm64
+  host) run the in-image unit/integration suite instead:
+  `docker run --rm arch-cache-mirror:arm64 python /app/test_mirror.py`
+  (includes a loopback test of the ALARM tier with both upstream
+  layouts).
 
 ## Files
 
@@ -304,4 +413,7 @@ Notes:
 | `test_mirror.py`     | unit + loopback integration tests                            |
 | `e2e.sh`             | full-stack e2e test (build, real pacman client, assertions)  |
 | `Dockerfile`         | Arch-based image (`python-aiohttp` from pacman, healthcheck) |
+| `Dockerfile.alarm`   | arm64 image variant (Arch Linux ARM rootfs tarball as base)  |
 | `docker-compose.yml` | LAN deployment defaults (port, volume, env, repo config)     |
+| `docker-compose.arm64.yml` | compose override for the arm64 image (build file + platform only) |
+| `release.sh`         | build + push both arch images, assemble the multi-arch `latest` index |

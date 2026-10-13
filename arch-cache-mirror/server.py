@@ -42,7 +42,10 @@ same URL layout.  On a request the proxy:
 The repository -> upstream mirror map is built from environment
 variables (OFFICIAL_REPOS/OFFICIAL_MIRRORS in the environment or code
 defaults; EXTRA_REPOS is deployment configuration defined in
-docker-compose.yml).
+docker-compose.yml).  A second official tier serves Arch Linux ARM
+(a separate distribution: its own mirrors and keyring, same repo names
+for core/extra) - selected per request arch, see ALARM_REPOS/
+ALARM_ARCHES/ALARM_MIRRORS below.
 """
 
 from __future__ import annotations
@@ -80,6 +83,16 @@ DEFAULT_OFFICIAL_MIRRORS = (
     "https://geo.mirror.pkgbuild.com/$repo/os/$arch "
     "https://mirror.rackspace.com/archlinux/$repo/os/$arch"
 )
+# Second official tier for Arch Linux ARM (archlinuxarm.org): its mirrors
+# serve the /$arch/$repo layout (not /$repo/os/$arch - that form redirects
+# into a 404) and ship no database signatures (pacman's default
+# SigLevel = Required DatabaseOptional covers that).  The repo names
+# collide with the x86_64 ones (core/extra), so the tier is selected per
+# request arch; alarm/aur exist for ARM arches only.  An empty ALARM_ARCHES
+# or ALARM_MIRRORS disables the tier.
+DEFAULT_ALARM_ARCHES = "aarch64 armv7h"
+DEFAULT_ALARM_REPOS = "core extra alarm aur"
+DEFAULT_ALARM_MIRRORS = "http://mirror.archlinuxarm.org/$arch/$repo"
 # NOTE: the xlibre/sonicde repo list is NOT defaulted here - it is
 # deployment configuration, defined in docker-compose.yml (EXTRA_REPOS).
 
@@ -130,6 +143,9 @@ def human_size(num: float) -> str:
 class Repo:
     name: str
     mirrors: list[str]
+    # per-arch mirror overrides (set by build_repos for the ALARM tier);
+    # they take precedence over `mirrors` when the request's arch matches
+    arch_mirrors: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -146,6 +162,9 @@ class Config:
     official_repos: list[str]
     official_mirrors: list[str]
     extra_repos: list[Repo]
+    alarm_arches: list[str]
+    alarm_repos: list[str]
+    alarm_mirrors: list[str]
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -171,6 +190,9 @@ class Config:
             official_repos=os.environ.get("OFFICIAL_REPOS", DEFAULT_OFFICIAL_REPOS).split(),
             official_mirrors=os.environ.get(
                 "OFFICIAL_MIRRORS", DEFAULT_OFFICIAL_MIRRORS).split(),
+            alarm_arches=os.environ.get("ALARM_ARCHES", DEFAULT_ALARM_ARCHES).split(),
+            alarm_repos=os.environ.get("ALARM_REPOS", DEFAULT_ALARM_REPOS).split(),
+            alarm_mirrors=os.environ.get("ALARM_MIRRORS", DEFAULT_ALARM_MIRRORS).split(),
             extra_repos=extra,
         )
 
@@ -181,7 +203,23 @@ def build_repos(cfg: Config) -> dict[str, Repo]:
         repos[name] = Repo(name, list(cfg.official_mirrors))
     for repo in cfg.extra_repos:
         repos[repo.name] = repo
+    # ALARM tier: per-arch mirror overrides on the shared repo names
+    # (core/extra), plus repos that exist for ARM arches only (alarm/aur,
+    # created with an empty default list so other arches 404).  Wired only
+    # when both halves are configured: an empty mirror list would otherwise
+    # silently fall back to the x86_64 mirrors.
+    if cfg.alarm_arches and cfg.alarm_mirrors:
+        for name in cfg.alarm_repos:
+            repo = repos.setdefault(name, Repo(name, []))
+            for arch in cfg.alarm_arches:
+                repo.arch_mirrors[arch] = list(cfg.alarm_mirrors)
     return repos
+
+
+def repo_mirrors(repo: Repo, arch: str) -> list[str]:
+    """Upstreams for a request: the per-arch override when the requested
+    architecture has one, else the repo's default mirror list."""
+    return repo.arch_mirrors.get(arch) or repo.mirrors
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +526,9 @@ async def handle_status(request: web.Request) -> web.Response:
     for name in sorted(repos):
         for mirror in repos[name].mirrors:
             lines.append("  [%s] %s" % (name, mirror))
+        for arch in sorted(repos[name].arch_mirrors):
+            for mirror in repos[name].arch_mirrors[arch]:
+                lines.append("  [%s@%s] %s" % (name, arch, mirror))
     lines += [
         "",
         "cache: %s" % cfg.cache_dir,
@@ -560,11 +601,12 @@ async def handle_repo(request: web.Request) -> web.StreamResponse:
     if not FILENAME_RE.match(filename):
         return web.Response(status=400, text="bad filename\n")
     repo = request.app["repos"].get(repo_name)
-    if repo is None:
+    if repo is None or not repo_mirrors(repo, arch):
         return web.Response(
             status=404,
-            text="unknown repository %r (serving: %s)\n"
-                 % (repo_name, ", ".join(sorted(request.app["repos"]))))
+            text="unknown repository %r for arch %r (serving: %s)\n"
+                 % (repo_name, arch,
+                    ", ".join(sorted(request.app["repos"]))))
     local = os.path.join(request.app["cfg"].cache_dir, repo_name, "os", arch, filename)
     rng = parse_range(request.headers.get("Range"))
     negative_until = request.app["negative"].get(local)
@@ -677,7 +719,7 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
     if rng is not None:
         headers["Range"] = _range_header(rng)
     last_status = None
-    for mirror in repo.mirrors:
+    for mirror in repo_mirrors(repo, arch):
         url = (mirror.replace("$repo", repo.name).replace("$arch", arch).rstrip("/")
                + "/" + filename)
         # two attempts per mirror: the second covers a stale keep-alive

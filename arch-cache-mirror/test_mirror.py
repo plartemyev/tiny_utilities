@@ -45,6 +45,7 @@ def _cfg(cache_dir: str, **kw) -> Config:
         db_ttl=0,  # always revalidate: keeps the freshness assertions strict
         fresh_wait=5,  # real default: stale fallback only on slow upstreams
         official_repos=[], official_mirrors=[], extra_repos=[],
+        alarm_arches=[], alarm_repos=[], alarm_mirrors=[],
     )
     defaults.update(kw)
     return Config(**defaults)
@@ -488,13 +489,89 @@ async def test_mirror_flow(base: str) -> None:
             await up.close()
 
 
+async def test_alarm_routing(base: str) -> None:
+    """The ALARM tier: requests with an ARM arch reach the ALARM mirrors
+    (in their own /$arch/$repo upstream layout) while the same repo names
+    keep the x86_64 upstreams for x86_64 requests; ARM-only repos 404
+    locally for other arches and the status page lists the tier."""
+    x86: dict[str, dict] = {}
+    alarm: dict[str, dict] = {}
+
+    def _stub(recs: dict[str, dict]):
+        async def stub(request: web.Request) -> web.Response:
+            rec = recs[request.match_info["filename"]]
+            rec["calls"] += 1
+            return web.Response(body=rec["body"], headers={
+                "Last-Modified": email.utils.formatdate(rec["mtime"], usegmt=True)})
+        return stub
+
+    up_app = web.Application()
+    # x86_64 upstream layout: /$repo/os/$arch
+    up_app.router.add_get("/arch/{repo}/os/{arch}/{filename}", _stub(x86))
+    # ALARM upstream layout: /$arch/$repo
+    up_app.router.add_get("/alarm/{arch}/{repo}/{filename}", _stub(alarm))
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir,
+               official_repos=["core"],
+               official_mirrors=["http://127.0.0.1:%d/arch/$repo/os/$arch" % up.port],
+               alarm_arches=["aarch64"],
+               alarm_repos=["core", "alarm"],
+               alarm_mirrors=["http://127.0.0.1:%d/alarm/$arch/$repo" % up.port])
+    app = build_app(cfg)
+    mirror = TestServer(app)
+    await mirror.start_server()
+    try:
+        base_url = str(mirror.make_url(""))
+        now = time.time()
+        x86["core.db"] = dict(body=b"X86DB", mtime=now - 60, calls=0)
+        alarm["core.db"] = dict(body=b"ALARMDB", mtime=now - 60, calls=0)
+        alarm["alarm.db"] = dict(body=b"ALARMSUBDB", mtime=now - 60, calls=0)
+        async with ClientSession() as http:
+            # x86_64 core.db -> the x86_64 official mirror
+            async with http.get(base_url + "/core/os/x86_64/core.db") as r:
+                assert await r.read() == b"X86DB"
+            assert x86["core.db"]["calls"] == 1
+            assert open(os.path.join(cache_dir, "core/os/x86_64/core.db"),
+                        "rb").read() == b"X86DB"
+
+            # aarch64 core.db -> the ALARM tier; same repo name, its own
+            # cache arch subtree, x86_64 upstream untouched
+            async with http.get(base_url + "/core/os/aarch64/core.db") as r:
+                assert await r.read() == b"ALARMDB"
+            assert x86["core.db"]["calls"] == 1
+            assert alarm["core.db"]["calls"] == 1
+            assert open(os.path.join(cache_dir, "core/os/aarch64/core.db"),
+                        "rb").read() == b"ALARMDB"
+
+            # ARM-only repo serves ARM arches...
+            async with http.get(base_url + "/alarm/os/aarch64/alarm.db") as r:
+                assert await r.read() == b"ALARMSUBDB"
+            # ...and 404s locally for others (no upstream contact at all)
+            async with http.get(base_url + "/alarm/os/x86_64/alarm.db") as r:
+                assert r.status == 404 and "unknown repository" in await r.text()
+            assert alarm["alarm.db"]["calls"] == 1
+
+            # status page lists the arch-scoped mirror override
+            async with http.get(base_url + "/") as r:
+                status = await r.text()
+            assert "[core@aarch64] http://127.0.0.1:%d/alarm/$arch/$repo" % up.port \
+                in status
+    finally:
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
 def test_from_env(base: str) -> None:
     """from_env() defaults: repository/mirror lists are deployment
     configuration (docker-compose.yml), not code defaults."""
     keys = ("EXTRA_REPOS", "OFFICIAL_REPOS", "OFFICIAL_MIRRORS",
             "CACHE_SIZE", "CACHE_AGE", "DB_TTL", "FRESH_WAIT",
             "KEEP_VERSIONS", "GC_INTERVAL", "LISTEN_ADDR", "LISTEN_PORT",
-            "CACHE_DIR")
+            "CACHE_DIR", "ALARM_ARCHES", "ALARM_REPOS", "ALARM_MIRRORS")
     saved = {k: os.environ.get(k) for k in keys}
     try:
         for k in keys:
@@ -505,6 +582,9 @@ def test_from_env(base: str) -> None:
             "https://geo.mirror.pkgbuild.com/$repo/os/$arch",
             "https://mirror.rackspace.com/archlinux/$repo/os/$arch",
         ]
+        assert cfg.alarm_arches == ["aarch64", "armv7h"]
+        assert cfg.alarm_repos == ["core", "extra", "alarm", "aur"]
+        assert cfg.alarm_mirrors == ["http://mirror.archlinuxarm.org/$arch/$repo"]
         assert cfg.extra_repos == [], "extra repos belong to the deployment env"
 
         os.environ["OFFICIAL_REPOS"] = "core extra multilib core-testing"
@@ -516,6 +596,15 @@ def test_from_env(base: str) -> None:
                                         "https://b/$$repo/os/$$arch"]
         assert [(r.name, r.mirrors) for r in cfg.extra_repos] == [
             ("x", ["https://x.example/$arch"]), ("y", ["https://y.example/$arch"])]
+
+        # emptying either half disables the ALARM tier
+        os.environ["ALARM_ARCHES"] = ""
+        cfg = Config.from_env()
+        assert cfg.alarm_arches == []
+        os.environ["ALARM_ARCHES"] = "aarch64"
+        os.environ["ALARM_MIRRORS"] = ""
+        cfg = Config.from_env()
+        assert cfg.alarm_mirrors == []
     finally:
         for k, v in saved.items():
             if v is None:
@@ -709,6 +798,7 @@ TESTS = [
     ("gc", test_gc),
     ("from-env", test_from_env),
     ("mirror-flow", test_mirror_flow),
+    ("alarm-routing", test_alarm_routing),
     ("db-ttl", test_db_ttl),
     ("fresh-wait", test_fresh_wait),
     ("single-flight", test_single_flight),
