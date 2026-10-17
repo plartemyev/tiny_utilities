@@ -5,3 +5,4 @@ __pycache__/
 .idea/
 tmp/
 *.override.yml
+archinstaller-workbook-*.md

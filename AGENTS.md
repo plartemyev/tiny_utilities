@@ -495,6 +495,28 @@
       - diagnosis helpers kept: `tmp/resolv_probe.py` (long-running glibc
         hot-reload probe) + `tmp/resolv-test.conf` (throwaway resolver
         file for the probe container).
+    - sonicde upstream REPUBLISHES package files in place (verified
+      2026-10-18: one rebuild batch replaced 6 existing filenames at
+      once - e.g. sonic-frameworks-io-fuse-6.0.0-2 went 88614 -> 88327 B
+      with a new sha256, Last-Modified 2026-10-13 19:07 GMT on all six,
+      no pkgrel bump): the mirror's package-immutability cache kept
+      serving the old bytes while clients' refreshed dbs carried the new
+      %CSIZE%, so libalpm's curl max-file-size (= db CSIZE) aborted every
+      attempt with "Maximum file size exceeded" (curl error 63; the log
+      shows repeated cache `hit`s, one per pacman retry) - and the stale
+      `.sig` would have failed signature verification anyway. Not the
+      2026-10-06 gzip-variant bug (cached file was valid zstd;
+      `Accept-Encoding: identity` was already in effect). server.py now
+      validates the package cache against every landed db generation
+      (`_validate_repo_cache`, both first-fetch and background-refresh
+      hooks): a db-listed filename with a different on-disk size is
+      pruned with its `.sig` (size-only check - catches every observed
+      case without hashing GBs; same-size republish remains theoretical),
+      not-in-db entries stay GC/KEEP_VERSIONS territory;
+      `test_republish_prune` locks it. Forensics recipe: tarfile over
+      `cache/<repo>/os/<arch>/<repo>.db`, compare %CSIZE%/%SHA256SUM%
+      against the cached files, `curl -sI` the upstream URL for
+      Last-Modified.
 
 
 ## 1. Think Before Coding

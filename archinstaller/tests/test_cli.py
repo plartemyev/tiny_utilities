@@ -12,14 +12,17 @@ LIVE_CONN = SimpleNamespace(client=None)  # probe target: only .client is used
 
 def make_args(**overrides):
     defaults = {
+        "command": "install",
         "target": "t", "target_port": 22, "login_user": "root", "login_password": None,
         "jump_host": None, "jump_port": 22, "jump_user": None, "jump_password": None,
         "disk": "/dev/vda", "hostname": None, "username": "nameless",
         "ssh_pubkey": "key", "locale": "en_US.UTF-8", "swap_size": "16G",
         "root_password": None, "user_password": None, "timezone": "Asia/Bangkok",
         "graphical": False, "opencode": False, "local_mirror": False,
+        "virt": None, "discard": None,
         "install_timeout": 1, "reboot_timeout": 1,
-        "no_subnet_scan": False, "vbox_vm": None, "resume": None,
+        "no_subnet_scan": False, "vbox_vm": None,
+        "out": None, "with_passwords": False, "state_file": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -53,10 +56,11 @@ def test_opencode_flag_generates_separate_password():
 
 
 def test_opencode_unit_contents():
-    unit = cli._opencode_unit("secret01")
+    from archinstaller.steps import OPENCODE_PORT, opencode_unit
+    unit = opencode_unit("secret01")
     assert "OPENCODE_SERVER_USERNAME" not in unit
     assert "Environment=OPENCODE_SERVER_PASSWORD=secret01" in unit
-    assert f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {cli.OPENCODE_PORT}" in unit
+    assert f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {OPENCODE_PORT}" in unit
     assert "WantedBy=default.target" in unit
 
 
@@ -71,35 +75,66 @@ def test_private_key_path_from_pubkey_file(tmp_path: Path):
 
 
 def test_no_subnet_scan_flag_parsing():
-    argv = ["--target", "192.168.56.113", "--ssh-pubkey", "k"]
+    argv = ["install", "--target", "192.168.56.113", "--ssh-pubkey", "k"]
     assert cli._parse_args(argv).no_subnet_scan is False
     assert cli._parse_args(argv + ["--no-subnet-scan"]).no_subnet_scan is True
 
 
+def test_virt_and_discard_flag_parsing():
+    argv = ["install", "--target", "t", "--ssh-pubkey", "k"]
+    args = cli._parse_args(argv)
+    assert args.virt is None and args.discard is None  # probe by default
+    pinned = cli._parse_args(argv + ["--virt", "oracle", "--discard"])
+    assert pinned.virt == "oracle" and pinned.discard is True
+    off = cli._parse_args(argv + ["--no-discard"])
+    assert off.discard is False
+    try:
+        cli._parse_args(argv + ["--virt", "bogus"])
+    except SystemExit:
+        return
+    raise AssertionError("--virt must be choice-validated")
+
+
 def test_vbox_vm_and_resume_parsing():
-    argv = ["--target", "192.168.56.113", "--ssh-pubkey", "k"]
+    argv = ["install", "--target", "192.168.56.113", "--ssh-pubkey", "k"]
     assert cli._parse_args(argv + ["--vbox-vm", "test's vm"]).vbox_vm == "test's vm"
-    resumed = cli._parse_args(["--resume", "archinstaller-state-testhost.json"])
-    assert resumed.resume == "archinstaller-state-testhost.json"
+    resumed = cli._parse_args(["resume", "archinstaller-state-testhost.json"])
+    assert resumed.command == "resume"
+    assert resumed.state_file == "archinstaller-state-testhost.json"
 
 
 def test_local_mirror_flag_parsing():
-    argv = ["--target", "192.168.56.113", "--ssh-pubkey", "k"]
+    argv = ["install", "--target", "192.168.56.113", "--ssh-pubkey", "k"]
     assert cli._parse_args(argv).local_mirror is False
     assert cli._parse_args(argv + ["--local-mirror"]).local_mirror is True
     assert cli._parse_args(argv + ["--local_mirror"]).local_mirror is True
 
 
-def test_target_and_pubkey_optional_only_for_resume():
+def test_workbook_parsing_needs_no_target():
+    args = cli._parse_args(["workbook", "--ssh-pubkey", "k"])
+    assert args.command == "workbook"
+    assert args.out is None and args.with_passwords is False
+    pinned = cli._parse_args(["workbook", "--ssh-pubkey", "k",
+                              "--out", "w.md", "--with-passwords",
+                              "--virt", "kvm", "--no-discard"])
+    assert pinned.out == "w.md" and pinned.with_passwords is True
+    assert pinned.virt == "kvm" and pinned.discard is False
+
+
+def test_transport_flags_rejected_for_workbook():
     try:
-        cli._parse_args(["--resume", "state.json"])
-    except SystemExit:
-        raise AssertionError("--resume alone must parse")
-    try:
-        cli._parse_args(["--target", "192.168.56.113"])
+        cli._parse_args(["workbook", "--ssh-pubkey", "k", "--target", "t"])
     except SystemExit:
         return
-    raise AssertionError("--target without --ssh-pubkey must fail")
+    raise AssertionError("--target must be install-only")
+
+
+def test_install_requires_target():
+    try:
+        cli._parse_args(["install", "--ssh-pubkey", "k"])
+    except SystemExit:
+        return
+    raise AssertionError("install without --target must fail")
 
 
 def test_state_roundtrip(tmp_path: Path):
@@ -219,6 +254,23 @@ def test_local_mirror_preflight_aborts_when_unreachable(monkeypatch):
         cli._ensure_local_mirror(None, "http://192.168.1.10:8282")
 
 
+def test_target_gateway_parsed_from_default_route(monkeypatch):
+    monkeypatch.setattr(
+        cli, "run_capture",
+        lambda client, cmd, **kw:
+            (0, "default via 192.168.1.225 dev enp1s0 proto dhcp src 192.168.1.236\n"))
+    assert cli._target_gateway(SimpleNamespace(client=None)) == "192.168.1.225"
+
+
+def test_target_gateway_none_without_route_or_garbage(monkeypatch):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (0, ""))
+    assert cli._target_gateway(SimpleNamespace(client=None)) is None
+    monkeypatch.setattr(
+        cli, "run_capture",
+        lambda client, cmd, **kw: (0, "default via not-an-ip dev eth0\n"))
+    assert cli._target_gateway(SimpleNamespace(client=None)) is None
+
+
 def test_analyze_discard_supported_on_ssd_like_disk(monkeypatch, capsys):
     commands = []
     monkeypatch.setattr(
@@ -281,3 +333,56 @@ def test_installed_dns_reports_when_hook_does_not_help(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_streaming", fake_stream)
     cli._ensure_installed_dns(None, "pw")
     assert "warning: DNS is still broken" in capsys.readouterr().out
+
+
+WORKBOOK_KEY = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDU0ZDDGMlGKUYbFQtKyODXXUequNtcQz+2UVe5Vr9A0"
+                " nameless@example")
+
+
+def test_run_workbook_placeholders_write_0644_without_secrets(tmp_path, capsys):
+    out = tmp_path / "w.md"
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out))
+    cli._run_workbook(args)
+    assert out.stat().st_mode & 0o777 == 0o644
+    text = out.read_text()
+    assert "{{ROOT_PASSWORD}}" in text and "{{USER_PASSWORD}}" in text
+    assert "Caution" not in text
+    captured = capsys.readouterr().out
+    assert "Workbook written to" in captured
+    assert "password:" not in captured  # placeholders mode prints no secrets
+
+
+def test_run_workbook_with_passwords_embeds_and_locks_file(tmp_path, capsys):
+    out = tmp_path / "w.md"
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out),
+                     with_passwords=True)
+    cli._run_workbook(args)
+    assert out.stat().st_mode & 0o777 == 0o600
+    text = out.read_text()
+    assert "{{ROOT_PASSWORD}}" not in text
+    assert "Caution — live credentials" in text
+    captured = capsys.readouterr().out
+    root_line = next(line for line in captured.splitlines()
+                     if line.startswith("Root password:"))
+    assert root_line.split()[-1] in text  # the printed generated password is embedded
+    assert "rotate the passwords once convenient" in captured
+
+
+def test_run_workbook_explicit_passwords_win_over_generation(tmp_path, capsys):
+    out = tmp_path / "w.md"
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out),
+                     with_passwords=True, root_password="explicit1")
+    cli._run_workbook(args)
+    assert "printf 'root:%s\\n' 'explicit1' | chpasswd" in out.read_text()
+    captured = capsys.readouterr().out
+    assert "Root password:" not in captured  # explicit values are not re-printed
+
+
+def test_run_workbook_opencode_password_embedded_only_with_flag(tmp_path):
+    out = tmp_path / "w.md"
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out),
+                     with_passwords=True, opencode=True)
+    cli._run_workbook(args)
+    text = out.read_text()
+    assert "OPENCODE_SERVER_PASSWORD=" in text
+    assert "{{OPENCODE_PASSWORD}}" not in text

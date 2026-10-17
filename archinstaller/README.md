@@ -4,7 +4,10 @@ Automated, unattended Arch Linux installation driven over SSH into the
 Arch ISO live environment. It replicates the manual install draft
 (partitioning, pacstrap, GRUB, pacman.conf tuning, third-party repos,
 user creation), reboots the machine, generates a fresh SSH keypair for
-the created user and prints a summary.
+the created user and prints a summary. The same run can be rendered as a
+markdown **workbook** (`archinstaller workbook`) — the commands with
+explanations, copy-paste friendly, for one-off experiments on a server
+without letting the tool drive anything.
 
 ## Prepare the live ISO
 
@@ -90,9 +93,13 @@ Requirements for every target:
 
 ## Usage
 
+The CLI has three subcommands: `install` (the unattended run), `workbook`
+(render the same run as a markdown workbook — no target needed) and
+`resume` (finish a previous install's post-reboot stage).
+
 ```bash
 poetry install
-poetry run archinstaller \
+poetry run archinstaller install \
     --target 192.168.122.X \
     [--jump-host 192.168.1.35 --jump-user root] \
     [--disk /dev/vda] \
@@ -125,12 +132,10 @@ before connecting.
 
 ### Arguments
 
+System configuration — shared by `install` and `workbook`:
+
 | Argument | Default | Meaning |
 |---|---|---|
-| `--target HOST` | required | host running the live ISO |
-| `--target-port` | `22` | SSH port of the target |
-| `--login-user` / `--login-password` | `root` / `local0instaLl` | live ISO credentials |
-| `--jump-host`, `--jump-port`, `--jump-user`, `--jump-password` | none | optional SSH jump (like `ssh -J`) |
 | `--disk` | `/dev/vda` | disk to wipe; must be a plain `sdX`/`vdX`/`hdX` device (no NVMe naming) |
 | `--hostname` | `arch-host-YYYY-MM-DD` (script run date) | hostname for the new system |
 | `--username` | `nameless` | user account to create (groups: video, scanner, optical, kvm, sys, wheel, uucp, games, docker) |
@@ -139,14 +144,73 @@ before connecting.
 | `--swap-size` | `16G` | size of `/swapfile` |
 | `--root-password`, `--user-password` | generated (printed in the final summary) | credentials for the installed system |
 | `--timezone` | `Asia/Bangkok` | timezone set on the installed system via `timedatectl set-timezone` after first boot |
-| `--graphical` | off | console-only package list by default; with the flag the Xlibre X server stack is installed first, then the Sonic DE base (`sonicde-meta`, `sonic-ecco`, `sonic-win`, `sonic-workspace`), then the graphical packages (this order makes the `xorg-server` and KDE/Plasma dependencies resolve to their xlibre/sonic replacements instead of conflicting), the sonic-login-manager desktop session is installed with autologin for the created user (`/etc/soniclogin.conf.d/10-archinstaller.conf`; the `Session=` entry is auto-detected from the installed session desktop files — soniclogin refuses to autologin without it), the ACPI power button is wired for clean host-side shutdown — on VM targets PowerDevil is masked (its logind inhibitor blocks the button while its X11 delivery never fires it, making `VBoxManage controlvm acpipowerbutton` a no-op; logind's power-key default then shuts the machine down in ~5 s) and the KDE power profiles are seeded with the Shutdown action for stacks where PowerDevil's button delivery works (e.g. Wayland) — and on VirtualBox targets the full `virtualbox-guest-utils` (X11/Wayland integration) replaces the headless `virtualbox-guest-utils-nox` (non-VirtualBox targets install neither) |
+| `--graphical` | off | console-only package list by default; with the flag the Xlibre X server stack is installed first, then the Sonic DE base (`sonicde-meta`), then the graphical packages (this order makes the `xorg-server` and KDE/Plasma dependencies resolve to their xlibre/sonic replacements instead of conflicting), the sonic-login-manager desktop session is installed with autologin for the created user (`/etc/soniclogin.conf.d/10-archinstaller.conf`; the `Session=` entry is auto-detected from the installed session desktop files — soniclogin refuses to autologin without it), the ACPI power button is wired for clean host-side shutdown — on VM targets PowerDevil is masked (its logind inhibitor blocks the button while its X11 delivery never fires it, making `VBoxManage controlvm acpipowerbutton` a no-op; logind's power-key default then shuts the machine down in ~5 s) and the KDE power profiles are seeded with the Shutdown action for stacks where PowerDevil's button delivery works (e.g. Wayland) — and on VirtualBox targets the full `virtualbox-guest-utils` (X11/Wayland integration) replaces the headless `virtualbox-guest-utils-nox` (non-VirtualBox targets install neither) |
 | `--opencode` | off | additionally deploy the opencode web server as a systemd **user** service on port `49374` (opens the port in firewalld; see below) |
 | `--local-mirror` | off | point pacman at the local `arch-cache-mirror` sibling service on this host (host port `8282`) for the whole install — live environment and installed system; verified reachable before the install starts (see below) |
+| `--virt` | probe (`systemd-detect-virt` on the target) / `none` in workbook mode | pin the hypervisor kind (`none`, `kvm`, `qemu`, `oracle`, `vmware`, `microsoft`) instead of probing; drives guest agents and VirtualBox-specific workarounds |
+| `--discard` / `--no-discard` | probe (target disk) / off in workbook mode | pin TRIM/discard support instead of probing the target disk; enables fstrim.timer, swap discard and (on VMs) continuous root discard |
+
+Transport — `install` only:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--target HOST` | required | host running the live ISO |
+| `--target-port` | `22` | SSH port of the target |
+| `--login-user` / `--login-password` | `root` / `local0instaLl` | live ISO credentials |
+| `--jump-host`, `--jump-port`, `--jump-user`, `--jump-password` | none | optional SSH jump (like `ssh -J`) |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
 | `--no-subnet-scan` | off | if the rebooted target does not answer at `--target` in time, the tool scans the surrounding /24 (TCP 22 probe of the 254 host addresses, then a key-authenticated SSH login) for the machine reporting the configured hostname and continues at that address; this flag disables the fallback |
 | `--vbox-vm NAME` | none | VirtualBox VM name for a **host-side** reboot: clean power-off, NVRAM store backed up to `.nvram.bak` (fresh firmware defaults on next boot), boot order disk-before-DVD, start — makes the first boot work out of the box (see below); the VM's hard-disk attachments are also re-attached with `--discard on` + `--nonrotational on` so guest TRIM compacts the drive images (see TRIM/discard handling) |
-| `--resume STATE_FILE` | none | skip the install; finish a previous run's post-reboot stage from its state file (all other arguments ignored) |
+
+Workbook only:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--out PATH` | `archinstaller-workbook-<hostname>.md` | output file |
+| `--with-passwords` | off | embed real passwords instead of placeholders; see the workbook section below |
+
+`resume` takes the state file as its single positional argument (all other
+values come from the state file).
+
+### Workbook (`workbook`)
+
+`archinstaller workbook` renders everything the installer would execute —
+partitioning, pacstrap, the whole chroot configuration and the post-reboot
+stage — as a markdown file: one section per step, with the rationale and
+the commands in copy-paste blocks. Use it to cherry-pick the installer's
+commands for one-off experiments on a server.
+
+```bash
+poetry run archinstaller workbook \
+    [--disk /dev/vda] [--hostname ...] [--username ...] \
+    --ssh-pubkey 'ssh-ed25519 AAAA... comment' \
+    [--graphical] [--opencode] [--local-mirror] \
+    [--virt none] [--no-discard] \
+    [--out PATH] [--with-passwords]
+```
+
+It shares the system-configuration arguments with `install` and needs no
+target. The two probe-derived facts cannot be probed without one, so they
+are pinned by flags (defaults: `virt=none`, discard off) and the workbook
+opens with a "target facts" step whose probe commands verify the
+assumptions; when the real machine disagrees, re-render with matching
+`--virt` / `--discard` flags.
+
+The workbook ships no helper definitions: commands that the install
+script wraps in its `retry` helper (3 attempts, 5 s apart) are unwrapped
+so every block is runnable as-is — rerun a failed block manually.
+
+Passwords render as `{{ROOT_PASSWORD}}`-style placeholders by default, so
+the file stays shareable. `--with-passwords` embeds the explicit values
+and generates the missing ones (root, user, and opencode when enabled):
+the file is then written with mode `0600`, carries a caution header and
+the generated passwords are printed to stdout once — handle the file as a
+secret and rotate the passwords once convenient.
+
+The workbook and the install script are rendered from the same step model
+(`archinstaller/steps.py`): a workbook always matches what `install` would
+run for the same configuration.
 
 ### Output
 
@@ -198,21 +262,27 @@ For (re-)installs on the home LAN the sibling `arch-cache-mirror` service
 (a single Docker container on the host running this tool, host port
 `8282`) turns repeated installs into cache hits. With the flag the tool:
 
-* resolves the host's **primary (default-route) interface** and its IPv4
-  address (`ip -4 route get 1.1.1.1` → `src`) and advertises the mirror as
-  `http://<host-ip>:8282`;
+* resolves the mirror host: for **VM targets** it is the live
+  environment's **default gateway** (probed in the guest) — on every
+  local-VM backend the gateway is the hypervisor host itself with a
+  per-backend static address (libvirt routed/NAT, VBox NAT `10.0.2.2`,
+  hostonly `192.168.56.1`), so the URL keeps working across host network
+  roams; **physical targets** use the host's primary (default-route)
+  interface IPv4 (`ip -4 route get 1.1.1.1` → `src`). Either way the
+  mirror is advertised as `http://<mirror-host>:8282`;
 * verifies from the live environment that the mirror answers
   (`/healthz`) **before** the install starts and aborts with a clear
   error otherwise — e.g. the container is down, or the target is behind
   a jump host on a different network (the mirror is a plain-LAN service);
 * replaces the live ISO's `/etc/pacman.d/mirrorlist` with the single line
-  `Server = http://<host-ip>:8282/$repo/os/$arch`, so pacstrap downloads
-  the official repos (`core`, `extra`, `multilib`) through the cache;
+  `Server = http://<mirror-host>:8282/$repo/os/$arch`, so pacstrap
+  downloads the official repos (`core`, `extra`, `multilib`) through the
+  cache;
 * writes the same single-line mirrorlist into the installed system (in
   the chroot, before its first `pacman -Sy`) and rewrites the extra
   repository `Server` lines to the same server: `[xlibre-stable]` →
-  `http://<host-ip>:8282/xlibre/os/$arch`, `[sonicde]` →
-  `http://<host-ip>:8282/sonicde/os/$arch`. The literal mirror repo
+  `http://<mirror-host>:8282/xlibre/os/$arch`, `[sonicde]` →
+  `http://<mirror-host>:8282/sonicde/os/$arch`. The literal mirror repo
   segments are required because pacman requests the database named after
   the pacman.conf section (`xlibre-stable`), while the mirror serves the
   repo under its upstream name (`xlibre`) and 404s unknown names — the
@@ -225,7 +295,7 @@ The third-party signing keys are still fetched from their upstream homes
 (the mirror proxies repository files, and the key `.asc` files are not
 repository content).
 
-### Two-stage runs (`--resume`) and VirtualBox (`--vbox-vm`)
+### Two-stage runs (`resume`) and VirtualBox (`--vbox-vm`)
 
 The install and the post-boot configuration are two stages. Before the
 reboot the tool writes `archinstaller-state-<hostname>.json` (mode
@@ -244,7 +314,7 @@ prints recovery steps and exits non-zero, keeping the state file; once
 the machine is reachable again (at any address), run:
 
 ```bash
-poetry run archinstaller --resume archinstaller-state-<hostname>.json
+poetry run archinstaller resume archinstaller-state-<hostname>.json
 ```
 
 Verified VirtualBox EFI behavior behind `--vbox-vm`: boot entries the

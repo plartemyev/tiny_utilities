@@ -32,21 +32,37 @@ from archinstaller.ssh import (
     upload_text,
     wait_for_ssh,
 )
+from archinstaller.steps import (
+    DNS_FALLBACK_WORKER,
+    OPENCODE_PORT,
+    post_boot_steps,
+)
+from archinstaller.workbook import build_workbook
 
 INSTALL_SCRIPT_PATH = "/root/archinstaller.sh"
 DEFAULT_LOGIN_PASSWORD = "local0instaLl"
 GENERATED_PASSWORD_LENGTH = 10
-OPENCODE_PORT = 49374
-OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
 OPENCODE_WEB_USER = "opencode"  # server-side basic-auth username, fixed by opencode v2
 LOCAL_MIRROR_PORT = 8282  # arch-cache-mirror sibling project, host-published port
+
+# workbook placeholders: rendered instead of passwords unless --with-passwords
+PLACEHOLDER_ROOT = "{{ROOT_PASSWORD}}"
+PLACEHOLDER_USER = "{{USER_PASSWORD}}"
+PLACEHOLDER_OPENCODE = "{{OPENCODE_PASSWORD}}"
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    if args.resume:
-        _resume_stage(args.resume)
+    if args.command == "resume":
+        _resume_stage(args.state_file)
         return
+    if args.command == "workbook":
+        _run_workbook(args)
+        return
+    _run_install(args)
+
+
+def _run_install(args: argparse.Namespace) -> None:
     if args.vbox_vm is not None and not vbox.vm_exists(args.vbox_vm):
         sys.exit(f"VirtualBox VM {args.vbox_vm!r} not found via vboxmanage showvminfo")
     local_mirror = _local_mirror_url(args)
@@ -57,7 +73,8 @@ def main(argv: list[str] | None = None) -> None:
     private_key = _private_key_path(args.ssh_pubkey)
 
     clear_stale_host_key(args.target, args.target_port)
-    _run_installation(args, hostname, login_password, root_password, user_password, public_key, jump,
+    _run_installation(args, hostname, login_password, root_password, user_password,
+                      opencode_password, public_key, jump,
                       guest_reboot=args.vbox_vm is None, local_mirror=local_mirror)
 
     state_path = _state_path(hostname)
@@ -82,70 +99,93 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="archinstaller",
         description=(
-            "Connect over SSH to an Arch Linux live ISO environment and run an "
-            "automated unattended installation, then reboot and print the "
-            "resulting host IPs, created user and its new SSH public key."
+            "Automated unattended Arch Linux installation driven over SSH into "
+            "the live ISO environment; or render the same run as a markdown "
+            "workbook for manual, copy-paste use."
         ),
     )
-    parser.add_argument("--target", help="host running the Arch ISO live environment")
-    parser.add_argument("--target-port", type=int, default=22)
-    parser.add_argument("--login-user", default="root", help="user on the live ISO (default: root)")
-    parser.add_argument("--login-password", default=DEFAULT_LOGIN_PASSWORD,
-                        help=f"live ISO password (default: {DEFAULT_LOGIN_PASSWORD}, used only briefly)")
-    parser.add_argument("--jump-host", help="optional SSH jump host")
-    parser.add_argument("--jump-port", type=int, default=22)
-    parser.add_argument("--jump-user", help="jump host user (default: root)")
-    parser.add_argument("--jump-password", help="jump host password (prompted if omitted)")
-    parser.add_argument("--disk", default="/dev/vda",
+    sub = parser.add_subparsers(dest="command", required=True,
+                                metavar="{install,workbook,resume}")
+
+    # system configuration: shared by install and workbook
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--disk", default="/dev/vda",
                         help="disk to wipe: plain sdX/vdX/hdX device, e.g. /dev/vda (no NVMe)")
-    parser.add_argument("--hostname", help="hostname for the new system (default: arch-host-YYYY-MM-DD)")
-    parser.add_argument("--username", default="nameless", help="user account to create (default: nameless)")
-    parser.add_argument("--ssh-pubkey",
+    common.add_argument("--hostname", help="hostname for the new system (default: arch-host-YYYY-MM-DD)")
+    common.add_argument("--username", default="nameless", help="user account to create (default: nameless)")
+    common.add_argument("--ssh-pubkey", required=True,
                         help="ssh public key: literal key string or path to a file containing one")
-    parser.add_argument("--locale", default="en_US.UTF-8", help="e.g. en_US.UTF-8")
-    parser.add_argument("--swap-size", default="16G", help="e.g. 16G")
-    parser.add_argument("--root-password",
+    common.add_argument("--locale", default="en_US.UTF-8", help="e.g. en_US.UTF-8")
+    common.add_argument("--swap-size", default="16G", help="e.g. 16G")
+    common.add_argument("--root-password",
                         help="root password for the installed system (generated and printed if omitted)")
-    parser.add_argument("--user-password",
+    common.add_argument("--user-password",
                         help="password for the created user (generated and printed if omitted)")
-    parser.add_argument("--timezone", default="Asia/Bangkok",
+    common.add_argument("--timezone", default="Asia/Bangkok",
                         help="timezone to set on the installed system (default: Asia/Bangkok)")
-    parser.add_argument("--graphical", action="store_true",
+    common.add_argument("--graphical", action="store_true",
                         help="also install graphical packages and the sonic-login-manager desktop session")
-    parser.add_argument("--opencode", action="store_true",
+    common.add_argument("--opencode", action="store_true",
                         help="also deploy the opencode web server as a systemd user service on "
                              f"port {OPENCODE_PORT} (opens the port in firewalld)")
-    parser.add_argument("--local-mirror", "--local_mirror", action="store_true",
+    common.add_argument("--local-mirror", "--local_mirror", action="store_true",
                         help="point pacman at the local arch-cache-mirror on this host "
                              f"(http://<host-ip>:{LOCAL_MIRROR_PORT}/$repo/os/$arch) for both "
                              "the live install and the installed system; the mirror must "
                              "answer from the target or the install aborts")
-    parser.add_argument("--install-timeout", type=int, default=7200,
-                        help="seconds to wait for the install script (default: 7200)")
-    parser.add_argument("--reboot-timeout", type=int, default=900,
-                        help="seconds to wait for SSH after reboot (default: 900)")
-    parser.add_argument("--no-subnet-scan", action="store_true",
-                        help="do not scan the target's /24 for the machine if it came back "
-                             "at a different address (the scan verifies the configured hostname)")
-    parser.add_argument("--vbox-vm", metavar="NAME",
-                        help="VirtualBox VM name for a host-side reboot: clean power-off, NVRAM "
-                             "store backed up (fresh firmware defaults on next boot), boot order "
-                             "disk before DVD, start. Makes the first boot work out of the box")
-    parser.add_argument("--resume", metavar="STATE_FILE",
-                        help="skip the install and finish a previous run post-reboot from its "
-                             "state file (all other arguments are ignored)")
+    common.add_argument("--virt", choices=("none", "kvm", "qemu", "oracle", "vmware", "microsoft"),
+                        help="pin the hypervisor kind instead of probing the target with "
+                             "systemd-detect-virt (workbook: default none)")
+    common.add_argument("--discard", action=argparse.BooleanOptionalAction,
+                        help="pin TRIM/discard support instead of probing the target disk "
+                             "(workbook: default off)")
+
+    p_install = sub.add_parser("install", parents=[common],
+                               help="run the unattended installation over SSH")
+    p_install.add_argument("--target", required=True,
+                           help="host running the Arch ISO live environment")
+    p_install.add_argument("--target-port", type=int, default=22)
+    p_install.add_argument("--login-user", default="root", help="user on the live ISO (default: root)")
+    p_install.add_argument("--login-password", default=DEFAULT_LOGIN_PASSWORD,
+                           help=f"live ISO password (default: {DEFAULT_LOGIN_PASSWORD}, used only briefly)")
+    p_install.add_argument("--jump-host", help="optional SSH jump host")
+    p_install.add_argument("--jump-port", type=int, default=22)
+    p_install.add_argument("--jump-user", help="jump host user (default: root)")
+    p_install.add_argument("--jump-password", help="jump host password (prompted if omitted)")
+    p_install.add_argument("--install-timeout", type=int, default=7200,
+                           help="seconds to wait for the install script (default: 7200)")
+    p_install.add_argument("--reboot-timeout", type=int, default=900,
+                           help="seconds to wait for SSH after reboot (default: 900)")
+    p_install.add_argument("--no-subnet-scan", action="store_true",
+                           help="do not scan the target's /24 for the machine if it came back "
+                                "at a different address (the scan verifies the configured hostname)")
+    p_install.add_argument("--vbox-vm", metavar="NAME",
+                           help="VirtualBox VM name for a host-side reboot: clean power-off, NVRAM "
+                                "store backed up (fresh firmware defaults on next boot), boot order "
+                                "disk before DVD, start. Makes the first boot work out of the box")
+
+    p_workbook = sub.add_parser("workbook", parents=[common],
+                                help="render the run as a markdown workbook (no target needed)")
+    p_workbook.add_argument("--out", metavar="PATH",
+                            help="output .md path (default: archinstaller-workbook-<hostname>.md)")
+    p_workbook.add_argument("--with-passwords", action="store_true",
+                            help="embed real passwords (explicit ones, generated for the rest) "
+                                 "instead of placeholders; the file is then written with mode 0600 "
+                                 "and must be handled as a secret")
+
+    p_resume = sub.add_parser("resume",
+                              help="finish a previous install post-reboot from its state file")
+    p_resume.add_argument("state_file", metavar="STATE_FILE",
+                          help="archinstaller-state-<hostname>.json written before the reboot")
+
     args = parser.parse_args(argv)
-    if args.resume:
-        return args
-    if not args.target:
-        parser.error("--target is required (unless --resume is used)")
-    if not args.ssh_pubkey:
-        parser.error("--ssh-pubkey is required (unless --resume is used)")
     _validate(parser, args)
     return args
 
 
 def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.command == "resume":
+        return  # every other value comes from the state file
     if not re.fullmatch(r"(sd|vd|hd)[a-z]+", args.disk.rsplit("/", 1)[-1]):
         parser.error(f"--disk must be a device like /dev/vda or /dev/sda (got {args.disk!r})")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", args.hostname or default_hostname()):
@@ -186,6 +226,60 @@ def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str, str | N
 def _generated_password() -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(GENERATED_PASSWORD_LENGTH))
+
+
+def _run_workbook(args: argparse.Namespace) -> None:
+    """Render the run's commands as a copy-paste markdown workbook.
+
+    Passwords stay placeholders unless --with-passwords is given: then
+    explicit values are embedded and the missing ones are generated (the
+    file is written 0600 and flagged for rotation).
+    """
+    public_key = resolve_public_key(args.ssh_pubkey)
+    hostname = args.hostname or default_hostname()
+    embed = args.with_passwords
+    root_password = args.root_password or (_generated_password() if embed else PLACEHOLDER_ROOT)
+    user_password = args.user_password or (_generated_password() if embed else PLACEHOLDER_USER)
+    opencode_password = None
+    if args.opencode:
+        opencode_password = _generated_password() if embed else PLACEHOLDER_OPENCODE
+    for label, value in (("--root-password", root_password), ("--user-password", user_password)):
+        if "\n" in value:
+            sys.exit(f"{label} must contain no newlines")
+    cfg = InstallConfig(
+        disk=args.disk,
+        hostname=hostname,
+        locale=args.locale,
+        swap_size=args.swap_size,
+        username=args.username,
+        root_password=root_password,
+        user_password=user_password,
+        public_key=public_key,
+        graphical=args.graphical,
+        virt=args.virt or "none",
+        discard=bool(args.discard),
+        local_mirror=_local_mirror_url(args),
+        timezone=args.timezone,
+        opencode=args.opencode,
+        opencode_password=opencode_password,
+    )
+    workbook = build_workbook(cfg, passwords_embedded=embed)
+    out = args.out or f"archinstaller-workbook-{hostname}.md"
+    mode = 0o600 if embed else 0o644
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(workbook)
+    print(f"Workbook written to {out} (mode {mode:o}).")
+    if not embed:
+        return
+    if not args.root_password:
+        print(f"{'Root password:':<16}{root_password}")
+    if not args.user_password:
+        print(f"{args.username + ' password:':<16}{user_password}")
+    if args.opencode:
+        print(f"{'opencode password:':<16}{opencode_password}")
+    print("The file embeds these credentials: handle it as a secret and "
+          "rotate the passwords once convenient.")
 
 
 def _private_key_path(pubkey_arg: str) -> str | None:
@@ -414,9 +508,8 @@ def _finish_install(args: argparse.Namespace, hostname: str, user_password: str,
     conn = connect_target(args.target, args.target_port, args.username, None, jump,
                           key_filename=private_key)
     try:
-        _post_boot(conn, user_password, args.username, hostname, args.timezone)
-        if opencode_password is not None:
-            _setup_opencode(conn, args.username, user_password, opencode_password)
+        _post_boot(conn, user_password, args.username, hostname, args.timezone,
+                   opencode_password)
         _print_summary(conn, args, hostname, generated_notes, opencode_password)
     finally:
         conn.close()
@@ -437,7 +530,7 @@ def _print_recovery_instructions(state_path: str) -> None:
     print('           vboxmanage startvm "<vm>"')
     print('       (next time pass --vbox-vm "<vm>" to automate this)')
     print("  2. When the installed system is up (at any address), finish the setup:")
-    print(f"         archinstaller --resume {state_path}")
+    print(f"         archinstaller resume {state_path}")
 
 
 def _run_installation(
@@ -446,6 +539,7 @@ def _run_installation(
     login_password: str,
     root_password: str,
     user_password: str,
+    opencode_password: str | None,
     public_key: str,
     jump: JumpConfig | None,
     guest_reboot: bool = True,
@@ -458,8 +552,17 @@ def _run_installation(
         if _code != 0:
             sys.exit("target is not booted in UEFI mode; the install script registers GRUB "
                      "for x86_64-efi and requires an ESP (boot the live ISO in UEFI mode)")
-        virt = _detect_virt(conn)
-        discard = _analyze_discard(conn, args.disk)
+        if args.virt is not None:
+            virt = args.virt
+            print(f"Virtualization pinned by --virt: {virt}")
+        else:
+            virt = _detect_virt(conn)
+        if args.discard is not None:
+            discard = args.discard
+            print(f"TRIM/discard pinned by --discard/--no-discard: "
+                  f"{'on' if discard else 'off'}")
+        else:
+            discard = _analyze_discard(conn, args.disk)
         if args.vbox_vm is not None and not discard:
             # The attachment flags are flipped host-side after the install
             # (only safe while the VM is powered off), so the live-env probe
@@ -468,6 +571,19 @@ def _run_installation(
             print("VirtualBox assist: disk attachments get --discard on; "
                   "enabling guest discard support.")
             discard = True
+        if local_mirror is not None and virt != "none":
+            # VM targets: the guest's default gateway is the hypervisor host
+            # with a per-backend static address - prefer it over the host's
+            # roaming LAN IP so installs keep working after network changes.
+            gateway = _target_gateway(conn)
+            if gateway is not None:
+                print(f"VM target: advertising the local mirror via the guest "
+                      f"gateway {gateway} (the hypervisor host) instead of the "
+                      f"host LAN IP - valid across host network roams")
+                local_mirror = f"http://{gateway}:{LOCAL_MIRROR_PORT}"
+            else:
+                print("VM target: no default gateway in the live environment; "
+                      "keeping the host LAN IP mirror address")
         _ensure_live_dns(conn.client)
         if local_mirror is not None:
             _ensure_local_mirror(conn.client, local_mirror)
@@ -484,6 +600,9 @@ def _run_installation(
             virt=virt,
             discard=discard,
             local_mirror=local_mirror,
+            timezone=args.timezone,
+            opencode=args.opencode,
+            opencode_password=opencode_password,
         )
         print(f"Uploading installation script to {INSTALL_SCRIPT_PATH} ...")
         upload_text(conn.client, build_install_script(cfg), INSTALL_SCRIPT_PATH)
@@ -545,6 +664,27 @@ def _ensure_live_dns(client: paramiko.SSHClient) -> None:
     print("DNS fallback is active; continuing.")
 
 
+def _target_gateway(conn: SshConnection) -> str | None:
+    """Default gateway of the live environment, or None when unresolvable.
+
+    On every local-VM backend (libvirt NAT/routed, VBox NAT/hostonly, qemu
+    user networking, Hyper-V) the gateway is the hypervisor host itself,
+    and its address is static per backend - unlike the host's LAN IP,
+    which roams with the network. Pointing VM installs at the gateway
+    therefore survives host-side network changes.
+    """
+    code, out = run_capture(conn.client, "ip -4 route show default", timeout=30)
+    match = re.search(r"^default via (\S+)", out, re.MULTILINE) if code == 0 else None
+    if match is None:
+        return None
+    gateway = match.group(1)
+    try:
+        ipaddress.IPv4Address(gateway)
+    except ValueError:
+        return None
+    return gateway
+
+
 def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str) -> None:
     """Verify the live environment can reach the local arch-cache-mirror.
 
@@ -575,8 +715,7 @@ def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> Non
     print("DNS resolution is broken; running the DNS fallback dispatcher hook ...")
     run_streaming(
         client,
-        "sudo -S -p '' /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback"
-        " \"$(ip route show default | awk '{print $5; exit}')\" manual --worker",
+        f"sudo -S -p '' {DNS_FALLBACK_WORKER}",
         stdin_text=user_password + "\n",
         timeout=60,
     )
@@ -586,61 +725,32 @@ def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> Non
         print("warning: DNS is still broken after the fallback hook; fix it manually")
 
 
-def _post_boot(conn: SshConnection, user_password: str, username: str, hostname: str, timezone: str) -> None:
-    run_streaming(
-        conn.client,
-        "sudo -S -p '' ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf",
-        stdin_text=user_password + "\n",
-        timeout=60,
-    )
+def _post_boot(conn: SshConnection, user_password: str, username: str, hostname: str,
+               timezone: str, opencode_password: str | None) -> None:
+    """Stage two: run post_boot_steps() on the installed system, in order.
+
+    The DNS probe/kick stays cli-side (it is conditional at runtime) and
+    keeps its position between the resolv.conf stub and the timezone;
+    the opencode service is polled right after its start step.
+    """
+    steps = post_boot_steps(username, hostname, timezone,
+                            opencode_password is not None, opencode_password,
+                            include_dns=False)
+    _run_step(conn, steps[0], user_password)  # the resolv.conf stub
     _ensure_installed_dns(conn.client, user_password)
-    run_streaming(
-        conn.client,
-        f"sudo -S -p '' timedatectl set-timezone {shlex.quote(timezone)}",
-        stdin_text=user_password + "\n",
-        timeout=60,
-    )
-    comment = shlex.quote(f"{username}@{hostname}")
-    run_streaming(
-        conn.client,
-        "test -f $HOME/.ssh/id_ed25519.pub || ssh-keygen -q -t ed25519 -N ''"
-        f" -f $HOME/.ssh/id_ed25519 -C {comment}",
-        timeout=60,
-    )
+    for step in steps[1:]:
+        _run_step(conn, step, user_password)
+        if step.id == "opencode-service":
+            _wait_user_service_active(conn.client, "opencode.service")
 
 
-def _opencode_unit(opencode_password: str) -> str:
-    return "\n".join([
-        "[Unit]",
-        "Description=OpenCode web server",
-        "After=network-online.target",
-        "Wants=network-online.target",
-        "",
-        "[Service]",
-        f"Environment=OPENCODE_SERVER_PASSWORD={opencode_password}",
-        f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {OPENCODE_PORT}",
-        "Restart=on-failure",
-        "",
-        "[Install]",
-        "WantedBy=default.target",
-    ]) + "\n"
-
-
-def _setup_opencode(conn: SshConnection, username: str, user_password: str, opencode_password: str) -> None:
-    print("Setting up the opencode web service ...")
-    run_streaming(conn.client, f"sudo -S -p '' loginctl enable-linger {shlex.quote(username)}",
-                  stdin_text=user_password + "\n", timeout=60)
-    run_streaming(conn.client, "mkdir -p ~/.config/systemd/user", timeout=60)
-    upload_text(conn.client, _opencode_unit(opencode_password), OPENCODE_UNIT_PATH)
-    run_streaming(conn.client, f"chmod 644 $HOME/{OPENCODE_UNIT_PATH}", timeout=60)
-    run_streaming(conn.client, "systemctl --user daemon-reload", timeout=60)
-    run_streaming(conn.client, "systemctl --user enable opencode.service", timeout=60)
-    run_streaming(conn.client, "systemctl --user start --no-block opencode.service", timeout=60)
-    _wait_user_service_active(conn.client, "opencode.service")
-    run_streaming(conn.client, f"sudo -S -p '' firewall-cmd --permanent --add-port={OPENCODE_PORT}/tcp",
-                  stdin_text=user_password + "\n", timeout=60)
-    run_streaming(conn.client, "sudo -S -p '' firewall-cmd --reload",
-                  stdin_text=user_password + "\n", timeout=60)
+def _run_step(conn: SshConnection, step, user_password: str) -> None:
+    for command in step.commands:
+        if step.root:
+            run_streaming(conn.client, f"sudo -S -p '' {command}",
+                          stdin_text=user_password + "\n", timeout=60)
+        else:
+            run_streaming(conn.client, command, timeout=60)
 
 
 def _wait_user_service_active(client: paramiko.SSHClient, unit: str,
