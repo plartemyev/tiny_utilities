@@ -1,0 +1,42 @@
+#!/usr/bin/nft -f
+# lan-routed libvirt guests -> host-published docker ports (the pacman mirror
+# on 8282). Problem: docker's nat PREROUTING DNAT rewrites guest traffic to a
+# host-published port to the container IP *before* routing, so the packet
+# takes the FORWARD path; libvirt's nftables firewall for a routed network
+# (table ip libvirt_network, regenerated on every net-start) accepts guest
+# forwarding only out of the declared <forward dev=.../> and rejects
+# everything else arriving on the bridge (with a dev-less <forward
+# mode='route'/> the accept is interface-agnostic, but the forward path is
+# still rejected for locally-addressed traffic). nftables evaluates every
+# base chain at a hook, so docker's parallel accept at the same priority
+# cannot save the packet from libvirt's reject - the guest sees icmp
+# port-unreachable ("connection refused").
+#
+# Fix: pre-empt docker's dstnat chain (priority dstnat - 1) with a PORT-ONLY
+# no-op DNAT (`dnat to :8282`, no address). A NAT expression in an earlier
+# nat base chain installs the conntrack NAT binding, so later nat chains
+# (docker's) skip the connection and the destination stays the host IP the
+# guest targeted; the packet is locally delivered to INPUT and docker-proxy
+# (bound on 0.0.0.0:<port>) serves it. No address is pinned, so host LAN-IP
+# changes (roaming/DHCP) need no change here. NOTE: a plain terminal
+# `accept` does NOT work: unlike iptables' single nat table, independent
+# nft nat base chains are still consulted after an accept verdict (verified
+# empirically, 2026-10-18) - a real NAT expression is required to end nat
+# traversal. Guests additionally need the port in firewalld's
+# `libvirt-to-host` POLICY (its allow chain lists DHCP/DNS/SSH/TFTP/ICMP
+# and then rejects - a port added to the `libvirt-routed` zone is dead
+# code, the policy chain runs first and rejects before the zone rules):
+#   firewall-cmd --policy=libvirt-to-host --add-port=8282/tcp [--permanent]
+#
+# Idempotent (declare + flush + re-add): safe on unit restarts. To expose
+# another host-published port to the guests, add one more dnat line.
+
+table ip lan-routed-bypass
+flush table ip lan-routed-bypass
+
+table ip lan-routed-bypass {
+    chain prerouting {
+        type nat hook prerouting priority dstnat - 1; policy accept;
+        iifname "virbr2" ip saddr 192.168.1.224/27 tcp dport 8282 dnat to :8282
+    }
+}

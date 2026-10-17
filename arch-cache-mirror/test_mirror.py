@@ -9,10 +9,12 @@ Temp files go to ./tmp (or $ACM_TEST_TMP), never to the system temp dir.
 import asyncio
 import email.utils
 import inspect
+import io
 import os
 import re
 import shutil
 import sys
+import tarfile
 import tempfile
 import time
 import traceback
@@ -426,6 +428,90 @@ async def test_db_revalidation(base: str) -> None:
                 log_calls
     finally:
         server.LOG.info = real_log
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
+def _db_tar(entries: dict[str, int]) -> bytes:
+    """Minimal repository database: one desc member per (filename, csize)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for filename, csize in entries.items():
+            data = ("%FILENAME%\n" + filename + "\n%CSIZE%\n" + str(csize)
+                    + "\n").encode()
+            info = tarfile.TarInfo(filename.rsplit("-", 3)[0] + "/desc")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+async def test_republish_prune(base: str) -> None:
+    """A db refresh that lands a new generation must prune cached
+    packages the db now lists with a different size (repos that republish
+    files in place): the stale copy would trip pacman's max-file-size
+    (curl error 63) or the sha256 check forever.  Packages absent from
+    the new db are older generations and must survive."""
+    upstream: dict[str, bytes] = {}
+    v1 = b"package payload one"
+    v2 = b"package payload two, rebuilt to a different size"
+    old_body = b"older generation nobody lists any more"
+
+    async def stub(request: web.Request) -> web.Response:
+        return web.Response(body=upstream[request.match_info["filename"]])
+
+    up_app = web.Application()
+    up_app.router.add_get("/testrepo/{arch}/{filename}", stub)
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir, extra_repos=[
+        Repo("test", ["http://127.0.0.1:%d/testrepo/$arch" % up.port])])
+    app = build_app(cfg)
+    mirror = TestServer(app)
+    await mirror.start_server()
+    try:
+        pkg_dir = os.path.join(cache_dir, "test/os/x86_64")
+        cached_pkg = os.path.join(pkg_dir, PKG)
+        cached_old = os.path.join(pkg_dir, "old-2.0-1-x86_64.pkg.tar.zst")
+
+        # generation 1: db lists both packages at their cached sizes
+        upstream["test.db"] = _db_tar(
+            {PKG: len(v1), "old-2.0-1-x86_64.pkg.tar.zst": len(old_body)})
+        upstream[PKG] = v1
+        upstream["old-2.0-1-x86_64.pkg.tar.zst"] = old_body
+
+        async with ClientSession() as http:
+            async with http.get(str(mirror.make_url(
+                    "/test/os/x86_64/" + PKG))) as r:
+                assert await r.read() == v1
+            async with http.get(str(mirror.make_url(
+                    "/test/os/x86_64/old-2.0-1-x86_64.pkg.tar.zst"))) as r:
+                assert await r.read() == old_body
+
+            # generation 2: upstream rebuilt PKG in place (same filename,
+            # different bytes); the db follows and drops the old generation
+            upstream["test.db"] = _db_tar({PKG: len(v2)})
+            upstream[PKG] = v2
+
+            async with http.get(str(mirror.make_url(
+                    "/test/os/x86_64/test.db"))) as r:
+                assert await r.read() == upstream["test.db"]
+
+            # the stale copy must be pruned once the validation runs...
+            assert await eventually(lambda: not os.path.exists(cached_pkg)), \
+                "stale package not pruned after db refresh"
+            # ...while generations the db does not mention stay
+            assert os.path.exists(cached_old), \
+                "package absent from the db must not be touched"
+
+            # the next package request re-downloads the current build
+            async with http.get(str(mirror.make_url(
+                    "/test/os/x86_64/" + PKG))) as r:
+                assert await r.read() == v2
+            assert os.path.getsize(cached_pkg) == len(v2)
+    finally:
         await mirror.close()
         if not up.closed:
             await up.close()
@@ -883,6 +969,7 @@ TESTS = [
     ("db-ttl", test_db_ttl),
     ("fresh-wait", test_fresh_wait),
     ("db-revalidation", test_db_revalidation),
+    ("republish-prune", test_republish_prune),
     ("single-flight", test_single_flight),
     ("byte-ranges", test_ranges),
 ]

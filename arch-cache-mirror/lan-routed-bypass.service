@@ -1,0 +1,14 @@
+[Unit]
+Description=nft DNAT bypass for lan-routed libvirt guests to host-published docker ports
+Documentation=file:///etc/nft.d/lan-routed-bypass.nft
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nft -f /etc/nft.d/lan-routed-bypass.nft
+ExecStop=-/usr/bin/nft delete table ip lan-routed-bypass
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

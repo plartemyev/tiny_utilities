@@ -23,7 +23,9 @@ Behaviour per request:
   pacman while being downloaded* from the first reachable upstream
   mirror and land in the cache at the same time. The cache only ever
   gains complete files: downloads are written to a temp file and
-  atomically renamed into place.
+  atomically renamed into place.  A repository that nevertheless
+  republishes a filename in place is handled by the db-driven validation
+  described in the Caveats.
 - **databases** (`.db`, `.files`, `.db.sig`, `.files.sig`) are the
   metadata pacman only requests on a sync, so a request for a copy older
   than `DB_TTL` triggers a **fresh upstream retrieval that the requesting
@@ -342,6 +344,16 @@ services:
   size exceeded` (curl error 63). Identity encoding removes the variant
   mismatch at the source; a genuinely truncated upstream transfer aborts
   the stream and nothing lands in the cache.
+- Republishing repositories: real Arch mirrors never change a package
+  file's content under the same filename, but some repos (Sonic DE)
+  rebuild packages without bumping versions and re-upload them in place.
+  A stale cached copy then contradicts the fresh db clients sync against
+  (pacman aborts with curl error 63, or fails the sha256 check after a
+  full download), so every landed db generation is parsed and cached
+  packages it lists with a different size are pruned together with their
+  signatures - the next request re-downloads the current build.
+  Packages the db does not mention are older generations and stay
+  subject to GC/`KEEP_VERSIONS`.
 - On upstream mirror rotation the local layout stays stable; clients
   never need a mirrorlist change.
 
@@ -391,6 +403,54 @@ On networks that block outbound DNS to the public resolvers the hook's
 probing keeps the lease server first; with the hook not installed, the
 shipped baseline still works on any network with working internet DNS.
 
+## Serving libvirt `lan-routed` guests (nft DNAT bypass)
+
+Guests of a libvirt **routed** network (`<forward mode='route'/>`, e.g.
+the `lan-routed` network in this repo's deployment notes) could not reach
+the mirror from inside their VMs: `curl: Connection refused after 0 ms`,
+while ping to the host and host-local access worked.  Mechanism: docker's
+nat PREROUTING DNAT rewrites guest traffic to the published port
+(`8282 -> 172.x.x.x:8080`) *before* routing, which turns it into
+forwarded traffic; libvirt's nftables firewall for routed networks
+(table `ip libvirt_network`, regenerated on every net-start) accepts
+guest forwarding only out of the declared forward device and **rejects**
+everything else arriving on the bridge.  nftables evaluates every base
+chain at a hook, so docker's parallel accept at the same priority cannot
+save the packet - the guest gets icmp port-unreachable (= "refused").
+
+`lan-routed-bypass.nft` + `lan-routed-bypass.service` fix this without
+touching docker or libvirt: a nat rule at priority `dstnat - 1` installs
+a PORT-ONLY no-op DNAT binding (`dnat to :8282`, no address pinned, so
+host-LAN-IP changes need no change here) for guest traffic to the port,
+which ends NAT lookup for the connection; the destination stays the host
+IP the guest targeted, the packet is locally delivered to INPUT and
+docker-proxy (bound on `0.0.0.0:8282`) serves it.  A plain `accept`
+verdict does NOT work here: unlike iptables' single nat table,
+independent nft nat base chains are still consulted after an accept
+(verified empirically with competing DNAT rules), so a real NAT
+expression is required.  Guests additionally need the port in firewalld's
+`libvirt-to-host` POLICY: its allow chain (DHCP/DNS/SSH/TFTP/ICMP) ends
+in a reject that runs BEFORE the zone rules, so a port added to the
+`libvirt-routed` zone is unreachable dead code.  Install (idempotent;
+verified with a netns replica of the docker-DNAT + libvirt-reject
+topology, then live from a guest):
+
+    sudo install -Dm644 lan-routed-bypass.nft /etc/nft.d/lan-routed-bypass.nft
+    sudo install -m644 lan-routed-bypass.service /etc/systemd/system/lan-routed-bypass.service
+    sudo systemctl daemon-reload && sudo systemctl enable --now lan-routed-bypass.service
+    sudo firewall-cmd --policy=libvirt-to-host --add-port=8282/tcp
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --add-port=8282/tcp
+
+To expose another host-published docker port to the guests, add one more
+`dnat` line to the nft file and the matching firewall-cmd pair.  The
+table is owned by this unit alone: docker, libvirt and firewalld
+regenerate only their own tables, so it survives all of their restarts
+(including `firewall-cmd --reload`, which libvirt answers by re-applying
+its zone bindings).  Guests should address the mirror via the static
+`lan-routed` gateway (`http://192.168.1.225:8282`, this network's own
+address) instead of the host's roaming LAN IP; archinstaller does this
+automatically for VM targets by using the guest's default gateway.
+
 ## Development
 
 `server.py` is a single-file aiohttp app; `test_mirror.py` covers the
@@ -401,7 +461,8 @@ fresh-on-request db retrieval, the FRESH_WAIT stale fallback, short-body
 upstream, 404 pass-through with negative caching, unknown repo,
 same-file single-flight, byte-range resume: cached slices, upstream 206
 relay, a range-ignoring upstream still filling the cache, 416, HEAD
-without a body). Tests need `aiohttp` and write only to `./tmp`:
+without a body, in-place-republish pruning). Tests need `aiohttp` and
+write only to `./tmp`:
 
 ```bash
 python test_mirror.py             # host, needs aiohttp
@@ -468,4 +529,6 @@ Notes:
 | `docker-compose.arm64.yml` | compose override for the arm64 image (build file + platform only) |
 | `dns-resolv.conf`    | resolver file bind-mounted into the container (glibc-controlled DNS) |
 | `dns-roam-hook.sh`   | NM dispatcher hook rewriting the resolver file on network roams  |
+| `lan-routed-bypass.nft` | nft DNAT bypass so libvirt `lan-routed` guests reach the published port |
+| `lan-routed-bypass.service` | oneshot unit loading the bypass table at boot |
 | `release.sh`         | build + push both arch images, assemble the multi-arch `latest` index |

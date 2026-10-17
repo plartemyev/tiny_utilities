@@ -55,6 +55,7 @@ import email.utils
 import logging
 import os
 import re
+import tarfile
 import time
 import uuid
 from collections import defaultdict
@@ -909,7 +910,86 @@ async def _refresh_db(app: web.Application, repo: Repo, arch: str,
             return "ok", None
         outcome, _, last_status = await _fetch_upstream(
             app, None, repo, arch, filename, local, revalidate=True)
+        if outcome == "ok" and _is_pkg_db(filename):
+            # a fresh db generation just landed: prune packages it
+            # superseded in place (see _validate_repo_cache)
+            _schedule_repo_validation(app, repo, arch, local)
     return outcome, last_status
+
+
+def _is_pkg_db(filename: str) -> bool:
+    """True for databases that describe packages (not their signatures)."""
+    return filename.endswith((".db", ".files"))
+
+
+def _db_package_sizes(db_local: str) -> dict[str, int]:
+    """Package filename -> %CSIZE% for a repository database (a tar of
+    <pkgname>/<desc> members).  Returns {} when the db cannot be parsed -
+    there is nothing to validate against then (pacman rejects such a db
+    itself)."""
+    sizes: dict[str, int] = {}
+    try:
+        with tarfile.open(db_local) as tf:
+            for member in tf:
+                if not member.isfile() or not member.name.endswith("/desc"):
+                    continue
+                text = tf.extractfile(member).read().decode("utf-8", "replace")
+                fields: dict[str, str] = {}
+                key = None
+                for line in text.splitlines():
+                    if line.startswith("%"):
+                        key = line[1:-1]
+                    elif key is not None:
+                        fields.setdefault(key, line)
+                if "FILENAME" in fields and "CSIZE" in fields:
+                    sizes[fields["FILENAME"]] = int(fields["CSIZE"])
+    except (tarfile.TarError, OSError):
+        pass
+    return sizes
+
+
+def _schedule_repo_validation(app: web.Application, repo: Repo, arch: str,
+                              db_local: str) -> None:
+    task = asyncio.create_task(_validate_repo_cache(app, repo, arch, db_local))
+    app["bg_tasks"].add(task)
+    task.add_done_callback(app["bg_tasks"].discard)
+
+
+async def _validate_repo_cache(app: web.Application, repo: Repo, arch: str,
+                               db_local: str) -> None:
+    """Drop cached packages that a freshly fetched db generation lists
+    with a different size.  Repos that republish files in place (same
+    filename, rebuilt bytes - the Sonic DE repo does this on rebuild
+    batches) would otherwise poison the cache forever: packages are
+    served without any upstream contact, so clients sync a db with the
+    new %CSIZE% and then download the stale copy - libalpm sets curl's
+    max-file-size to the db's %CSIZE% and aborts with 'Maximum file size
+    exceeded' (curl error 63), or fails the sha256 check after a full
+    download.  Packages the db does not mention are older generations
+    (KEEP_VERSIONS/GC territory) and stay."""
+    try:
+        sizes = await asyncio.to_thread(_db_package_sizes, db_local)
+        pkg_dir = os.path.dirname(db_local)
+        for name in sorted(os.listdir(pkg_dir)):
+            if name not in sizes or not PACKAGE_FILE_RE.match(name):
+                continue
+            local = os.path.join(pkg_dir, name)
+            async with file_lock(app, local):
+                try:
+                    on_disk = os.stat(local).st_size
+                except FileNotFoundError:
+                    continue  # a concurrent fetch replaced/removed it
+                if on_disk == sizes[name]:
+                    continue
+                _quiet_unlink(local)
+                _quiet_unlink(local + ".sig")
+                LOG.warning("pruned %s/%s/%s (%d B on disk, db says %d B): "
+                            "upstream replaced the file in place",
+                            repo.name, arch, name, on_disk, sizes[name])
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        LOG.exception("package validation against %s failed", db_local)
 
 
 async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
@@ -939,6 +1019,8 @@ async def _handle_metadata(request: web.Request, repo: Repo, arch: str,
                     app, request, repo, arch, filename, local, rng=rng)
                 if outcome != "ok":
                     return _upstream_failed(filename, last_status)
+                if _is_pkg_db(filename):
+                    _schedule_repo_validation(app, repo, arch, local)
                 return response
     age = time.time() - os.stat(local).st_mtime
     if rng is not None:
