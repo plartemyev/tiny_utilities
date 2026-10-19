@@ -1,5 +1,4 @@
 ## Tooling notes
-- Avoid formatting and empty lines changes on existing files unless explicitly asked for.
 - On Arch Linux (`archlinux:latest`), `corepack` is a separate package from
   `nodejs`. To use Yarn 4 via Corepack, you must install both and then run
   `corepack enable`.
