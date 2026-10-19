@@ -67,6 +67,7 @@ LAN):
 
 ```bash
 cd arch-cache-mirror
+cp -n dns-resolv.conf.example dns-resolv.conf   # seed the gitignored runtime resolver file
 env UID=$(id -u) GID=$(id -g) docker compose up -d --build     # cache persists in ./cache/
 ```
 
@@ -313,6 +314,17 @@ services:
   `root:root` (the daemon runs as root), which trips exactly that
   PermissionError crash-loop (an empty root-owned leftover needs no
   sudo: `rmdir cache && mkdir cache`).
+- The runtime `dns-resolv.conf` is gitignored for the same reason the
+  cache contents are: the roam hook rewrites it on every network event,
+  so a tracked copy was permanently dirty; `dns-resolv.conf.example`
+  ships the baseline. Seed it on fresh clones before `up`
+  (`cp -n dns-resolv.conf.example dns-resolv.conf`) - same dockerd
+  auto-creates-a-directory trap as `./cache` above. Existing checkouts
+  pulling the untracking commit: git refuses the deletion while the
+  hook-modified file is dirty - run
+  `git checkout -- arch-cache-mirror/dns-resolv.conf && git pull && cp -n arch-cache-mirror/dns-resolv.conf.example arch-cache-mirror/dns-resolv.conf && docker compose up -d --force-recreate`
+  (the force-recreate re-resolves the mount after the file's inode
+  changed).
 - If you keep real upstream mirrors below the proxy line in
   `mirrorlist`, pacman will use them as fallback when the proxy is
   down (nice), but the same file must not be `Include`d by the extra
@@ -375,8 +387,11 @@ resolver file and manages it like archinstaller manages its guests' DNS:
 - `dns-resolv.conf` (mounted read-only as `/etc/resolv.conf`) gives the
   container glibc resolver semantics: per-server `timeout:1` failover and
   hot reload - glibc re-reads the file on change, so a long-running
-  server picks up edits without a restart (verified).  The shipped
-  content is the network-independent baseline (public resolvers only).
+  server picks up edits without a restart (verified).  The file is
+  gitignored runtime state (the hook rewrites it on every network
+  event, so a tracked copy was permanently dirty);
+  `dns-resolv.conf.example` ships the network-independent baseline
+  (public resolvers only) - seed the runtime file from it (Quickstart).
 - `dns-roam-hook.sh` is a NetworkManager dispatcher hook that rewrites
   that file in place on every network event: the current connection's
   DNS servers first (each probed alive with a 1 s `drill` query), public
@@ -391,9 +406,13 @@ resolver file and manages it like archinstaller manages its guests' DNS:
   <iface> manual`.  The rewrite is in place only (`printf > file`) and
   idempotent: renaming (mv, `sed -i`) would swap the inode out from
   under the bind mount, and the container never needs a restart, so
-  in-flight downloads are never aborted.  The hook rewrites the tracked
-  `dns-resolv.conf` with this host's resolvers; `git checkout --
-  dns-resolv.conf` restores the shipped baseline.
+  in-flight downloads are never aborted.  The hook rewrites the
+  untracked `dns-resolv.conf` with this host's resolvers (git stays
+  clean); `cp dns-resolv.conf.example dns-resolv.conf` restores the
+  shipped baseline.  Deleting and recreating the file swaps the inode
+  out from under the running mount (bind mounts pin the inode at
+  container create), so follow that with
+  `docker compose up -d --force-recreate`.
 - The image healthcheck additionally requires `getent hosts
   archlinux.org` to succeed, so resolution breakage surfaces as
   `(health: unhealthy)` in `docker ps` instead of being discovered
@@ -527,7 +546,8 @@ Notes:
 | `Dockerfile.alarm`   | arm64 image variant (Arch Linux ARM rootfs tarball as base)  |
 | `docker-compose.yml` | LAN deployment defaults (port, volumes, env, repo config) |
 | `docker-compose.arm64.yml` | compose override for the arm64 image (build file + platform only) |
-| `dns-resolv.conf`    | resolver file bind-mounted into the container (glibc-controlled DNS) |
+| `dns-resolv.conf.example` | shipped baseline for the resolver file (public resolvers) |
+| `dns-resolv.conf`    | runtime resolver file (gitignored, hook-rewritten; seed from the example) |
 | `dns-roam-hook.sh`   | NM dispatcher hook rewriting the resolver file on network roams  |
 | `lan-routed-bypass.nft` | nft DNAT bypass so libvirt `lan-routed` guests reach the published port |
 | `lan-routed-bypass.service` | oneshot unit loading the bypass table at boot |

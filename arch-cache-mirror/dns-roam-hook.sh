@@ -93,7 +93,7 @@ done
 content="# managed by NetworkManager dispatcher hook dns-roam-hook.sh -
 # rewritten on network events: current connection's DNS servers first
 # (probed alive), public fallbacks last.  Static default: the repo's
-# dns-resolv.conf.  In-place writes only (see that file's header), at
+# dns-resolv.conf.example.  In-place writes only (see that file's header), at
 # most 3 nameservers (glibc MAXNS).
 ${body}options timeout:1 attempts:2
 "
