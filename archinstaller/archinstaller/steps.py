@@ -460,7 +460,7 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
         *([
             Step("Tuning guest memory pressure (small page cache)", (
                 "printf '%s\\n' 'vm.watermark_scale_factor = 500'"
-                " 'vm.vfs_cache_pressure = 200'"
+                " 'vm.vfs_cache_pressure = 20'"
                 " > /etc/sysctl.d/90-small-cache.conf",
             ), rationale=(
                 "The VM boots with its full RAM (current = max) and the virtio balloon"
