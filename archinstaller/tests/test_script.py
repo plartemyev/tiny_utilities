@@ -67,6 +67,23 @@ def test_graphical_physical_targets_keep_powerdevil():
     assert "powerButtonAction=8" in script  # seed kept for Wayland delivery
 
 
+def test_graphical_vm_targets_disable_screen_locking():
+    script = build_install_script(make_cfg(graphical=True))
+    assert ("printf '%s\\n' '[Daemon]' 'Autolock=false' 'LockOnResume=false'"
+            " > /home/nameless/.config/kscreenlockerrc") in script
+    assert ("printf '%s\\n' '[ksmserver]' 'Lock Session=none,none,Lock Session'"
+            " > /home/nameless/.config/kglobalshortcutsrc") in script
+    # the seed must land before the .config chown so the user owns it
+    assert script.index("kscreenlockerrc") < script.index(
+        "chown -R 'nameless':'nameless' /home/nameless/.config")
+
+
+def test_graphical_physical_targets_keep_screen_locking():
+    script = build_install_script(make_cfg(graphical=True, virt="none"))
+    assert "kscreenlockerrc" not in script
+    assert "Lock Session" not in script
+
+
 def test_dns_fallback_dispatcher_installed_in_base_system():
     script = build_install_script(make_cfg())
     assert ("cat > /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback"

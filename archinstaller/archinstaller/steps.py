@@ -522,6 +522,20 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
                 " VMs have no battery or backlight, so the daemon is masked and logind's"
                 " HandlePowerKey=poweroff shuts the machine down."
             )),
+            Step("Disabling screen locking (VM target)", (
+                (f"printf '%s\\n' '[Daemon]' 'Autolock=false' 'LockOnResume=false'"
+                 f" > {home}/.config/kscreenlockerrc"),
+                # none,none is how kglobalaccel stores a user-cleared shortcut;
+                # a missing entry would re-apply the built-in Meta+L default.
+                ("printf '%s\\n' '[ksmserver]' 'Lock Session=none,none,Lock Session'"
+                 f" > {home}/.config/kglobalshortcutsrc"),
+            ), rationale=(
+                "Meta+L muscle memory aimed at the host OS locks the VM desktop"
+                " instead, and autolock or lock-on-resume can freeze unattended test"
+                " runs behind a password prompt. Autolock and lock-on-resume are off"
+                " and the Lock Session shortcut is cleared; physical targets keep"
+                " normal locking."
+            )),
         ] if cfg.virt != "none" else []),
         Step(None, (
             f"chown -R {user}:{user} {home}/.config",
