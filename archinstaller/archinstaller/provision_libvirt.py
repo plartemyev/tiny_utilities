@@ -56,7 +56,7 @@ def provision(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
                      host_cpus=os.cpu_count() or 1)
     _run(uri, "vol-create-as", VOLUME_POOL, volume,
          f"{disk_size_gib}G", "--format", "qcow2")
-    _define(uri, xml)
+    _define(uri, xml, f"archinstaller-provision-{name}.xml")
     print(f"libvirt network: {network[0]} {network[1]}; starting VM ...")
     _run(uri, "start", name)
     return serial_port, 22
@@ -99,17 +99,27 @@ def find_booted_target(name: str, uri: str = DEFAULT_URI) -> str | None:
 
 def select_network(uri: str = DEFAULT_URI) -> tuple[str, str]:
     """(kind, name) of the first usable network: bridge, lan-routed, NAT."""
+    network, needs_start = plan_network(uri)
+    if needs_start:
+        _run(uri, "net-start", network[1])
+    return network
+
+
+def plan_network(uri: str = DEFAULT_URI) -> tuple[tuple[str, str], bool]:
+    """((kind, name), needs_start), probed without side effects.
+
+    Workbook rendering uses the flag to render a net-start command instead
+    of starting the network at render time.
+    """
     bridge = physical_bridge()
     if bridge is not None:
-        return "bridge", bridge
+        return ("bridge", bridge), False
     networks = _net_names(uri)
     for candidate in PREFERRED_NETWORKS:
         state = networks.get(candidate)
         if state is None:
             continue
-        if state != "active":
-            _run(uri, "net-start", candidate)
-        return "network", candidate
+        return ("network", candidate), state != "active"
     raise LibvirtError(
         "no usable libvirt network: no bridge with a physical NIC, and none "
         f"of {', '.join(PREFERRED_NETWORKS)} is defined")
@@ -217,6 +227,36 @@ def domain_xml(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
     return "\n".join(lines)
 
 
+def workbook_section(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
+                     graphical: bool, iso_path: str, serial_port: int,
+                     network: tuple[str, str], network_start: bool,
+                     uri: str = DEFAULT_URI) -> str:
+    """Render the provisioning commands and the domain XML for the workbook.
+
+    The XML comes from the same domain_xml() provision() uses, so the
+    workbook always matches what the tool would define.
+    """
+    lines = []
+    if network_start:
+        lines.append(f"virsh -c {uri} net-start {network[1]}")
+    lines += [
+        (f"virsh -c {uri} vol-create-as {VOLUME_POOL} {name}.qcow2 "
+         f"{disk_size_gib}G --format qcow2"),
+        f"virsh -c {uri} define archinstaller-provision-{name}.xml",
+        f"virsh -c {uri} start {name}",
+    ]
+    xml = domain_xml(name, disk_size_gib=disk_size_gib, ram_gib=ram_gib,
+                     cores=cores, graphical=graphical, serial_port=serial_port,
+                     iso_path=iso_path, network=network,
+                     host_tpc=host_threads_per_core(),
+                     host_cpus=os.cpu_count() or 1)
+    return (f"Provision the libvirt domain {name!r} on {uri} (network:"
+            f" {network[0]} {network[1]}, serial line on TCP {serial_port}):\n\n"
+            "```bash\n" + "\n".join(lines) + "\n```\n\n"
+            + f"Save the domain XML as `archinstaller-provision-{name}.xml`:\n\n"
+            + "```xml\n" + xml + "```\n")
+
+
 def _stop(name: str, uri: str) -> None:
     """Clean ACPI shutdown with a hard destroy fallback (like vbox.poweroff)."""
     try:
@@ -309,8 +349,7 @@ def _ipv4_in(line: str) -> str | None:
     return None
 
 
-def _define(uri: str, xml: str) -> None:
-    path = "archinstaller-provision.xml"
+def _define(uri: str, xml: str, path: str) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(xml)
     try:

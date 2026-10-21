@@ -247,6 +247,7 @@ poetry run archinstaller workbook \
     [--disk /dev/vda] [--hostname ...] [--username ...] \
     --ssh-pubkey 'ssh-ed25519 AAAA... comment' \
     [--graphical] [--opencode] [--local-mirror] \
+    [--provision vbox|libvirt] \
     [--virt none] [--discard] \
     [--out PATH] [--with-passwords]
 ```
@@ -257,6 +258,17 @@ are pinned by flags (defaults: `virt=none`, discard off) and the workbook
 opens with a "target facts" step whose probe commands verify the
 assumptions; when the real machine disagrees, re-render with matching
 `--virt` / `--discard` flags.
+
+With `--provision vbox|libvirt` the workbook additionally renders the VM
+provisioning (the same `VBoxManage`/`virsh` commands and domain XML the
+tool would run — host-side facts like free ports, the VirtualBox machine
+folder and the libvirt network are probed at render time), followed by
+manual replacements for the automated steps: type the `console=ttyS0`
+boot-menu edit yourself instead of the blind keystroke injection, run the
+three serial-session commands in a `socat` terminal instead of the
+tool's scripted session. Because the VM kind is then decided by the
+flag (`oracle`/`kvm`, discard on), the target-facts step is omitted and
+the config line reflects the derived values.
 
 The workbook ships no helper definitions: commands that the install
 script wraps in its `retry` helper (3 attempts, 5 s apart) are unwrapped

@@ -50,7 +50,8 @@ class _Section:
     extra: list[list[str]] = field(default_factory=list)
 
 
-def build_workbook(cfg: InstallConfig, *, passwords_embedded: bool = False) -> str:
+def build_workbook(cfg: InstallConfig, *, passwords_embedded: bool = False,
+                   provision: str | None = None) -> str:
     steps = install_steps(cfg)
     steps += post_boot_steps(cfg.username, cfg.hostname, cfg.timezone,
                              cfg.opencode, cfg.opencode_password)
@@ -62,7 +63,13 @@ def build_workbook(cfg: InstallConfig, *, passwords_embedded: bool = False) -> s
     ]
     if passwords_embedded:
         blocks += [_caution(cfg), ""]
-    blocks += _target_facts_section(cfg)
+    if provision is not None:
+        # a provisioned run has no unknown target: the VM's virt kind and
+        # discard support are decided by --provision, so the target-facts
+        # step is replaced by the provisioning and boot sections
+        blocks += [provision, ""]
+    else:
+        blocks += _target_facts_section(cfg)
 
     state = _RenderState(blocks, cfg)
     for step in steps:

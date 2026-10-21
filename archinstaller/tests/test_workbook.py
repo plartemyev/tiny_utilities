@@ -82,6 +82,17 @@ def test_virt_conditionals():
     assert "systemctl enable qemu-guest-agent" not in none
 
 
+def test_provision_section_replaces_target_facts():
+    md = build_workbook(make_cfg(), provision="PROVISION-SECTION-MARKER")
+    assert "PROVISION-SECTION-MARKER" in md
+    assert "## 0. Target facts" not in md
+
+
+def test_plain_workbook_keeps_target_facts():
+    md = build_workbook(make_cfg())
+    assert "## 0. Target facts" in md
+
+
 def test_discard_conditionals():
     with_discard = render(make_cfg(discard=True))
     assert "systemctl enable fstrim.timer" in with_discard

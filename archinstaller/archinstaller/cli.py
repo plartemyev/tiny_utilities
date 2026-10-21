@@ -190,8 +190,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                 "store backed up (fresh firmware defaults on next boot), boot order "
                                 "disk before DVD, start. Makes the first boot work out of the box")
 
-    p_workbook = sub.add_parser("workbook", parents=[common],
+    p_workbook = sub.add_parser("workbook", parents=[common, vm],
                                 help="render the run as a markdown workbook (no target needed)")
+    p_workbook.add_argument("--provision", choices=("none", "vbox", "libvirt"),
+                            default="none",
+                            help="also render the VM provisioning commands and the "
+                                 "boot/serial instructions (vbox: VirtualBox, libvirt: "
+                                 "qemu:///system); host-side facts (ports, network, "
+                                 "machine folder) are probed at render time")
     p_workbook.add_argument("--out", metavar="PATH",
                             help="output .md path (default: archinstaller-workbook-<hostname>.md)")
     p_workbook.add_argument("--with-passwords", action="store_true",
@@ -218,6 +224,13 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
         elif not args.target:
             parser.error("install needs --target (or --provision vbox|libvirt "
                          "to provision a fresh local VM)")
+    if args.command == "workbook" and args.provision != "none":
+        # no target to boot the ISO from: --iso-path is rendered as given
+        if args.virt:
+            parser.error("--virt is implied by --provision "
+                         "(oracle for vbox, kvm for libvirt)")
+        if min(args.cores, args.ram_gib, args.disk_size_gib) < 1:
+            parser.error("--cores, --ram-gib and --disk-size-gib must be >= 1")
     if not re.fullmatch(r"(sd|vd|hd)[a-z]+", args.disk.rsplit("/", 1)[-1]):
         parser.error(f"--disk must be a device like /dev/vda or /dev/sda (got {args.disk!r})")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", args.hostname or default_hostname()):
@@ -359,8 +372,16 @@ def _run_workbook(args: argparse.Namespace) -> None:
     for label, value in (("--root-password", root_password), ("--user-password", user_password)):
         if "\n" in value:
             sys.exit(f"{label} must contain no newlines")
+    virt, discard, disk = args.virt or "none", bool(args.discard), args.disk
+    provision_md = None
+    if args.provision == "vbox":
+        virt, discard, disk = "oracle", True, "/dev/sda"
+        provision_md = _provision_workbook_section(args, hostname)
+    elif args.provision == "libvirt":
+        virt, discard, disk = "kvm", True, "/dev/vda"
+        provision_md = _provision_workbook_section(args, hostname)
     cfg = InstallConfig(
-        disk=args.disk,
+        disk=disk,
         hostname=hostname,
         locale=args.locale,
         swap_size=args.swap_size,
@@ -369,14 +390,15 @@ def _run_workbook(args: argparse.Namespace) -> None:
         user_password=user_password,
         public_key=public_key,
         graphical=args.graphical,
-        virt=args.virt or "none",
-        discard=bool(args.discard),
+        virt=virt,
+        discard=discard,
         local_mirror=_local_mirror_url(args),
         timezone=args.timezone,
         opencode=args.opencode,
         opencode_password=opencode_password,
     )
-    workbook = build_workbook(cfg, passwords_embedded=embed)
+    workbook = build_workbook(cfg, passwords_embedded=embed,
+                              provision=provision_md)
     out = args.out or f"archinstaller-workbook-{hostname}.md"
     mode = 0o600 if embed else 0o644
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
@@ -393,6 +415,35 @@ def _run_workbook(args: argparse.Namespace) -> None:
         print(f"{'opencode password:':<16}{opencode_password}")
     print("The file embeds these credentials: handle it as a secret and "
           "rotate the passwords once convenient.")
+
+
+def _provision_workbook_section(args: argparse.Namespace, hostname: str) -> str:
+    """The backend's provisioning commands plus the boot/serial instructions.
+
+    Host-side facts (free ports, VirtualBox machine folder, Extension Pack,
+    libvirt network) are probed at render time, like the mirror address.
+    """
+    iso_path = os.path.expanduser(args.iso_path)
+    if args.provision == "vbox":
+        serial_port, ssh_port = provision_vbox.pick_free_ports(2)
+        section = provision_vbox.workbook_section(
+            hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
+            cores=args.cores, iso_path=iso_path, graphical=args.graphical,
+            serial_port=serial_port, ssh_port=ssh_port)
+        host_side = (f"127.0.0.1:{ssh_port} (the NAT port forward; the guest "
+                     f"itself is {provision_vbox.GUEST_ADDRESS})")
+    else:
+        serial_port = provision_libvirt.pick_free_ports(1)[0]
+        network, needs_start = provision_libvirt.plan_network()
+        section = provision_libvirt.workbook_section(
+            hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
+            cores=args.cores, graphical=args.graphical, iso_path=iso_path,
+            serial_port=serial_port, network=network,
+            network_start=needs_start)
+        host_side = "the address printed by the ip command above"
+    boot = provision.workbook_boot_section(serial_port, host_side,
+                                           DEFAULT_LOGIN_PASSWORD)
+    return section + "\n" + boot
 
 
 def _private_key_path(pubkey_arg: str) -> str | None:

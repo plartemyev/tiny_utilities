@@ -97,6 +97,41 @@ def test_finalize_stops_ejects_and_boots_disk(monkeypatch):
     assert started == [True]
 
 
+def test_plan_matches_provision_and_gates_usb(monkeypatch):
+    plan = provision_vbox.plan(
+        "testvm", disk_size_gib=45, ram_gib=4, cores=2, iso_path="/iso/a.iso",
+        graphical=True, serial_port=23950, ssh_port=23951, extpack=True,
+        machine_folder="/machines/testvm")
+    assert plan[0] == ("createvm", "--name", "testvm", "--ostype",
+                       provision_vbox.OSTYPE, "--register")
+    flat = [" ".join(args) for args in plan]
+    assert any("--usb-xhci on" in line for line in flat)
+    assert any("createmedium disk --filename /machines/testvm/testvm.vdi"
+               in line for line in flat)
+    assert any("--nonrotational on --discard on" in line for line in flat)
+    plan_nousb = provision_vbox.plan(
+        "testvm", disk_size_gib=45, ram_gib=4, cores=2, iso_path="/iso/a.iso",
+        graphical=False, serial_port=23950, ssh_port=23951, extpack=False,
+        machine_folder="/machines/testvm")
+    assert not any("--usb-xhci" in " ".join(args) for args in plan_nousb)
+
+
+def test_workbook_section_renders_shell_lines(monkeypatch):
+    monkeypatch.setattr(provision_vbox, "extpack_installed", lambda: False)
+    monkeypatch.setattr(provision_vbox, "_machine_folder",
+                        lambda name: "/machines/testvm")
+    section = provision_vbox.workbook_section(
+        "testvm", disk_size_gib=45, ram_gib=4, cores=2, iso_path="/iso/a.iso",
+        graphical=False, serial_port=23950, ssh_port=23951)
+    assert "vboxmanage createvm --name testvm --ostype ArchLinux_64 --register" \
+        in section
+    assert "vboxmanage storageattach testvm --storagectl archinstaller-scsi" \
+        in section
+    assert "--nonrotational on --discard on" in section
+    assert "Extension Pack is not installed" in section
+    assert "modifyvm testvm --usb-xhci on" in section  # the manual add-on note
+
+
 def test_extpack_detection(monkeypatch):
     with_pack = "Pack no. 1:   Oracle VirtualBox Extension Pack\nVersion: 7.2.22\n"
     without_pack = "Extension Packs: 1\nPack no. 0:   VNC\nVersion: 7.2.22\n"

@@ -76,3 +76,33 @@ def boot_with_serial(restart, keys: boot_inject.Keys, serial_port: int,
             session.close()
     raise ProvisionError(
         f"the VM never reached a serial-driven live ISO in {BOOT_ATTEMPTS} attempts")
+
+
+def workbook_boot_section(serial_port: int, host_side: str, password: str) -> str:
+    """Workbook instructions replacing the tool's blind injection + session.
+
+    A human at the VM window does not need keystroke injection: the same
+    bootloader edit is typed at the menu, and the serial session's three
+    commands are listed for a plain terminal.
+    """
+    return (
+        "Boot the VM. At the systemd-boot menu press `e`, append"
+        " ` console=ttyS0,115200` to the end of the `options` line and press"
+        " `Enter` — the same edit the tool blind-types over the hypervisor"
+        " keyboard. The kernel then talks on the serial line; attach a"
+        " terminal to it (a newline re-shows the login prompt):\n\n"
+        "```bash\n"
+        f"socat - TCP:127.0.0.1:{serial_port}\n"
+        "```\n\n"
+        "Log in as `root` (the live ISO has no root password yet), set the"
+        " root password the install's SSH transport will use, and read the"
+        " guest's DHCP address:\n\n"
+        "```\n"
+        "archiso login: root\n"
+        f"root@archiso ~ # passwd -s <<< '{password}'\n"
+        "root@archiso ~ # ip -4 -o addr show scope global | grep inet\n"
+        "```\n\n"
+        f"The live ISO then answers SSH at {host_side}. The sections below"
+        " run inside that live environment — over the serial line or in the"
+        " VM window's console, whichever you prefer.\n\n"
+    )

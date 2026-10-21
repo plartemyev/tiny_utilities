@@ -153,6 +153,40 @@ def test_provision_validates_the_iso_path(tmp_path):
     assert args.iso_path == str(iso)
 
 
+def test_workbook_provision_parsing():
+    argv = ["workbook", "--ssh-pubkey", "k", "--provision", "vbox"]
+    args = cli._parse_args(argv)
+    assert args.provision == "vbox"
+    assert args.disk_size_gib == 45 and args.ram_gib == 4 and args.cores == 4
+    try:
+        cli._parse_args(argv + ["--provision", "aws"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("--provision must be choice-validated")
+    try:
+        cli._parse_args(argv + ["--virt", "kvm"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("--virt must be rejected with --provision")
+
+
+def test_workbook_provision_needs_no_iso_on_disk():
+    # the workbook may be rendered for another host: --iso-path is only
+    # rendered, not validated
+    args = cli._parse_args(["workbook", "--ssh-pubkey", "k",
+                            "--provision", "libvirt",
+                            "--iso-path", "/no/such.iso"])
+    assert args.iso_path == "/no/such.iso"
+    try:
+        cli._parse_args(["workbook", "--ssh-pubkey", "k",
+                         "--provision", "libvirt", "--cores", "0"])
+    except SystemExit:
+        return
+    raise AssertionError("--cores must be >= 1 for a provisioned workbook")
+
+
 def test_workbook_parsing_needs_no_target():
     args = cli._parse_args(["workbook", "--ssh-pubkey", "k"])
     assert args.command == "workbook"

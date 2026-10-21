@@ -109,6 +109,29 @@ def test_strip_cdrom_removes_device_and_boot_entry():
     assert "<target dev='vda'/>" in stripped
 
 
+def test_plan_network_probes_without_side_effects(monkeypatch):
+    monkeypatch.setattr(provision_libvirt, "physical_bridge", lambda: None)
+    monkeypatch.setattr(provision_libvirt, "_net_names",
+                        lambda uri: {"lan-routed": "inactive", "default": "active"})
+    network, needs_start = provision_libvirt.plan_network()
+    assert network == ("network", "lan-routed")
+    assert needs_start is True
+
+
+def test_workbook_section_renders_commands_and_xml():
+    section = provision_libvirt.workbook_section(
+        "testvm", disk_size_gib=45, ram_gib=4, cores=4, graphical=True,
+        iso_path="/iso/arch.iso", serial_port=23950,
+        network=("network", "lan-routed"), network_start=True)
+    assert "virsh -c qemu:///system net-start lan-routed" in section
+    assert "virsh -c qemu:///system vol-create-as default testvm.qcow2 " \
+        "45G --format qcow2" in section
+    assert "virsh -c qemu:///system define archinstaller-provision-testvm.xml" \
+        in section
+    assert "virsh -c qemu:///system start testvm" in section
+    assert "```xml" in section and "machine='q35'>hvm" in section
+
+
 def test_find_booted_target_parses_the_lease(monkeypatch):
     def fake_run(uri, *args):
         if args[0] == "dumpxml":
