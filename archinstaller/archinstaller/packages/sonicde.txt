@@ -1,0 +1,2 @@
+# Sonic DE base; installed before GRAPHICAL_PACKAGES so the sonic packages win their conflicts with the stock KDE/Plasma ones
+sonicde-meta

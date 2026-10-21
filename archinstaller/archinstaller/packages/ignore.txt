@@ -1,0 +1,9 @@
+# packages held back via IgnorePkg in /etc/pacman.conf
+kweather
+kweathercore
+akonadi
+kmix
+kalarm
+kget
+ktorrent
+kalk

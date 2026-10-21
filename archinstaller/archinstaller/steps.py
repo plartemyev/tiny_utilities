@@ -22,71 +22,39 @@ def shell_lines(name: str) -> list[str]:
     """
     return (_SHELL_DIR / name).read_text(encoding="utf-8").splitlines()
 
-BASE_PACKAGES = """
-acpid amd-ucode archinstall argon2 base bash-completion bcachefs-tools bind  cloud-init dhclient dhcpcd dmidecode
-dmraid dnsmasq edk2-shell ethtool exfatprogs fatresize fsarchiver glibc-locales gpart grml-zsh-config grub hdparm
-hyperv inetutils intel-ucode iotop iptables iwd jfsutils ldns lftp linux linux-firmware lsb-release lsscsi memtest86+
-memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils modemmanager mtools mtr nbd ndisc6 networkmanager nfs-utils nmap
-nss-mdns nvme-cli open-iscsi openconnect openpgp-card-tools openvpn pptpclient qemu-guest-agent refind reflector
-rp-pppoe rsync sdparm sequoia-sq sg3_utils smartmontools smbnetfs sof-firmware squashfs-tools ssh-tools syslinux
-systemd-resolvconf testdisk tmux tpm2-tools traceroute udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd
-usbutils vim virtualbox-guest-utils-nox wireguard-tools wireless-regdb wireless_tools wvdial xl2tpd zsh-autosuggestions
-"""
 
-CONSOLE_PACKAGES = """
-7zip acpid adwaita-icon-theme alsa-firmware alsa-utils amd-ucode android-tools android-udev archinstall argon2 aribb24
-aribb25 aspell-en aspell-ru aws-cli-v2 b3sum b43-fwcutter base base-devel bash-completion bash-language-server
-bcachefs-tools bind blendr bluez-tools bluez-utils bolt cfr clamav clang clonezilla cloud-init container-diff corepack
-ddrescue dhclient dhcpcd dive dmraid dnsmasq docker-buildx docker-compose drone-cli drone-runner-docker edk2-aarch64
-edk2-ovmf edk2-shell ethtool evtest exfatprogs extra-cmake-modules fatresize fsarchiver git-lfs
-git-repair glibc-locales gopls gpart grml-zsh-config grub guestfs-tools hdparm htop hyperv iftop imvirt inetutils
-intel-ucode iotop iptables irssi iso-codes iwd jadx jdk-openjdk jedi-language-server jfsutils kompose
-ldns lftp libaemu libcdr libdc1394 libdnet libdvdcss libdvdnav libgme libkate liblockfile liblouis libmicrodns
-libmirage libnss_nis libsigc++ libsonic libspeechd libunrar libverto libvirt-dbus libzip linux linux-atm linux-firmware
-linux-firmware-marvell live-media livecd-sounds lsb-release lsscsi lua-language-server lua-socket lynx man-db man-pages
-mc memtest86+ memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils mtools mtr nano nbd ndisc6
-networkmanager nfs-utils nmap npm nss-mdns nvme-cli nvtop open-iscsi opencode openconnect openjdk-doc
-openpgp-card-tools openvpn otf-fira-mono otf-fira-sans pandoc-cli pandoc-crossref pandoc-plot passff-host pipewire-alsa
-pipewire-v4l2 pipewire-jack plantuml-ascii-math power-profiles-daemon pptpclient pv python-poetry-core python-docker
-python-libguestfs python-pandocfilters python-poetry python-psycopg-pool python-pypandoc python-pytest-ruff
-python-ruff-api python-sphinx_rtd_theme python-yaml qemu-audio-pipewire qemu-block-nfs qemu-docs qemu-tools
-qemu-user-static-binfmt read-edid refind reflector repo rp-pppoe rsync rust-analyzer sequoia-sq
-sg3_utils smartmontools smbnetfs squashfs-tools ssh-tools syslinux systemd-resolvconf tcpdump terminus-font
-terragrunt testdisk tflint tmux tpm2-tools traceroute ttf-dejavu ttf-droid ttf-fira-code ttf-fira-mono ttf-fira-sans
-ttf-liberation udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils uv vcdimager vim virt-firmware
-virt-install virt-what virtualbox-guest-utils-nox vkd3d wireguard-tools wireless-regdb wireless_tools wit wvdial xl2tpd
-yaml-language-server yarn yt-dlp zsh-autosuggestions sdl_image ansible ansible-lint ansible-navigator ghidra molecule opentofu par2cmdline python-pypcode python-r2pipe r2ghidra rz-ghidra terragrunt vim-ansible python-playwright python-pytest-playwright android-udev apksigcopier cargo-ndk gvfs-mtp haskell-language-server haskell-lsp-test jupyterlab-lsp just-lsp kakoune-lsp kdl-lsp libaemu procyon-decompiler python-adb-shell python-lsp-black python-lsprotocol ruby-lsp smali spytrap-adb sslsplit systemd-lsp tailspin typescript-language-server vim-ale vim-auto-pairs vim-devicons vim-jad vim-spell-en vim-spell-ru vim-syntastic vint
-"""
+_PACKAGES_DIR = Path(__file__).parent / "packages"
+
+
+def package_list(name: str) -> str:
+    """Whitespace-joined package names from archinstaller/packages/<name>.txt.
+
+    The lists live as one-package-per-line .txt files (readable, clean
+    git diffs); blank lines and '#' comment lines are skipped and the
+    rest is returned as a single space-joined string.
+    """
+    lines = (_PACKAGES_DIR / f"{name}.txt").read_text(encoding="utf-8").splitlines()
+    return " ".join(line.strip() for line in lines
+                    if line.strip() and not line.lstrip().startswith("#"))
+
+BASE_PACKAGES = package_list("base")
+
+CONSOLE_PACKAGES = package_list("console")
 
 # Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
 # sonic-login-manager (a sonicde-meta dependency) Requires: xorg-server — with
 # the server installed first that dependency resolves to the xlibre build
 # instead of pulling in the conflicting stock xorg-server.
-XLIBRE_PACKAGES = """
-xlibre-input-evdev xlibre-input-wacom xlibre-meta xlibre-video-amdgpu xlibre-video-ati xlibre-video-qxl
-"""
+XLIBRE_PACKAGES = package_list("xlibre")
 
 # Installed before GRAPHICAL_PACKAGES: the sonic packages conflict with (and
 # provide) the stock KDE/Plasma ones, so having them installed first makes
 # pacman resolve those dependencies to the sonic replacements.
-SONICDE_PACKAGES = """
-sonicde-meta
-"""
+SONICDE_PACKAGES = package_list("sonicde")
 
-GRAPHICAL_PACKAGES = """
-audacious audacity blender brltty cdrdao chromium colord-gtk dleyna dolphin-plugins espeakup filelight
-firefox-i18n-en-ca firefox-i18n-ru firefox-spell-ru firefox-ublock-origin gameconqueror gimp gst-libav gst-plugin-dav1d
-gst-plugin-rav1e guvcview-qt gwenview intel-media-driver joyutils kate kgraphviewer lib32-libva lib32-mesa
-libreoffice-fresh-ru libva-utils libvdpau-va-gl memtest_vulkan modem-manager-gui mono-msbuild-sdkresolver
-network-manager-applet networkmanager-openconnect okular open-vm-tools pavucontrol
-pipewire-pulse qbittorrent radeontop renderdoc scrcpy spice-vdagent systray-x-common telegram-desktop texlive-latexextra
-thunderbird-i18n-en-us thunderbird-i18n-ru virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all
-vulkan-broadcom vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-headers vulkan-intel vulkan-mesa-layers
-vulkan-radeon vulkan-virtio wine-gecko xarchiver xorg-xset xreader zed qt6-multimedia-ffmpeg tesseract-data-eng
-tesseract-data-rus android-file-transfer devilspie scrcpy
-"""
+GRAPHICAL_PACKAGES = package_list("graphical")
 
-IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"
+IGNORE_PKG = package_list("ignore")
 # sonic-workspace's startplasma never materializes the Silver session defaults
 # (~/.config/kdedefaults: [Icons] Theme=silver, colors, cursors, decorations):
 # with no look-and-feel recorded its defaults write is skipped, and when it

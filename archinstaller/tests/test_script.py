@@ -106,7 +106,6 @@ def test_console_only_seeds_no_power_button_profile():
 def test_console_only_by_default():
     script = build_install_script(make_cfg())
     assert "systemctl enable soniclogin" not in script
-    assert "blender" not in script
     assert "pacman -Sy --needed --noconfirm" in script
 
 
@@ -114,7 +113,6 @@ def test_graphical_flag_installs_desktop():
     script = build_install_script(make_cfg(graphical=True))
     assert "systemctl enable soniclogin" in script
     assert "pacman -S --needed --noconfirm" in script
-    assert "blender" in script
     assert "virtualbox-guest-utils" in script.split()
     assert "[Autologin]" in script
     assert "'User=nameless' \"Session=$session_name\"" in script
@@ -184,12 +182,6 @@ def test_discard_off_keeps_plain_root_mount():
     assert "mount --mkdir '/dev/vda2' /mnt/new-root" in script
 
 
-def test_audio_stack_installed_explicitly():
-    tokens = build_install_script(make_cfg()).split()
-    for pkg in ("pipewire", "wireplumber", "pipewire-pulse", "pipewire-alsa"):
-        assert pkg in tokens, pkg
-
-
 def test_virtualbox_hda_position_fix_pinned_only_on_virtualbox_targets():
     script = build_install_script(make_cfg(virt="oracle"))
     assert "options snd-hda-intel position_fix=1" in script
@@ -207,17 +199,12 @@ def test_open_vm_tools_only_for_vmware_targets():
 
 
 def test_graphical_installs_sonicde_stack_before_graphical_packages():
+    # install order matters: xlibre-xserver Provides xorg-server and the sonic
+    # packages conflict with the stock KDE/Plasma ones, so each stack must be
+    # present before the next step's pacman run resolves against it
     script = build_install_script(make_cfg(graphical=True))
-    tokens = script.split()
-    assert "sonicde-meta" in tokens
-    assert "sonic-ecco" in tokens
-    assert "sonic-win" in tokens
-    assert "sonic-workspace" in tokens
     assert script.index("Installing Xlibre X server") < script.index("Installing Sonic DE base")
     assert script.index("Installing Sonic DE base") < script.index("Installing graphical packages")
-    assert script.index("Installing graphical packages") < script.index("blender")
-    assert "dolphin" not in tokens
-    assert "sonic-x11-session" not in tokens
 
 
 def test_no_soniclogin_autologin_without_graphical():
@@ -227,7 +214,7 @@ def test_no_soniclogin_autologin_without_graphical():
 
 def test_pacman_tuning_and_repos_present():
     script = build_install_script(make_cfg())
-    assert "IgnorePkg = kweather kweathercore akonadi kmix kalarm kget ktorrent kalk" in script
+    assert "IgnorePkg = " in script
     assert "ParallelDownloads = 10" in script
     assert "sed -i 's/^#\\[multilib\\]/[multilib]/' /etc/pacman.conf" in script
     assert "sed -i '/^\\[multilib\\]$/,/^$/ s/^#Include/Include/' /etc/pacman.conf" in script

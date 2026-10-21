@@ -1,0 +1,7 @@
+# xlibre X server stack; installed before SONICDE_PACKAGES so that xorg-server dependencies resolve to the xlibre build
+xlibre-input-evdev
+xlibre-input-wacom
+xlibre-meta
+xlibre-video-amdgpu
+xlibre-video-ati
+xlibre-video-qxl
