@@ -35,8 +35,18 @@ def test_grub_install_registers_entry_and_removable_fallback():
     script = build_install_script(make_cfg())
     entry = "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
     assert entry + "\n" + entry + " --removable" in script
-    assert "useradd -m --groups video,scanner,optical,kvm,sys,wheel,uucp,games,docker 'nameless'" in script
+    assert "useradd -m --groups video,scanner,optical,kvm,sys,wheel,uucp,games 'nameless'" in script
     assert f"printf '%s\\n' '{KEY}' > /home/nameless/.ssh/authorized_keys" in script
+
+
+def test_docker_group_added_only_with_devel():
+    # the docker group is created by the docker package, which is installed
+    # only through the devel lists; useradd exits 6 on a missing group
+    plain = build_install_script(make_cfg())
+    assert "games,docker 'nameless'" not in plain
+    devel = build_install_script(make_cfg(devel=True))
+    assert ("useradd -m --groups video,scanner,optical,kvm,sys,wheel,uucp,games,"
+            "docker 'nameless'") in devel
 
 
 def test_script_shells_out_passwords():

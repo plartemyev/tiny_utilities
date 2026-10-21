@@ -162,7 +162,7 @@ System configuration — shared by `install` and `workbook`:
 |---|---|---|
 | `--disk` | `/dev/vda` | disk to wipe; must be a plain `sdX`/`vdX`/`hdX` device (no NVMe naming) |
 | `--hostname` | `arch-host-YYYY-MM-DD` (script run date) | hostname for the new system |
-| `--username` | `nameless` | user account to create (groups: video, scanner, optical, kvm, sys, wheel, uucp, games, docker) |
+| `--username` | `nameless` | user account to create (groups: video, scanner, optical, kvm, sys, wheel, uucp, games; plus docker with `--devel`) |
 | `--ssh-pubkey` | `~/.ssh/id_ed25519.pub` | ssh public key as a literal string **or** a path to a file containing one; validated (known key type + decodable base64 blob) |
 | `--locale` | `en_US.UTF-8` | system locale (must be `<lang>_<region>.UTF-8`) |
 | `--swap-size` | `16G` | size of `/swapfile` |

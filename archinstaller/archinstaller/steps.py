@@ -65,7 +65,14 @@ GRAPHICAL_DEVEL_PACKAGES = package_list("graphical-devel")
 IGNORE_PKG = package_list("ignore")
 XLIBRE_KEY_ID = "B97F7C613F359424"
 SONICDE_KEY_ID = "3B87898C73F11DF5"
-USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games,docker"
+# Base membership for the created user. Every group below is created by the
+# sysusers.d defaults of the base meta-package's own packages (systemd:
+# basic.conf — wheel, kvm, optical, uucp, video; filesystem: arch.conf —
+# sys, games, scanner), so none of them can be missing. docker is appended
+# only with --devel: its group is created by the docker package, which
+# enters the install only through the devel lists (docker-compose/buildx
+# dependencies), and useradd exits 6 on a missing group.
+USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games"
 OPENCODE_PORT = 49374
 OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
 
@@ -449,7 +456,7 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
         ])
     steps.extend([
         Step(f"Creating user {cfg.username}", (
-            f"useradd -m --groups {USER_GROUPS} {user}",
+            f"useradd -m --groups {_user_groups(cfg)} {user}",
             f"printf '%s:%s\\n' {user} {_sh(cfg.user_password)} | chpasswd",
         )),
         Step(f"Granting passwordless sudo to {cfg.username}", (
@@ -703,6 +710,10 @@ def _select_graphical_packages(packages: str, cfg: InstallConfig) -> str:
     if cfg.virt == "vmware":
         return packages
     return " ".join(t for t in packages.split() if t != "open-vm-tools")
+
+
+def _user_groups(cfg: InstallConfig) -> str:
+    return USER_GROUPS + (",docker" if cfg.devel else "")
 
 
 def _swap_fstab_line(cfg: InstallConfig) -> str:
