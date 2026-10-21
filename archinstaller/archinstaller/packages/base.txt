@@ -78,7 +78,6 @@ udftools
 udisks2
 unrar
 unzip
-uriparser
 usb_modeswitch
 usbmuxd
 usbutils

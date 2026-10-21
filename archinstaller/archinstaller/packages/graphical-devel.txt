@@ -1,0 +1,20 @@
+# Development graphical packages: code editors, VM management, graphics debugging and benchmarks, 3D content creation, Windows/32-bit compatibility, Vulkan development.
+blender
+gameconqueror
+kate
+kgraphviewer
+lib32-libva
+lib32-mesa
+radeontop
+renderdoc
+scrcpy
+texlive-latexextra
+virglrenderer
+virt-manager
+virt-viewer
+vkmark
+vulkan-dzn
+vulkan-extra-tools
+vulkan-gfxstream
+vulkan-headers
+zed

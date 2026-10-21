@@ -41,6 +41,10 @@ BASE_PACKAGES = package_list("base")
 
 CONSOLE_PACKAGES = package_list("console")
 
+# Development tooling split out of the console list; appended to the console
+# install step today, ready to be made opt-in separately.
+CONSOLE_DEVEL_PACKAGES = package_list("console-devel")
+
 # Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
 # sonic-login-manager (a sonicde-meta dependency) Requires: xorg-server — with
 # the server installed first that dependency resolves to the xlibre build
@@ -53,6 +57,10 @@ XLIBRE_PACKAGES = package_list("xlibre")
 SONICDE_PACKAGES = package_list("sonicde")
 
 GRAPHICAL_PACKAGES = package_list("graphical")
+
+# Development tooling split out of the graphical list; appended to the
+# graphical install step today, ready to be made opt-in separately.
+GRAPHICAL_DEVEL_PACKAGES = package_list("graphical-devel")
 
 IGNORE_PKG = package_list("ignore")
 # sonic-workspace's startplasma never materializes the Silver session defaults
@@ -317,7 +325,7 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
         )),
         Step("Installing console packages (long step)", (
             ("retry pacman -Sy --needed --noconfirm \\\n"
-             f"    {_wrapped(_select_guest_utils(CONSOLE_PACKAGES, cfg))}"),
+             f"    {_wrapped(_select_guest_utils(f'{CONSOLE_PACKAGES} {CONSOLE_DEVEL_PACKAGES}', cfg))}"),
         ), rationale=(
             "The console toolbox. Sound is explicit (pipewire, wireplumber,"
             " pipewire-pulse) instead of left to transitive dependencies."
@@ -342,7 +350,7 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             )),
             Step("Installing graphical packages (long step)", (
                 ("retry pacman -S --needed --noconfirm \\\n"
-                 f"    {_wrapped(_select_graphical_packages(GRAPHICAL_PACKAGES, cfg))}"),
+                 f"    {_wrapped(_select_graphical_packages(f'{GRAPHICAL_PACKAGES} {GRAPHICAL_DEVEL_PACKAGES}', cfg))}"),
             ), rationale=(
                 "open-vm-tools is kept only on VMware targets; elsewhere it is dead"
                 " weight."
