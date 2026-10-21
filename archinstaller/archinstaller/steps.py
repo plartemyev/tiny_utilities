@@ -24,7 +24,7 @@ def shell_lines(name: str) -> list[str]:
 
 BASE_PACKAGES = """
 acpid amd-ucode archinstall argon2 base bash-completion bcachefs-tools bind  cloud-init dhclient dhcpcd dmidecode
-dmraid dnsmasq edk2-shell ethtool exfatprogs fatresize fsarchiver glibc-locales gpart grml-zsh-config grub  hdparm
+dmraid dnsmasq edk2-shell ethtool exfatprogs fatresize fsarchiver glibc-locales gpart grml-zsh-config grub hdparm
 hyperv inetutils intel-ucode iotop iptables iwd jfsutils ldns lftp linux linux-firmware lsb-release lsscsi memtest86+
 memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils modemmanager mtools mtr nbd ndisc6 networkmanager nfs-utils nmap
 nss-mdns nvme-cli open-iscsi openconnect openpgp-card-tools openvpn pptpclient qemu-guest-agent refind reflector
@@ -44,18 +44,18 @@ intel-ucode iotop iptables irssi iso-codes iwd jadx jdk-openjdk jedi-language-se
 ldns lftp libaemu libcdr libdc1394 libdnet libdvdcss libdvdnav libgme libkate liblockfile liblouis libmicrodns
 libmirage libnss_nis libsigc++ libsonic libspeechd libunrar libverto libvirt-dbus libzip linux linux-atm linux-firmware
 linux-firmware-marvell live-media livecd-sounds lsb-release lsscsi lua-language-server lua-socket lynx man-db man-pages
-mc memtest86+ memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils modemmanager mtools mtr nano nbd ndisc6
+mc memtest86+ memtest86+-efi mkinitcpio-archiso mkinitcpio-nfs-utils mtools mtr nano nbd ndisc6
 networkmanager nfs-utils nmap npm nss-mdns nvme-cli nvtop open-iscsi opencode openconnect openjdk-doc
 openpgp-card-tools openvpn otf-fira-mono otf-fira-sans pandoc-cli pandoc-crossref pandoc-plot passff-host pipewire-alsa
 pipewire-v4l2 pipewire-jack plantuml-ascii-math power-profiles-daemon pptpclient pv python-poetry-core python-docker
 python-libguestfs python-pandocfilters python-poetry python-psycopg-pool python-pypandoc python-pytest-ruff
 python-ruff-api python-sphinx_rtd_theme python-yaml qemu-audio-pipewire qemu-block-nfs qemu-docs qemu-tools
 qemu-user-static-binfmt read-edid refind reflector repo rp-pppoe rsync rust-analyzer sequoia-sq
-sg3_utils smartmontools smbnetfs squashfs-tools ssh-tools syslinux systemd-resolvconf tcpdump terminus-font terraform
+sg3_utils smartmontools smbnetfs squashfs-tools ssh-tools syslinux systemd-resolvconf tcpdump terminus-font
 terragrunt testdisk tflint tmux tpm2-tools traceroute ttf-dejavu ttf-droid ttf-fira-code ttf-fira-mono ttf-fira-sans
 ttf-liberation udftools udisks2 unrar unzip uriparser usb_modeswitch usbmuxd usbutils uv vcdimager vim virt-firmware
 virt-install virt-what virtualbox-guest-utils-nox vkd3d wireguard-tools wireless-regdb wireless_tools wit wvdial xl2tpd
-yaml-language-server yarn yt-dlp zsh-autosuggestions sdl_image
+yaml-language-server yarn yt-dlp zsh-autosuggestions sdl_image ansible ansible-lint ansible-navigator ghidra molecule opentofu par2cmdline python-pypcode python-r2pipe r2ghidra rz-ghidra terragrunt vim-ansible python-playwright python-pytest-playwright android-udev apksigcopier cargo-ndk gvfs-mtp haskell-language-server haskell-lsp-test jupyterlab-lsp just-lsp kakoune-lsp kdl-lsp libaemu procyon-decompiler python-adb-shell python-lsp-black python-lsprotocol ruby-lsp smali spytrap-adb sslsplit systemd-lsp tailspin typescript-language-server vim-ale vim-auto-pairs vim-devicons vim-jad vim-spell-en vim-spell-ru vim-syntastic vint
 """
 
 # Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
@@ -83,7 +83,7 @@ pipewire-pulse qbittorrent radeontop renderdoc scrcpy spice-vdagent systray-x-co
 thunderbird-i18n-en-us thunderbird-i18n-ru virglrenderer virt-manager virt-viewer vkmark vlc vlc-plugins-all
 vulkan-broadcom vulkan-dzn vulkan-extra-tools vulkan-gfxstream vulkan-headers vulkan-intel vulkan-mesa-layers
 vulkan-radeon vulkan-virtio wine-gecko xarchiver xorg-xset xreader zed qt6-multimedia-ffmpeg tesseract-data-eng
-tesseract-data-rus
+tesseract-data-rus android-file-transfer devilspie scrcpy
 """
 
 IGNORE_PKG = "kweather kweathercore akonadi kmix kalarm kget ktorrent kalk"
