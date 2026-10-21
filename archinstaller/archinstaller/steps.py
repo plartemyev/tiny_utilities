@@ -456,6 +456,22 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             )),
         ] if cfg.discard else []),
         *([
+            Step("Tuning guest memory pressure (small page cache)", (
+                "printf '%s\\n' 'vm.watermark_scale_factor = 500'"
+                " 'vm.vfs_cache_pressure = 200'"
+                " > /etc/sysctl.d/90-small-cache.conf",
+            ), rationale=(
+                "The VM boots with its full RAM (current = max) and the virtio balloon"
+                " returns pages to the host only when the guest notices pressure:"
+                " freePageReporting hands back free-page hints and autodeflate inflates"
+                " the balloon under host pressure. watermark_scale_factor = 500 wakes"
+                " kswapd at 5% free memory (0.1% default) and the raised"
+                " vfs_cache_pressure reclaims dentries/inodes sooner, keeping the page"
+                " cache from claiming memory the hypervisor could reuse. (The"
+                " pagecache-limit sysctls are SUSE out-of-tree, not mainline.)"
+            )),
+        ] if cfg.virt != "none" else []),
+        *([
             Step("Working around the frozen VirtualBox HDA DMA position reporting", (
                 ("printf '%s\\n' 'options snd-hda-intel position_fix=1'"
                  " > /etc/modprobe.d/90-archinstaller-vbox-audio.conf"),

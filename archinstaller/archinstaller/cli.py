@@ -18,7 +18,11 @@ from datetime import datetime
 
 import paramiko
 
+from archinstaller import boot_inject
 from archinstaller import vbox
+from archinstaller import provision
+from archinstaller import provision_libvirt
+from archinstaller import provision_vbox
 from archinstaller.pubkey import resolve_public_key
 from archinstaller.script import InstallConfig, build_install_script
 from archinstaller.ssh import (
@@ -58,6 +62,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "workbook":
         _run_workbook(args)
+        return
+    if args.provision != "none":
+        _run_provisioned(args)
         return
     _run_install(args)
 
@@ -136,14 +143,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     common.add_argument("--virt", choices=("none", "kvm", "qemu", "oracle", "vmware", "microsoft"),
                         help="pin the hypervisor kind instead of probing the target with "
                              "systemd-detect-virt (workbook: default none)")
-    common.add_argument("--discard", action=argparse.BooleanOptionalAction,
-                        help="pin TRIM/discard support instead of probing the target disk "
-                             "(workbook: default off)")
+    common.add_argument("--discard", action="store_true",
+                        help="force TRIM/discard enablement instead of probing the target disk "
+                             "(without the flag: probe in install mode, off in workbook mode)")
 
-    p_install = sub.add_parser("install", parents=[common],
+    # provisioned-VM block: install-only, shared by the vbox|libvirt backends
+    vm = argparse.ArgumentParser(add_help=False)
+    vm.add_argument("--disk-size-gib", type=int, default=45,
+                    help="provisioned VM disk size in GiB (default: 45)")
+    vm.add_argument("--ram-gib", type=int, default=4,
+                    help="provisioned VM memory in GiB (default: 4)")
+    vm.add_argument("--cores", type=int, default=4,
+                    help="provisioned VM vCPUs (default: 4)")
+    vm.add_argument("--iso-path", default="~/Downloads/archlinux.iso",
+                    help="Arch ISO to boot in the provisioned VM; must be an "
+                         "existing, readable .iso file (default: ~/Downloads/archlinux.iso)")
+
+    p_install = sub.add_parser("install", parents=[common, vm],
                                help="run the unattended installation over SSH")
-    p_install.add_argument("--target", required=True,
-                           help="host running the Arch ISO live environment")
+    p_install.add_argument("--provision", choices=("none", "vbox", "libvirt"),
+                           default="none",
+                           help="provision a fresh local VM named --hostname and "
+                                "install into it (vbox: VirtualBox on this host, "
+                                "libvirt: qemu:///system); default 'none' installs "
+                                "into an existing machine over SSH")
+    p_install.add_argument("--target",
+                           help="host running the Arch ISO live environment "
+                                "(required without --provision)")
     p_install.add_argument("--target-port", type=int, default=22)
     p_install.add_argument("--login-user", default="root", help="user on the live ISO (default: root)")
     p_install.add_argument("--login-password", default=DEFAULT_LOGIN_PASSWORD,
@@ -186,6 +212,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.command == "resume":
         return  # every other value comes from the state file
+    if args.command == "install":
+        if args.provision != "none":
+            _validate_provision(parser, args)
+        elif not args.target:
+            parser.error("install needs --target (or --provision vbox|libvirt "
+                         "to provision a fresh local VM)")
     if not re.fullmatch(r"(sd|vd|hd)[a-z]+", args.disk.rsplit("/", 1)[-1]):
         parser.error(f"--disk must be a device like /dev/vda or /dev/sda (got {args.disk!r})")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", args.hostname or default_hostname()):
@@ -202,6 +234,87 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
 
 def default_hostname() -> str:
     return f"arch-host-{datetime.now().astimezone().date().isoformat()}"
+
+
+def _validate_provision(parser: argparse.ArgumentParser,
+                        args: argparse.Namespace) -> None:
+    """--provision owns the transport: the VM's address comes from serial."""
+    if args.target:
+        parser.error("--target cannot be combined with --provision (the "
+                     "provisioned VM's address is discovered over its serial console)")
+    if args.jump_host:
+        parser.error("--jump-* cannot be combined with --provision "
+                     "(provisioned VMs run on this host)")
+    if args.vbox_vm:
+        parser.error("--vbox-vm reinstalls an existing VM and cannot be "
+                     "combined with --provision")
+    if args.virt:
+        parser.error("--virt is implied by --provision "
+                     "(oracle for vbox, kvm for libvirt)")
+    if min(args.cores, args.ram_gib, args.disk_size_gib) < 1:
+        parser.error("--cores, --ram-gib and --disk-size-gib must be >= 1")
+    iso = os.path.expanduser(args.iso_path)
+    if not iso.endswith(".iso") or not os.path.isfile(iso):
+        parser.error(f"--iso-path must be an existing .iso file (got {args.iso_path!r})")
+    if not os.access(iso, os.R_OK):
+        parser.error(f"--iso-path is not readable: {iso!r}")
+
+
+def _run_provisioned(args: argparse.Namespace) -> None:
+    """Provision a fresh local VM, install into it, finalize on the host side."""
+    hostname = args.hostname or default_hostname()
+    public_key = resolve_public_key(args.ssh_pubkey)
+    private_key = _private_key_path(args.ssh_pubkey)
+    login_password, root_password, user_password, opencode_password, \
+        generated_notes = _resolve_passwords(args)
+    if args.provision == "vbox":
+        backend = provision_vbox
+        keys: boot_inject.Keys = boot_inject.VBoxKeys(hostname)
+        args.virt, args.disk = "oracle", "/dev/sda"
+    else:
+        backend = provision_libvirt
+        keys = boot_inject.VirshKeys(hostname)
+        args.virt, args.disk = "kvm", "/dev/vda"
+    args.discard = True  # both backends are provisioned for TRIM forwarding
+    print(f"Provisioning {args.provision} VM {hostname!r} ({args.cores} vCPUs, "
+          f"{args.ram_gib} GiB RAM, {args.disk_size_gib} GiB disk) ...")
+    serial_port, ssh_port = backend.provision(
+        hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
+        cores=args.cores, iso_path=os.path.expanduser(args.iso_path),
+        graphical=args.graphical)
+    guest_ip = provision.boot_with_serial(
+        restart=lambda: backend.restart(hostname), keys=keys,
+        serial_port=serial_port, password=login_password)
+    if args.provision == "vbox":
+        provision_vbox.ensure_nat_address(guest_ip)
+        print(f"Guest address (serial): {guest_ip}; "
+              f"host side: 127.0.0.1:{ssh_port}")
+    args.target = "127.0.0.1" if args.provision == "vbox" else guest_ip
+    args.target_port = ssh_port
+    local_mirror = _local_mirror_url(args)
+    _run_installation(args, hostname, login_password, root_password, user_password,
+                      opencode_password, public_key, jump=None, guest_reboot=False,
+                      local_mirror=local_mirror)
+    state_path = _state_path(hostname)
+    _save_state(state_path, _state_object(args, hostname, root_password,
+                                          user_password, opencode_password,
+                                          generated_notes, private_key, None))
+    print("Finalizing on the host side: stopping the VM, ejecting the ISO, "
+          "booting the installed disk ...")
+    backend.finalize(hostname)
+    print(f"\nWaiting up to {args.reboot_timeout}s for SSH ...")
+    clear_stale_host_key(args.target, args.target_port)
+    if not wait_for_ssh(args.target, args.target_port, args.username, None,
+                        args.reboot_timeout, None, key_filename=private_key):
+        found = backend.find_booted_target(hostname)
+        if not found:
+            _print_recovery_instructions(state_path)
+            sys.exit(1)
+        print(f"Target found at {found} (was {args.target}).")
+        args.target = found
+        clear_stale_host_key(args.target, args.target_port)
+    _finish_install(args, hostname, user_password, opencode_password,
+                    generated_notes, private_key, None, state_path)
 
 
 def _resolve_passwords(args: argparse.Namespace) -> tuple[str, str, str, str | None, list[str]]:
@@ -557,10 +670,9 @@ def _run_installation(
             print(f"Virtualization pinned by --virt: {virt}")
         else:
             virt = _detect_virt(conn)
-        if args.discard is not None:
-            discard = args.discard
-            print(f"TRIM/discard pinned by --discard/--no-discard: "
-                  f"{'on' if discard else 'off'}")
+        if args.discard:
+            discard = True
+            print("TRIM/discard forced on by --discard")
         else:
             discard = _analyze_discard(conn, args.disk)
         if args.vbox_vm is not None and not discard:

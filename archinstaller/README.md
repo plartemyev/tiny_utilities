@@ -100,7 +100,7 @@ The CLI has three subcommands: `install` (the unattended run), `workbook`
 ```bash
 poetry install
 poetry run archinstaller install \
-    --target 192.168.122.X \
+    [--target 192.168.122.X | --provision vbox|libvirt] \
     [--jump-host 192.168.1.35 --jump-user root] \
     [--disk /dev/vda] \
     [--hostname arch-host-2026-09-06] \
@@ -148,20 +148,81 @@ System configuration — shared by `install` and `workbook`:
 | `--opencode` | off | additionally deploy the opencode web server as a systemd **user** service on port `49374` (opens the port in firewalld; see below) |
 | `--local-mirror` | off | point pacman at the local `arch-cache-mirror` sibling service on this host (host port `8282`) for the whole install — live environment and installed system; verified reachable before the install starts (see below) |
 | `--virt` | probe (`systemd-detect-virt` on the target) / `none` in workbook mode | pin the hypervisor kind (`none`, `kvm`, `qemu`, `oracle`, `vmware`, `microsoft`) instead of probing; drives guest agents and VirtualBox-specific workarounds |
-| `--discard` / `--no-discard` | probe (target disk) / off in workbook mode | pin TRIM/discard support instead of probing the target disk; enables fstrim.timer, swap discard and (on VMs) continuous root discard |
+| `--discard` | off | force TRIM/discard enablement instead of probing the target disk; enables fstrim.timer, swap discard and (on VMs) continuous root discard — in install mode the target disk is probed when the flag is absent, workbook mode defaults to off |
 
 Transport — `install` only:
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--target HOST` | required | host running the live ISO |
+| `--target HOST` | required | host running the live ISO (required without `--provision`; rejected with it) |
 | `--target-port` | `22` | SSH port of the target |
 | `--login-user` / `--login-password` | `root` / `local0instaLl` | live ISO credentials |
 | `--jump-host`, `--jump-port`, `--jump-user`, `--jump-password` | none | optional SSH jump (like `ssh -J`) |
 | `--install-timeout` | `7200` | seconds allowed for the whole install script |
 | `--reboot-timeout` | `900` | seconds to wait for SSH after reboot |
 | `--no-subnet-scan` | off | if the rebooted target does not answer at `--target` in time, the tool scans the surrounding /24 (TCP 22 probe of the 254 host addresses, then a key-authenticated SSH login) for the machine reporting the configured hostname and continues at that address; this flag disables the fallback |
-| `--vbox-vm NAME` | none | VirtualBox VM name for a **host-side** reboot: clean power-off, NVRAM store backed up to `.nvram.bak` (fresh firmware defaults on next boot), boot order disk-before-DVD, start — makes the first boot work out of the box (see below); the VM's hard-disk attachments are also re-attached with `--discard on` + `--nonrotational on` so guest TRIM compacts the drive images (see TRIM/discard handling) |
+| `--vbox-vm NAME` | none | VirtualBox VM name for a **host-side** reboot: clean power-off, NVRAM store backed up to `.nvram.bak` (fresh firmware defaults on next boot), boot order disk-before-DVD, start — makes the first boot work out of the box (see below); the VM's hard-disk attachments are also re-attached with `--discard on` + `--nonrotational on` so guest TRIM compacts the drive images (see TRIM/discard handling). Cannot be combined with `--provision` |
+
+Provisioned-VM options — `install` with `--provision vbox|libvirt` (all optional):
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--disk-size-gib` | `45` | size of the provisioned VM's disk (GiB) |
+| `--ram-gib` | `4` | guest memory (GiB) |
+| `--cores` | `4` | guest vCPUs |
+| `--iso-path` | `~/Downloads/archlinux.iso` | Arch ISO to boot; must be an existing, readable `.iso` file (the stock ISO is used unmodified) |
+
+### Provisioning local VMs (`--provision`)
+
+With `--provision vbox` or `--provision libvirt` the tool first creates a
+fresh VM on the local host — named exactly `--hostname` — installs Arch
+into it unattended and leaves a running, SSH-reachable system. No target
+is needed: `--target`, `--jump-*`, `--login-*`, `--disk` and `--virt`
+are implied or rejected, and `--discard` is always on (both backends are
+provisioned for TRIM forwarding). The flow:
+
+1. **Provision** the VM with the future host's name and boot the stock
+   Arch ISO (no remastering):
+   - **vbox**: UEFI, virtio-scsi controller with a fresh VDI presented as
+     a solid-state drive (`--nonrotational on --discard on`), virtio-net
+     on NAT with an auto-picked SSH port forward (free ports probed in an
+     unprivileged range, bound to the guest's fixed NAT address 10.0.2.15
+     and verified over serial at boot), a serial port as a host TCP
+     listener, UTC RTC, shared clipboard; USB 3.0 (xHCI) when the
+     Extension Pack is installed; video: VMSVGA with 256 MB under
+     `--graphical`, 16 MB otherwise.
+   - **libvirt** (`qemu:///system`): q35 + UEFI, CPU topology mirroring
+     the host SMT shape (e.g. 4 vCPUs on an SMT2 host → 2 cores x 2
+     threads) pinned to the high host CPU numbers with the emulator,
+     full memory from the start with `<memballoon model='virtio'
+     freePageReporting='on' autodeflate='on'/>`, qcow2 volume on virtio
+     with `discard='unmap' detect_zeroes='unmap'`, a guest-agent channel,
+     and a virtio NIC on the first usable network: physical bridge →
+     `lan-routed` → default NAT. Spice with GL (`<listen type='none'/>`)
+     under `--graphical`, local-listening GL-less spice otherwise.
+2. **Boot unattended**: at the ISO's systemd-boot menu the tool blindly
+   types `e`, appends `console=ttyS0,115200` to the kernel cmdline and
+   boots (hypervisor keystroke injection, ~10 s after start). The serial
+   line then shows a login prompt; the tool logs in as root, sets the
+   live-environment root password and reads the guest's DHCP address
+   from the same serial session. A missed menu window (serial stays
+   silent) is retried after a VM restart.
+3. **Install** proceeds over SSH exactly as with `--target`, then the
+   tool **finalizes from the host side**: stop the VM, eject the ISO,
+   boot the installed disk (VirtualBox flushes the guest-written EFI
+   entries on power-off; libvirt pflash NVRAM survives destroy/start —
+   in both cases the installed GRUB boots directly).
+4. Stage two (timezone, opencode service, summary) runs as usual. VM
+   targets additionally get `/etc/sysctl.d/90-small-cache.conf`
+   (`vm.watermark_scale_factor = 500`, `vm.vfs_cache_pressure = 200`):
+   with the full memory allocation up front, the aggressive kswapd
+   watermark and heavier dentry/inode reclaim keep the page cache from
+   claiming memory the balloon could hand back to the host.
+
+Requirements: for vbox, VirtualBox on the same host (serial and NAT are
+configured per-VM, no global changes); for libvirt, `virsh` with access
+to `qemu:///system` (e.g. the `libvirt` group). The VM name colliding
+with an existing VM or volume is an error — pass another `--hostname`.
 
 Workbook only:
 
@@ -186,7 +247,7 @@ poetry run archinstaller workbook \
     [--disk /dev/vda] [--hostname ...] [--username ...] \
     --ssh-pubkey 'ssh-ed25519 AAAA... comment' \
     [--graphical] [--opencode] [--local-mirror] \
-    [--virt none] [--no-discard] \
+    [--virt none] [--discard] \
     [--out PATH] [--with-passwords]
 ```
 

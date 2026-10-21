@@ -19,7 +19,9 @@ def make_args(**overrides):
         "ssh_pubkey": "key", "locale": "en_US.UTF-8", "swap_size": "16G",
         "root_password": None, "user_password": None, "timezone": "Asia/Bangkok",
         "graphical": False, "opencode": False, "local_mirror": False,
-        "virt": None, "discard": None,
+        "virt": None, "discard": False,
+        "provision": "none", "disk_size_gib": 45, "ram_gib": 4, "cores": 4,
+        "iso_path": "~/Downloads/archlinux.iso",
         "install_timeout": 1, "reboot_timeout": 1,
         "no_subnet_scan": False, "vbox_vm": None,
         "out": None, "with_passwords": False, "state_file": None,
@@ -83,11 +85,9 @@ def test_no_subnet_scan_flag_parsing():
 def test_virt_and_discard_flag_parsing():
     argv = ["install", "--target", "t", "--ssh-pubkey", "k"]
     args = cli._parse_args(argv)
-    assert args.virt is None and args.discard is None  # probe by default
+    assert args.virt is None and args.discard is False  # probe by default
     pinned = cli._parse_args(argv + ["--virt", "oracle", "--discard"])
     assert pinned.virt == "oracle" and pinned.discard is True
-    off = cli._parse_args(argv + ["--no-discard"])
-    assert off.discard is False
     try:
         cli._parse_args(argv + ["--virt", "bogus"])
     except SystemExit:
@@ -110,15 +110,58 @@ def test_local_mirror_flag_parsing():
     assert cli._parse_args(argv + ["--local_mirror"]).local_mirror is True
 
 
+def test_provision_flag_parsing():
+    argv = ["install", "--ssh-pubkey", "k"]
+    assert cli._parse_args(argv + ["--target", "t"]).provision == "none"
+    args = cli._parse_args(argv + ["--provision", "libvirt"])
+    assert args.provision == "libvirt" and args.target is None
+    assert args.disk_size_gib == 45 and args.ram_gib == 4 and args.cores == 4
+    assert args.iso_path == "~/Downloads/archlinux.iso"
+    try:
+        cli._parse_args(argv + ["--provision", "aws"])
+    except SystemExit:
+        return
+    raise AssertionError("--provision must be choice-validated")
+
+
+def test_provision_rejects_transport_flags(tmp_path):
+    iso = tmp_path / "arch.iso"
+    iso.write_bytes(b"")
+    base = ["install", "--provision", "vbox", "--ssh-pubkey", "k",
+            "--iso-path", str(iso)]
+    for extra in (["--target", "192.168.56.113"], ["--jump-host", "j"],
+                  ["--vbox-vm", "vm"], ["--virt", "kvm"],
+                  ["--cores", "0"], ["--ram-gib", "0"]):
+        try:
+            cli._parse_args(base + extra)
+        except SystemExit:
+            continue
+        raise AssertionError(f"--provision must reject {extra}")
+
+
+def test_provision_validates_the_iso_path(tmp_path):
+    base = ["install", "--provision", "vbox", "--ssh-pubkey", "k"]
+    for bad in ("/no/such.iso", str(tmp_path / "arch.txt")):
+        try:
+            cli._parse_args(base + ["--iso-path", bad])
+        except SystemExit:
+            continue
+        raise AssertionError(f"--iso-path must reject {bad}")
+    iso = tmp_path / "arch.iso"
+    iso.write_bytes(b"")
+    args = cli._parse_args(base + ["--iso-path", str(iso)])
+    assert args.iso_path == str(iso)
+
+
 def test_workbook_parsing_needs_no_target():
     args = cli._parse_args(["workbook", "--ssh-pubkey", "k"])
     assert args.command == "workbook"
     assert args.out is None and args.with_passwords is False
     pinned = cli._parse_args(["workbook", "--ssh-pubkey", "k",
                               "--out", "w.md", "--with-passwords",
-                              "--virt", "kvm", "--no-discard"])
+                              "--virt", "kvm", "--discard"])
     assert pinned.out == "w.md" and pinned.with_passwords is True
-    assert pinned.virt == "kvm" and pinned.discard is False
+    assert pinned.virt == "kvm" and pinned.discard is True
 
 
 def test_transport_flags_rejected_for_workbook():

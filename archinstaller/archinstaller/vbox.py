@@ -105,8 +105,11 @@ def enable_discard(vm: str) -> list[str]:
     return changed
 
 
-def start(vm: str) -> None:
-    _run("startvm", vm)
+def start(vm: str, headless: bool = False) -> None:
+    args = ["startvm", vm]
+    if headless:
+        args += ["--type", "headless"]
+    _run(*args)
 
 
 def _wait_powered_off(vm: str) -> None:
