@@ -151,6 +151,12 @@ def test_repos_append_is_part_of_the_pacman_conf_section():
     assert heading < repos < next_heading
 
 
+def test_package_cache_prune_hook_gets_its_own_section():
+    md = render(make_cfg())
+    assert "## 9. Installing the package-cache prune hook" in md
+    assert "rm -rf -- /var/cache/pacman/pkg/download-*" in md
+
+
 def test_target_facts_and_probes():
     md = render(make_cfg(local_mirror="http://192.168.1.10:8282"))
     assert "## 0. Target facts" in md

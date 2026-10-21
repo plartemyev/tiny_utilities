@@ -256,6 +256,20 @@ def test_pacman_tuning_and_repos_present():
     assert "retry curl -O https://xlibre-arch.github.io/xlibre-archlinux.asc" in script
 
 
+def test_package_cache_prune_hook_active_before_first_package_install():
+    script = build_install_script(make_cfg())
+    write = ("cat > /etc/pacman.d/hooks/90-archinstaller-prune-cache.hook"
+             " <<'PRUNE'")
+    assert write in script
+    assert ("Exec = /usr/bin/sh -c 'rm -rf -- /var/cache/pacman/pkg/download-*"
+            " /var/cache/pacman/pkg/*.pkg.tar.*'") in script
+    # active inside the chroot before the first package transaction, so the
+    # install's own downloads are pruned as each step finishes
+    assert script.index("mkdir -p /etc/pacman.d/hooks") < script.index(
+        "retry pacman -Sy --needed --noconfirm")
+    assert script.index(write) < script.rindex("CHROOT")
+
+
 def test_no_mirrorlist_writes_without_local_mirror():
     script = build_install_script(make_cfg())
     assert "> /etc/pacman.d/mirrorlist" not in script

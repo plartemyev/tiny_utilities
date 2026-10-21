@@ -85,6 +85,32 @@ DNS_FALLBACK_WORKER = ("/etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fa
 # event loops.
 _DNS_FALLBACK_HOOK = shell_lines("dns-fallback-hook.sh")
 
+# Installed into the new system (see the prune step below for the policy);
+# prunes every cached package file and pacman's leftover download-* staging
+# directories after each pacman transaction. rm, not `pacman -Scc`:
+# PostTransaction hooks run while the parent transaction still holds
+# /var/lib/pacman/db.lck, so the nested pacman would fail with "unable to
+# lock database" on every transaction (verified on a current archlinux
+# container), while plain rm needs nothing beyond coreutils. Staging dirs
+# hold no resumable state: pacman >= 6.1 keeps .part files inside them and
+# they do not survive the transaction anyway (only a killed pacman leaves
+# one behind; the next transaction's hook run prunes it). Unmatched globs
+# exit 0 through rm -f/-rf.
+PACKAGE_CACHE_PRUNE_HOOK = "\n".join([
+    "[Trigger]",
+    "Operation = Install",
+    "Operation = Upgrade",
+    "Operation = Remove",
+    "Type = Package",
+    "Target = *",
+    "",
+    "[Action]",
+    "Description = Pruning the pacman package cache",
+    "When = PostTransaction",
+    ("Exec = /usr/bin/sh -c 'rm -rf -- /var/cache/pacman/pkg/download-*"
+     " /var/cache/pacman/pkg/*.pkg.tar.*'"),
+]) + "\n"
+
 # Where a step's commands run: "live" is the booted ISO environment, "chroot"
 # is inside the mounted new system, "post-boot" is the installed system over
 # SSH after the first reboot.
@@ -288,6 +314,32 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
              f"{_extra_repo_servers(cfg)[1]}\n"
              "REPOS"),
         ), spaced=False),
+        Step("Installing the package-cache prune hook", (
+            "mkdir -p /etc/pacman.d/hooks",
+            _heredoc("cat > /etc/pacman.d/hooks/90-archinstaller-prune-cache.hook <<'PRUNE'",
+                     *PACKAGE_CACHE_PRUNE_HOOK.splitlines(), "PRUNE"),
+        ), rationale=(
+            "Empties the package cache after every pacman transaction. Arch's"
+            " default keeps at least one compressed copy of every installed"
+            " package in /var/cache/pacman/pkg forever (plus every downloaded"
+            " version until manually cleaned); here the cache never duplicates"
+            " the installed set. Deleted bytes are genuinely reclaimed through"
+            " the discard handling above (continuous root discard on VMs,"
+            " weekly fstrim on SSDs); on --local-mirror targets re-downloads"
+            " come from the host LAN mirror. The cost is offline rollback:"
+            " downgrades need the package re-fetched (the Arch archives carry"
+            " the official repos; the third-party repos may not keep old"
+            " versions). Plain rm instead of pacman -Scc: PostTransaction hooks"
+            " run while the parent transaction still holds"
+            " /var/lib/pacman/db.lck, so the nested pacman would fail with"
+            " 'unable to lock database' on every run, while rm needs nothing"
+            " beyond coreutils (pacman-contrib is not installed). Interrupted"
+            " downloads leave nothing to resume: pacman >= 6.1 stages partial"
+            " downloads under temporary download-* directories inside the"
+            " cache and they do not survive the transaction; the hook clears"
+            " those leftovers too (only a killed pacman leaves one behind, and"
+            " the next transaction's hook run prunes it)."
+        )),
         Step("Fetching and signing third-party repository keys", (
             "retry curl -O https://xlibre-arch.github.io/xlibre-archlinux.asc",
             "pacman-key --add xlibre-archlinux.asc",

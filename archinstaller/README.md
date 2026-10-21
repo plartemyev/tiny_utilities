@@ -91,6 +91,30 @@ Requirements for every target:
   are allowed to probe (disable with `--no-subnet-scan`; a jump-host
   run never scans).
 
+### Package cache pruning
+
+Every install drops a pacman hook
+(`/etc/pacman.d/hooks/90-archinstaller-prune-cache.hook`) that empties
+`/var/cache/pacman/pkg` after each transaction. Arch's default keeps at
+least one cached copy of every installed package forever (plus every
+downloaded version until manually cleaned); with the hook the cache
+never duplicates the installed set, and the freed bytes are actually
+reclaimed through the discard handling above (continuous root discard on
+VMs, weekly fstrim on SSDs). On `--local-mirror` targets a re-download
+hits the host LAN mirror. The cost is offline rollback: downgrades need
+the package re-fetched (the Arch archives carry the official repos;
+the third-party repos may not keep old versions). The hook uses plain
+`rm` rather than `pacman -Scc` because a PostTransaction hook runs while
+the parent transaction still holds the pacman lock — the nested
+`pacman -Scc` would fail with "unable to lock database" on every
+transaction (verified against a current Arch container), while `rm` has
+no such dependency and `pacman-contrib` is not installed. The hook also
+clears pacman's leftover `download-*` staging directories — partial
+downloads leave nothing to resume (pacman ≥ 6.1 keeps `.part` files
+inside them and they do not survive the transaction anyway; only a
+killed pacman leaves one behind, and the next transaction's hook run
+prunes it).
+
 ## Usage
 
 The CLI has three subcommands: `install` (the unattended run), `workbook`
