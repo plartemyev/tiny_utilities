@@ -45,24 +45,6 @@ def test_script_shells_out_passwords():
     assert "printf '%s:%s\\n' 'nameless' 'us;er' | chpasswd" in script
 
 
-def test_graphical_seeds_default_look_and_feel():
-    script = build_install_script(make_cfg(graphical=True))
-    assert "install -d -m 700 -o 'nameless' -g 'nameless' /home/nameless/.config/kdedefaults" in script
-    assert ("printf '%s\\n' '[General]' 'ColorScheme=SilverLight' '' '[Icons]'"
-            " 'Theme=silver' '' '[KDE]' 'widgetStyle=Silver'"
-            " > /home/nameless/.config/kdedefaults/kdeglobals") in script
-    assert "printf '%s' 'org.kde.silverlightbottompanel.desktop' > /home/nameless/.config/kdedefaults/package" in script
-    assert ("printf '%s\\n' '[KDE]'"
-            " 'LookAndFeelPackage=org.kde.silverlightbottompanel.desktop'"
-            " > /home/nameless/.config/kdeglobals") in script
-    assert "chown -R 'nameless':'nameless' /home/nameless/.config" in script
-
-
-def test_console_only_seeds_no_look_and_feel():
-    script = build_install_script(make_cfg())
-    assert "LookAndFeelPackage" not in script
-
-
 def test_graphical_seeds_power_button_shutdown():
     script = build_install_script(make_cfg(graphical=True))
     assert ("printf '%s\\n' '[AC][HandleButtonLid]' 'powerButtonAction=8'"

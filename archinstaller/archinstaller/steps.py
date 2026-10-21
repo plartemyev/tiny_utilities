@@ -63,19 +63,6 @@ GRAPHICAL_PACKAGES = package_list("graphical")
 GRAPHICAL_DEVEL_PACKAGES = package_list("graphical-devel")
 
 IGNORE_PKG = package_list("ignore")
-# sonic-workspace's startplasma never materializes the Silver session defaults
-# (~/.config/kdedefaults: [Icons] Theme=silver, colors, cursors, decorations):
-# with no look-and-feel recorded its defaults write is skipped, and when it
-# runs it produces empty files. Without the defaults every theme/icon lookup
-# falls back to hicolor and the desktop renders generic or missing icons.
-# Running plasma-apply-lookandfeel instead is not an option: it works only in
-# a fully interactive session (it fails/segfaults in chroot and autostart
-# contexts), so the installer seeds the kdedefaults files directly, mirroring
-# the state a successful apply leaves behind (verified against a working
-# host). The kdedefaults/package marker plus kdeglobals [KDE]
-# LookAndFeelPackage keep startplasma's broken defaults write from firing on
-# later logins. Fork-specific values — revisit on sonic-workspace updates.
-DEFAULT_LOOKANDFEEL = "org.kde.silverlightbottompanel.desktop"
 XLIBRE_KEY_ID = "B97F7C613F359424"
 SONICDE_KEY_ID = "3B87898C73F11DF5"
 USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games,docker"
@@ -509,39 +496,6 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
     user = _sh(cfg.username)
     home = f"/home/{cfg.username}"
     return [
-        Step("Seeding the default Silver session defaults", (
-            f"install -d -m 700 -o {user} -g {user} {home}/.config/kdedefaults",
-            (f"printf '%s\\n' '[General]' 'ColorScheme=SilverLight' '' '[Icons]'"
-             " 'Theme=silver' '' '[KDE]' 'widgetStyle=Silver'"
-             f" > {home}/.config/kdedefaults/kdeglobals"),
-            (f"printf '%s\\n' '[Mouse]' 'cursorTheme=silver_cursors_light'"
-             f" > {home}/.config/kdedefaults/kcminputrc"),
-            (f"printf '%s\\n' '[Theme]' 'name=silver-light'"
-             f" > {home}/.config/kdedefaults/plasmarc"),
-            (f"printf '%s\\n' '[DesktopSwitcher]' 'LayoutName=org.kde.silver.desktop'"
-             " '' '[WindowSwitcher]' 'LayoutName=org.kde.silver.desktop' ''"
-             " '[org.kde.kdecoration2]' 'library=org.kde.silver' 'theme=Silver'"
-             f" > {home}/.config/kdedefaults/kwinrc"),
-            (f"printf '%s\\n' '[KSplash]' 'Theme=org.kde.silver.desktop'"
-             f" > {home}/.config/kdedefaults/ksplashrc"),
-            # startplasma re-runs its (empty-writing) defaults step whenever
-            # this marker differs from kdeglobals [KDE] LookAndFeelPackage;
-            # the marker must carry no trailing newline for the comparison.
-            (f"printf '%s' '{DEFAULT_LOOKANDFEEL}'"
-             f" > {home}/.config/kdedefaults/package"),
-            (f"printf '%s\\n' '[KDE]'"
-             f" 'LookAndFeelPackage={DEFAULT_LOOKANDFEEL}'"
-             f" > {home}/.config/kdeglobals"),
-        ), rationale=(
-            "startplasma never materializes the Silver session defaults when none are"
-            " recorded (every theme/icon lookup falls back to hicolor; the desktop"
-            " renders generic or missing icons), and plasma-apply-lookandfeel works"
-            " only in a fully interactive session (it fails or segfaults in chroot), so"
-            " the files are seeded directly, mirroring the state a successful apply"
-            " leaves behind. The no-trailing-newline package marker plus kdeglobals"
-            " [KDE] LookAndFeelPackage keep startplasma's empty-writing defaults step"
-            " from firing again on later logins."
-        )),
         Step("Making the ACPI power button shut down", (
             # PowerDevil takes a block inhibitor on handle-power-key, so
             # logind's default (poweroff) never fires; the non-mobile default

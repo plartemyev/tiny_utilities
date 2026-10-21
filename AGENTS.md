@@ -142,17 +142,7 @@
       secrets (not wired into this stack);
     - diagnostic helper: `tmp/vm_probe.py` (runs efibootmgr/lsblk/mounts over SSH into the ISO environment);
       `tmp/finish_install.py` + `tmp/restart_opencode.py` replayed an interrupted install's stage two on
-      the target VM.
-    - missing icons on fresh Sonic DE installs (observed 2026-10-02): startplasma never materializes the
-      Silver session defaults — `~/.config/kdedefaults` stays empty (no `[Icons] Theme=silver`, colors,
-      cursors), every theme/icon lookup falls back to hicolor and kickoff/tray/KRunner render generic
-      icons; `sonic-silver-icons` is complete (breeze renamed, nothing missing) and `sonic-breeze` is an
-      unrelated explicitly-installed leftover on working hosts. `plasma-apply-lookandfeel` fixes it but
-      only in a fully interactive session — it fails ("Failed to open package file") or segfaults in
-      chroot/offscreen/autostart contexts; fix: archinstaller seeds `~/.config/kdedefaults/*` + a
-      `package` marker (no trailing newline!) + `kdeglobals [KDE] LookAndFeelPackage` — the marker pair
-      keeps startplasma's empty-writing defaults step from firing on later logins (see the deviations
-      bullet in `archinstaller/README.md`);
+      the target VM;
     - driving a running guest from the host without SSH (used for the icon debugging): `VBoxManage
       controlvm <vm> screenshotpng file.png` (watch the screen) and `keyboardputscancode` (set-1 hex
       bytes, extended keys as two bytes e.g. `e0 1f e0 f0 1f` for Meta — flaky, may type bare keys),
