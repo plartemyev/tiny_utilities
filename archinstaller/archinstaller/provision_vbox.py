@@ -6,7 +6,9 @@ fresh VDI presented as a solid-state drive with discard enabled, so
 guest TRIM compacts the image), a virtio-net NIC on NAT with an SSH
 port forward to the host, a serial port exposed as a host TCP listener
 (the blind boot-menu injection and the console session run through it),
-UTC RTC and the guest-integration extras. USB 3.0 (xHCI) and the shared
+an HDA audio device on the default host audio driver (the guest side
+pins snd-hda-intel to position_fix=1, presupposing the device), UTC RTC
+and the guest-integration extras. USB 3.0 (xHCI) and the shared
 clipboard are enabled when the platform allows it; the graphical flag
 selects a desktop-capable video stack (VMSVGA with 256 MB) over the
 16 MB console one.
@@ -71,7 +73,10 @@ def plan(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
          "--nat-pf1", f"ssh,tcp,127.0.0.1,{ssh_port},{GUEST_ADDRESS},22",
          "--uart1", "0x3F8", "4", "--uart-type", "16550A",
          "--uart-mode1", "tcpserver", str(serial_port),
-         "--clipboard-mode", "bidirectional"),
+         "--clipboard-mode", "bidirectional",
+         "--audio-driver", "default",
+         "--audio-controller", "hda",
+         "--audio-out", "on", "--audio-in", "on"),
     ]
     if extpack:
         commands.append(("modifyvm", name, "--usb-xhci", "on"))

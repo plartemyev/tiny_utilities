@@ -45,6 +45,9 @@ def test_domain_xml_matches_the_spec_graphical():
         "<listen type='none'/>",
         "<gl enable='yes'/>",
         "<acceleration accel3d='yes'/>",
+        "<audio id='1' type='spice'/>",
+        "<sound model='ich9'>",
+        "<audio id='1'/>",
         "<memballoon model='virtio' freePageReporting='on' autodeflate='on'/>",
     ):
         assert expected in xml, expected
@@ -60,6 +63,9 @@ def test_domain_xml_console_variant():
     assert "<gl enable='no'/>" in xml
     assert "<interface type='network'>" in xml
     assert "<source network='default'/>" in xml
+    assert "<audio id='1' type='spice'/>" in xml
+    assert "<sound model='ich9'>" in xml
+    assert "<audio id='1'/>" in xml
 
 
 def test_select_network_prefers_a_physical_bridge(monkeypatch):

@@ -7,7 +7,8 @@ the full memory allocation from the start (the virtio balloon with
 freePageReporting and autodeflate hands unused pages back), a qcow2
 volume on virtio with discard/detect-zeroes unmap, a virtio NIC on the
 first usable network — physical bridge, then the lan-routed network,
-then default NAT — spice per the graphical flag, and a TCP serial port
+then default NAT — spice per the graphical flag, an ICH9 HD Audio
+device routed through the spice audio backend, and a TCP serial port
 for the blind boot-menu injection and the console session.
 """
 from __future__ import annotations
@@ -218,6 +219,10 @@ def domain_xml(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
         "    </console>",
         "    <input type='tablet' bus='usb'/>",
         *_graphics(graphical),
+        "    <audio id='1' type='spice'/>",
+        "    <sound model='ich9'>",
+        "      <audio id='1'/>",
+        "    </sound>",
         "    <memballoon model='virtio' freePageReporting='on' "
         "autodeflate='on'/>",
         "  </devices>",

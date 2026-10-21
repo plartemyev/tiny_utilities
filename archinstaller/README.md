@@ -188,7 +188,10 @@ provisioned for TRIM forwarding). The flow:
      on NAT with an auto-picked SSH port forward (free ports probed in an
      unprivileged range, bound to the guest's fixed NAT address 10.0.2.15
      and verified over serial at boot), a serial port as a host TCP
-     listener, UTC RTC, shared clipboard; USB 3.0 (xHCI) when the
+     listener, an HDA audio device on the default host audio driver
+     (the guest pins `snd-hda-intel` to `position_fix=1` — see the
+     hypervisor bullet in the deviations), UTC RTC, shared clipboard;
+     USB 3.0 (xHCI) when the
      Extension Pack is installed; video: VMSVGA with 256 MB under
      `--graphical`, 16 MB otherwise.
    - **libvirt** (`qemu:///system`): q35 + UEFI, CPU topology mirroring
@@ -197,7 +200,8 @@ provisioned for TRIM forwarding). The flow:
      full memory from the start with `<memballoon model='virtio'
      freePageReporting='on' autodeflate='on'/>`, qcow2 volume on virtio
      with `discard='unmap' detect_zeroes='unmap'`, a guest-agent channel,
-     and a virtio NIC on the first usable network: physical bridge →
+     an ICH9 HD Audio device routed via the spice audio backend, and a
+     virtio NIC on the first usable network: physical bridge →
      `lan-routed` → default NAT. Spice with GL (`<listen type='none'/>`)
      under `--graphical`, local-listening GL-less spice otherwise.
 2. **Boot unattended**: at the ISO's systemd-boot menu the tool blindly

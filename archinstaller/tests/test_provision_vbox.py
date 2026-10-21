@@ -33,6 +33,7 @@ def test_provision_commands_build_the_full_vm(monkeypatch):
                  "--nat-pf1 ssh,tcp,127.0.0.1,23951,10.0.2.15,22",
                  "--uart-mode1 tcpserver 23950",
                  "--clipboard-mode bidirectional", "--usb-xhci on",
+                 "--audio-driver default --audio-controller hda --audio-out on --audio-in on",
                  "--boot1 dvd --boot2 disk"):
         assert flag in modify, flag
     flat = [" ".join(args) for args in commands]
@@ -65,6 +66,7 @@ def test_provision_without_extpack_skips_usb(monkeypatch, capsys):
     modify = " ".join(a for args in commands if args[0] == "modifyvm" for a in args)
     assert "--usb-xhci" not in modify
     assert "--vram 16" in modify
+    assert "--audio-driver default --audio-controller hda --audio-out on --audio-in on" in modify
     assert "Extension Pack not found" in capsys.readouterr().out
 
 
