@@ -73,7 +73,7 @@ def _run_install(args: argparse.Namespace) -> None:
     if args.vbox_vm is not None and not vbox.vm_exists(args.vbox_vm):
         sys.exit(f"VirtualBox VM {args.vbox_vm!r} not found via vboxmanage showvminfo")
     local_mirror = _local_mirror_url(args)
-    public_key = resolve_public_key(args.ssh_pubkey)
+    public_key = _resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
     login_password, root_password, user_password, opencode_password, generated_notes = _resolve_passwords(args)
     jump = _resolve_jump(args)
@@ -120,8 +120,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="disk to wipe: plain sdX/vdX/hdX device, e.g. /dev/vda (no NVMe)")
     common.add_argument("--hostname", help="hostname for the new system (default: arch-host-YYYY-MM-DD)")
     common.add_argument("--username", default="nameless", help="user account to create (default: nameless)")
-    common.add_argument("--ssh-pubkey", required=True,
-                        help="ssh public key: literal key string or path to a file containing one")
+    common.add_argument("--ssh-pubkey", default="~/.ssh/id_ed25519.pub",
+                        help="ssh public key: literal key string or path to a file containing one "
+                             "(default: ~/.ssh/id_ed25519.pub)")
     common.add_argument("--locale", default="en_US.UTF-8", help="e.g. en_US.UTF-8")
     common.add_argument("--swap-size", default="16G", help="e.g. 16G")
     common.add_argument("--root-password",
@@ -279,7 +280,7 @@ def _validate_provision(parser: argparse.ArgumentParser,
 def _run_provisioned(args: argparse.Namespace) -> None:
     """Provision a fresh local VM, install into it, finalize on the host side."""
     hostname = args.hostname or default_hostname()
-    public_key = resolve_public_key(args.ssh_pubkey)
+    public_key = _resolve_public_key(args.ssh_pubkey)
     private_key = _private_key_path(args.ssh_pubkey)
     login_password, root_password, user_password, opencode_password, \
         generated_notes = _resolve_passwords(args)
@@ -364,7 +365,7 @@ def _run_workbook(args: argparse.Namespace) -> None:
     explicit values are embedded and the missing ones are generated (the
     file is written 0600 and flagged for rotation).
     """
-    public_key = resolve_public_key(args.ssh_pubkey)
+    public_key = _resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
     embed = args.with_passwords
     root_password = args.root_password or (_generated_password() if embed else PLACEHOLDER_ROOT)
@@ -448,6 +449,18 @@ def _provision_workbook_section(args: argparse.Namespace, hostname: str) -> str:
     boot = provision.workbook_boot_section(serial_port, host_side,
                                            DEFAULT_LOGIN_PASSWORD)
     return section + "\n" + boot
+
+
+def _resolve_public_key(value: str) -> str:
+    """resolve_public_key with a clean exit instead of a traceback.
+
+    The --ssh-pubkey default makes a missing key file a normal preflight
+    failure, so it gets the same one-line treatment as the other preflights.
+    """
+    try:
+        return resolve_public_key(value)
+    except ValueError as exc:
+        sys.exit(f"--ssh-pubkey: {exc}")
 
 
 def _private_key_path(pubkey_arg: str) -> str | None:

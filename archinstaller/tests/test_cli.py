@@ -76,6 +76,19 @@ def test_private_key_path_from_pubkey_file(tmp_path: Path):
     assert cli._private_key_path(str(tmp_path / "missing.pub")) is None
 
 
+def test_ssh_pubkey_is_optional_with_ed25519_default():
+    argv = ["install", "--target", "192.168.56.113"]
+    assert cli._parse_args(argv).ssh_pubkey == "~/.ssh/id_ed25519.pub"
+    assert cli._parse_args(argv + ["--ssh-pubkey", "k"]).ssh_pubkey == "k"
+    assert cli._parse_args(["workbook"]).ssh_pubkey == "~/.ssh/id_ed25519.pub"
+
+
+def test_unresolvable_pubkey_exits_cleanly_instead_of_traceback():
+    with pytest.raises(SystemExit) as excinfo:
+        cli._resolve_public_key("/nonexistent/key.pub")
+    assert "--ssh-pubkey" in str(excinfo.value)
+
+
 def test_no_subnet_scan_flag_parsing():
     argv = ["install", "--target", "192.168.56.113", "--ssh-pubkey", "k"]
     assert cli._parse_args(argv).no_subnet_scan is False

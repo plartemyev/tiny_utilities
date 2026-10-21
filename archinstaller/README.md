@@ -129,7 +129,7 @@ poetry run archinstaller install \
     [--disk /dev/vda] \
     [--hostname arch-host-2026-09-06] \
     [--username nameless] \
-    --ssh-pubkey 'ssh-ed25519 AAAA... comment'   # or a path: --ssh-pubkey ~/.ssh/id_ed25519.pub \
+    [--ssh-pubkey 'ssh-ed25519 AAAA... comment']   # default: ~/.ssh/id_ed25519.pub \
     [--locale en_US.UTF-8] [--swap-size 16G] \
     [--graphical] [--opencode] [--local-mirror]
 ```
@@ -163,7 +163,7 @@ System configuration — shared by `install` and `workbook`:
 | `--disk` | `/dev/vda` | disk to wipe; must be a plain `sdX`/`vdX`/`hdX` device (no NVMe naming) |
 | `--hostname` | `arch-host-YYYY-MM-DD` (script run date) | hostname for the new system |
 | `--username` | `nameless` | user account to create (groups: video, scanner, optical, kvm, sys, wheel, uucp, games, docker) |
-| `--ssh-pubkey` | required | ssh public key as a literal string **or** a path to a file containing one; validated (known key type + decodable base64 blob) |
+| `--ssh-pubkey` | `~/.ssh/id_ed25519.pub` | ssh public key as a literal string **or** a path to a file containing one; validated (known key type + decodable base64 blob) |
 | `--locale` | `en_US.UTF-8` | system locale (must be `<lang>_<region>.UTF-8`) |
 | `--swap-size` | `16G` | size of `/swapfile` |
 | `--root-password`, `--user-password` | generated (printed in the final summary) | credentials for the installed system |
@@ -281,7 +281,7 @@ commands for one-off experiments on a server.
 ```bash
 poetry run archinstaller workbook \
     [--disk /dev/vda] [--hostname ...] [--username ...] \
-    --ssh-pubkey 'ssh-ed25519 AAAA... comment' \
+    [--ssh-pubkey 'ssh-ed25519 AAAA... comment'] \
     [--graphical] [--opencode] [--local-mirror] \
     [--provision vbox|libvirt] \
     [--virt none] [--discard] \
