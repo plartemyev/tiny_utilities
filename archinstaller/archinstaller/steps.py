@@ -143,6 +143,10 @@ class InstallConfig:
     user_password: str
     public_key: str
     graphical: bool
+    # --devel: append the development package lists on top of the regular
+    # ones (console-devel always; graphical-devel additionally with
+    # --graphical).
+    devel: bool = False
     virt: str = "oracle"
     # The target disk accepts discards (SSD/NVMe hardware, or a VM disk whose
     # hypervisor forwards guest TRIM): enables fstrim.timer and the swapfile
@@ -325,12 +329,22 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
         )),
         Step("Installing console packages (long step)", (
             ("retry pacman -Sy --needed --noconfirm \\\n"
-             f"    {_wrapped(_select_guest_utils(f'{CONSOLE_PACKAGES} {CONSOLE_DEVEL_PACKAGES}', cfg))}"),
+             f"    {_wrapped(_select_guest_utils(CONSOLE_PACKAGES, cfg))}"),
         ), rationale=(
             "The console toolbox. Sound is explicit (pipewire, wireplumber,"
             " pipewire-pulse) instead of left to transitive dependencies."
         )),
     ]
+    if cfg.devel:
+        steps.append(
+            Step("Installing console development packages (long step)", (
+                f"retry pacman -Sy --needed --noconfirm \\\n    {_wrapped(CONSOLE_DEVEL_PACKAGES)}",
+            ), rationale=(
+                "Requested with --devel: compilers and SDKs, language servers,"
+                " containers, CI/CD, cloud/IaC, VM host tooling, reverse"
+                " engineering and security tooling on top of the console toolbox."
+            )),
+        )
     if cfg.graphical:
         steps.extend([
             Step("Installing Xlibre X server (long step)", (
@@ -350,11 +364,23 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             )),
             Step("Installing graphical packages (long step)", (
                 ("retry pacman -S --needed --noconfirm \\\n"
-                 f"    {_wrapped(_select_graphical_packages(f'{GRAPHICAL_PACKAGES} {GRAPHICAL_DEVEL_PACKAGES}', cfg))}"),
+                 f"    {_wrapped(_select_graphical_packages(GRAPHICAL_PACKAGES, cfg))}"),
             ), rationale=(
                 "open-vm-tools is kept only on VMware targets; elsewhere it is dead"
                 " weight."
             )),
+        ])
+        if cfg.devel:
+            steps.append(
+                Step("Installing graphical development packages (long step)", (
+                    f"retry pacman -S --needed --noconfirm \\\n    {_wrapped(GRAPHICAL_DEVEL_PACKAGES)}",
+                ), rationale=(
+                    "Requested with --devel: VM management, graphics debugging and"
+                    " benchmarks, 3D content creation, Vulkan development on top of"
+                    " the graphical set."
+                )),
+            )
+        steps.extend([
             Step("Enabling sonic-login-manager display manager", (
                 "systemctl enable soniclogin",
             )),

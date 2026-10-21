@@ -33,7 +33,6 @@ mc
 nano
 otf-fira-mono
 otf-fira-sans
-par2cmdline
 passff-host
 pipewire-alsa
 pipewire-jack
@@ -42,7 +41,6 @@ power-profiles-daemon
 pv
 read-edid
 tailspin
-tcpdump
 terminus-font
 tesseract-data-eng
 tesseract-data-rus

@@ -207,6 +207,33 @@ def test_graphical_installs_sonicde_stack_before_graphical_packages():
     assert script.index("Installing Sonic DE base") < script.index("Installing graphical packages")
 
 
+def test_devel_flag_selects_the_development_lists():
+    plain = build_install_script(make_cfg())
+    assert "Installing console development packages" not in plain
+    assert "Installing graphical packages" not in plain
+
+    devel = build_install_script(make_cfg(devel=True))
+    assert "Installing console development packages" in devel
+    assert "Installing graphical packages" not in devel
+    assert "Installing graphical development packages" not in devel
+
+    graphical = build_install_script(make_cfg(graphical=True))
+    assert "Installing graphical packages" in graphical
+    assert "Installing console development packages" not in graphical
+    assert "Installing graphical development packages" not in graphical
+
+    both = build_install_script(make_cfg(graphical=True, devel=True))
+    for step in ("Installing console packages", "Installing console development packages",
+                 "Installing graphical packages", "Installing graphical development packages"):
+        assert step in both, step
+    assert both.index("Installing console packages") < both.index(
+        "Installing console development packages")
+    assert both.index("Installing graphical packages") < both.index(
+        "Installing graphical development packages")
+    assert both.index("Installing graphical development packages") < both.index(
+        "Enabling sonic-login-manager display manager")
+
+
 def test_no_soniclogin_autologin_without_graphical():
     script = build_install_script(make_cfg())
     assert "soniclogin.conf.d" not in script

@@ -34,8 +34,14 @@ def test_header_and_facts_line():
     md = render(make_cfg())
     assert md.startswith("# archinstaller workbook — arch-host-2026-10-17\n")
     assert ("Rendered " in md and "disk=/dev/vda, virt=none, discard=off,"
-            " graphical=no, locale=en_US.UTF-8, swap=16G, username=nameless,"
+            " graphical=no, devel=no, locale=en_US.UTF-8, swap=16G, username=nameless,"
             " timezone=Asia/Bangkok." in md)
+
+
+def test_devel_flag_rendered_in_facts_line_and_steps():
+    md = render(make_cfg(devel=True))
+    assert "graphical=no, devel=yes" in md
+    assert "Installing console development packages" in md
 
 
 def test_facts_line_reports_mirror_and_opencode():

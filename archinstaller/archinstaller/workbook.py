@@ -144,6 +144,7 @@ def _facts_line(cfg: InstallConfig) -> str:
         f"virt={cfg.virt}",
         f"discard={'on' if cfg.discard else 'off'}",
         f"graphical={'yes' if cfg.graphical else 'no'}",
+        f"devel={'yes' if cfg.devel else 'no'}",
         f"locale={cfg.locale}",
         f"swap={cfg.swap_size}",
         f"username={cfg.username}",

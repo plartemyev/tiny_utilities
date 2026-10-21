@@ -132,6 +132,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="timezone to set on the installed system (default: Asia/Bangkok)")
     common.add_argument("--graphical", action="store_true",
                         help="also install graphical packages and the sonic-login-manager desktop session")
+    common.add_argument("--devel", action="store_true",
+                        help="also install the development package lists (console development; "
+                             "graphical development too when --graphical is set)")
     common.add_argument("--opencode", action="store_true",
                         help="also deploy the opencode web server as a systemd user service on "
                              f"port {OPENCODE_PORT} (opens the port in firewalld)")
@@ -390,6 +393,7 @@ def _run_workbook(args: argparse.Namespace) -> None:
         user_password=user_password,
         public_key=public_key,
         graphical=args.graphical,
+        devel=args.devel,
         virt=virt,
         discard=discard,
         local_mirror=_local_mirror_url(args),
@@ -658,7 +662,9 @@ def _resume_stage(path: str) -> None:
         clear_stale_host_key(found, state["target_port"])
     args = argparse.Namespace(
         target=state["target"],
+        target_port=state["target_port"],
         username=state["username"],
+        timezone=state["timezone"],
         jump_host=state["jump"]["host"] if state.get("jump") is not None else None,
     )
     opencode_password = state["opencode_password"] if state["opencode"] else None
@@ -760,6 +766,7 @@ def _run_installation(
             user_password=user_password,
             public_key=public_key,
             graphical=args.graphical,
+            devel=args.devel,
             virt=virt,
             discard=discard,
             local_mirror=local_mirror,

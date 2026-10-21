@@ -43,6 +43,7 @@ lua-language-server
 lua-socket
 molecule
 mono-msbuild-sdkresolver
+npm
 nvtop
 opencode
 openjdk-doc
@@ -50,6 +51,7 @@ opentofu
 pandoc-cli
 pandoc-crossref
 pandoc-plot
+par2cmdline
 plantuml-ascii-math
 procyon-decompiler
 python-adb-shell
@@ -76,10 +78,12 @@ repo
 ruby-lsp
 rust-analyzer
 rz-ghidra
+sdl_image
 smali
 spytrap-adb
 sslsplit
 systemd-lsp
+tcpdump
 terragrunt
 tflint
 typescript-language-server

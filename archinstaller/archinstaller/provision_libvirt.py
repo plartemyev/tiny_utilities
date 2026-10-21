@@ -76,7 +76,7 @@ def finalize(name: str, uri: str = DEFAULT_URI) -> None:
     """
     _stop(name, uri)
     xml = _strip_cdrom(_run(uri, "dumpxml", name))
-    _define(uri, xml)
+    _define(uri, xml, f"archinstaller-provision-{name}.xml")
     _run(uri, "start", name)
 
 

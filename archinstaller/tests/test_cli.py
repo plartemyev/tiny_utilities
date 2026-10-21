@@ -18,7 +18,7 @@ def make_args(**overrides):
         "disk": "/dev/vda", "hostname": None, "username": "nameless",
         "ssh_pubkey": "key", "locale": "en_US.UTF-8", "swap_size": "16G",
         "root_password": None, "user_password": None, "timezone": "Asia/Bangkok",
-        "graphical": False, "opencode": False, "local_mirror": False,
+        "graphical": False, "devel": False, "opencode": False, "local_mirror": False,
         "virt": None, "discard": False,
         "provision": "none", "disk_size_gib": 45, "ram_gib": 4, "cores": 4,
         "iso_path": "~/Downloads/archlinux.iso",

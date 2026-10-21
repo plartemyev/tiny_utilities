@@ -1,4 +1,4 @@
-# Regular-use graphical packages: a typical office/desktop setup (browsing, office documents, mail and chat, media playback, imaging, phone file transfer, desktop infrastructure).
+# Regular-use graphical packages: a typical office/desktop setup (browsing, office documents, mail and chat, media playback, imaging, phone file transfer, desktop infrastructure, Windows/32-bit compatibility).
 android-file-transfer
 audacious
 audacity
@@ -22,6 +22,9 @@ guvcview-qt
 gwenview
 intel-media-driver
 joyutils
+kate
+lib32-libva
+lib32-mesa
 libreoffice-fresh-ru
 libvdpau-va-gl
 memtest_vulkan
