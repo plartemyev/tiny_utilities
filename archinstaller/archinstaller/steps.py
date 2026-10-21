@@ -561,6 +561,10 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
             # action is the logout dialog, which stalls host-side
             # `VBoxManage controlvm acpipowerbutton` on an autologin desktop.
             # 8 = PowerDevil PowerButtonAction::Shutdown.
+            # mkdir: this is the first ~/.config writer and the directory does
+            # not exist after useradd -m (no skel entry; XDG dirs appear at
+            # first session start only).
+            f"mkdir -p {home}/.config",
             (f"printf '%s\\n' '[AC][HandleButtonLid]' 'powerButtonAction=8'"
              " '[Battery][HandleButtonLid]' 'powerButtonAction=8'"
              " '[LowBattery][HandleButtonLid]' 'powerButtonAction=8'"

@@ -63,6 +63,9 @@ def test_graphical_seeds_power_button_shutdown():
             " > /home/nameless/.config/powerdevilrc") in script
     # the seed must land before the .config chown so the user owns it
     assert script.index("powerButtonAction=8") < script.index("chown -R 'nameless':'nameless' /home/nameless/.config")
+    # the write needs the directory: nothing creates ~/.config before this
+    # step (useradd -m ships an empty skel)
+    assert script.index("mkdir -p /home/nameless/.config\n") < script.index("powerButtonAction=8")
 
 
 def test_graphical_vm_targets_mask_powerdevil_for_logind_buttons():
@@ -75,6 +78,7 @@ def test_graphical_physical_targets_keep_powerdevil():
     script = build_install_script(make_cfg(graphical=True, virt="none"))
     assert "plasma-powerdevil.service" not in script
     assert "powerButtonAction=8" in script  # seed kept for Wayland delivery
+    assert "mkdir -p /home/nameless/.config" in script  # no VM mkdir step exists
 
 
 def test_graphical_vm_targets_disable_screen_locking():
