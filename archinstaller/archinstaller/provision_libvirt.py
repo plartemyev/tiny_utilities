@@ -1,8 +1,12 @@
 """Provision a fresh libvirt VM (qemu:///system) for archinstaller.
 
 The domain XML matches the agreed spec: q35 chipset with UEFI firmware,
-CPU topology mirroring the host SMT shape (vCPUs split into cores x
-threads and pinned to the high host CPU numbers, emulator included),
+a host-passthrough CPU with migratable='off' (pure CPUID passthrough,
+invariant TSC included — these VMs are never live-migrated), CPU
+topology mirroring the host SMT shape (vCPUs split into cores x
+threads and pinned 1:1 to the high host CPUs so sibling vCPUs of a
+guest core really share one physical core, with the emulator on the
+whole physical core just below them),
 the full memory allocation from the start (the virtio balloon with
 freePageReporting and autodeflate hands unused pages back), a qcow2
 volume on virtio with discard/detect-zeroes unmap, a virtio NIC on the
@@ -22,6 +26,7 @@ from archinstaller.provision import pick_free_ports
 
 DEFAULT_URI = "qemu:///system"
 VIRSH = "virsh"
+SYS_CPU_BASE = "/sys/devices/system/cpu"
 PREFERRED_NETWORKS = ("lan-routed", "default")
 VOLUME_POOL = "default"
 SHUTDOWN_POLL_TRIES = 30
@@ -53,8 +58,7 @@ def provision(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
     xml = domain_xml(name, disk_size_gib=disk_size_gib, ram_gib=ram_gib,
                      cores=cores, graphical=graphical, serial_port=serial_port,
                      iso_path=iso_path, network=network,
-                     host_tpc=host_threads_per_core(),
-                     host_cpus=os.cpu_count() or 1)
+                     host_cores=host_cores())
     _run(uri, "vol-create-as", VOLUME_POOL, volume,
          f"{disk_size_gib}G", "--format", "qcow2")
     _define(uri, xml, f"archinstaller-provision-{name}.xml")
@@ -160,30 +164,123 @@ def pin_cpuset(vcpus: int, host_cpus: int) -> str:
     return f"{start}-{host_cpus - 1}"
 
 
-def host_threads_per_core() -> int:
-    proc = subprocess.run(["lscpu"], capture_output=True, text=True, check=False)
-    match = re.search(r"Thread\(s\) per core:\s+(\d+)", proc.stdout)
-    return int(match.group(1)) if match else 1
+def host_cores() -> list[tuple[int, ...]]:
+    """Host physical cores as sorted SMT-sibling tuples, CPU-id order.
+
+    Sibling sets come from sysfs, which stays correct even when the
+    kernel does not number SMT siblings adjacently; when the topology
+    files are unavailable every CPU counts as a single-threaded core.
+    """
+    groups: dict[tuple[int, ...], None] = {}
+    try:
+        entries = os.listdir(SYS_CPU_BASE)
+    except OSError:
+        entries = []
+    for entry in sorted(entries):
+        if not re.fullmatch(r"cpu\d+", entry):
+            continue
+        try:
+            with open(f"{SYS_CPU_BASE}/{entry}/topology/"
+                      "thread_siblings_list", encoding="ascii") as fh:
+                siblings = _cpus_field(fh.read())
+        except (OSError, ValueError):
+            continue
+        if siblings:
+            groups.setdefault(siblings, None)
+    if not groups:
+        return [(cpu,) for cpu in range(os.cpu_count() or 1)]
+    return sorted(groups)
+
+
+def cpu_pins(vcpus: int,
+             host_cores: list[tuple[int, ...]]) -> list[int] | None:
+    """1:1 vCPU → host CPU pins that keep the topology physically true.
+
+    Guest core g (cpu_topology shape, so libvirt numbers the vCPUs the
+    same way) is backed by one host physical core: its SMT siblings pin
+    to the sibling vCPUs of that guest core, or a single sibling backs
+    a single-threaded guest core. Guest cores are taken from the top of
+    the host CPU range, keeping the low ones for host IRQs. None when
+    the host has fewer cores than the topology needs (the caller falls
+    back to a shared cpuset).
+    """
+    core_count, thread_count = cpu_topology(vcpus, _tpc(host_cores))
+    if core_count > len(host_cores):
+        return None
+    pins: list[int] = []
+    for group in host_cores[-core_count:]:
+        pins.extend(group[:thread_count])
+    return pins
+
+
+def emulator_cpus(vcpus: int,
+                  host_cores: list[tuple[int, ...]]) -> tuple[int, ...] | None:
+    """The physical core just below the guest cores, for emulatorpin.
+
+    A whole core (all SMT siblings) keeps the QEMU emulator threads
+    (device emulation, I/O, main loop) off the vCPUs; None when every
+    host core is given to the guest, leaving the emulator unpinned.
+    """
+    core_count, _ = cpu_topology(vcpus, _tpc(host_cores))
+    if core_count >= len(host_cores):
+        return None
+    return host_cores[-core_count - 1]
+
+
+def format_cpuset(cpus: tuple[int, ...]) -> str:
+    """Compressed libvirt cpuset for a CPU set: '2', '2-3', '0,4'."""
+    ordered = sorted(set(cpus))
+    if not ordered:
+        return ""
+    parts: list[str] = []
+    start = prev = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu != prev + 1:
+            parts.append(f"{start}-{prev}" if start != prev else str(start))
+            start = cpu
+        prev = cpu
+    parts.append(f"{start}-{prev}" if start != prev else str(start))
+    return ",".join(parts)
+
+
+def _cpus_field(text: str) -> tuple[int, ...]:
+    """Kernel CPU list field ('0', '0,4', '0-1,4') as a sorted tuple."""
+    cpus: set[int] = set()
+    for part in text.strip().split(","):
+        first, sep, last = part.partition("-")
+        if not first:
+            continue
+        if sep:
+            cpus.update(range(int(first), int(last) + 1))
+        else:
+            cpus.add(int(first))
+    return tuple(sorted(cpus))
+
+
+def _tpc(host_cores: list[tuple[int, ...]]) -> int:
+    """Host threads per core as seen by the core-group list."""
+    return len(host_cores[0]) if host_cores else 1
 
 
 def domain_xml(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
                graphical: bool, serial_port: int, iso_path: str,
-               network: tuple[str, str], host_tpc: int, host_cpus: int) -> str:
-    core_count, thread_count = cpu_topology(cores, host_tpc)
+               network: tuple[str, str],
+               host_cores: list[tuple[int, ...]]) -> str:
+    core_count, thread_count = cpu_topology(cores, _tpc(host_cores))
     lines = [
         "<domain type='kvm'>",
         f"  <name>{name}</name>",
         f"  <memory unit='GiB'>{ram_gib}</memory>",
         f"  <currentMemory unit='GiB'>{ram_gib}</currentMemory>",
         f"  <vcpu placement='static'>{cores}</vcpu>",
-        *_cputune(cores, host_cpus),
+        *_cputune(cores, host_cores),
         "  <os firmware='efi'>",
         "    <type arch='x86_64' machine='q35'>hvm</type>",
         "    <boot dev='cdrom'/>",
         "    <boot dev='hd'/>",
         "  </os>",
         "  <features><acpi/><apic/></features>",
-        ("  <cpu mode='host-passthrough'>"
+        ("  <cpu mode='host-passthrough' migratable='off'>"
          f"<topology sockets='1' cores='{core_count}' "
          f"threads='{thread_count}'/></cpu>"),
         "  <clock offset='utc'/>",
@@ -253,8 +350,7 @@ def workbook_section(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
     xml = domain_xml(name, disk_size_gib=disk_size_gib, ram_gib=ram_gib,
                      cores=cores, graphical=graphical, serial_port=serial_port,
                      iso_path=iso_path, network=network,
-                     host_tpc=host_threads_per_core(),
-                     host_cpus=os.cpu_count() or 1)
+                     host_cores=host_cores())
     return (f"Provision the libvirt domain {name!r} on {uri} (network:"
             f" {network[0]} {network[1]}, serial line on TCP {serial_port}):\n\n"
             "```bash\n" + "\n".join(lines) + "\n```\n\n"
@@ -302,13 +398,25 @@ def _net_names(uri: str) -> dict[str, str]:
     return networks
 
 
-def _cputune(vcpus: int, host_cpus: int) -> list[str]:
-    cpuset = pin_cpuset(vcpus, host_cpus)
-    return ["  <cputune>",
-            *(f"    <vcpupin vcpu='{vcpu}' cpuset='{cpuset}'/>"
-              for vcpu in range(vcpus)),
-            f"    <emulatorpin cpuset='{cpuset}'/>",
-            "  </cputune>"]
+def _cputune(vcpus: int, host_cores: list[tuple[int, ...]]) -> list[str]:
+    pins = cpu_pins(vcpus, host_cores)
+    if pins is None:
+        # Not enough host cores for 1:1 pins (tiny host or oversized
+        # request): share the top host CPUs the legacy way.
+        cpuset = pin_cpuset(vcpus, sum(map(len, host_cores)) or 1)
+        return ["  <cputune>",
+                *(f"    <vcpupin vcpu='{vcpu}' cpuset='{cpuset}'/>"
+                  for vcpu in range(vcpus)),
+                f"    <emulatorpin cpuset='{cpuset}'/>",
+                "  </cputune>"]
+    lines = ["  <cputune>",
+             *(f"    <vcpupin vcpu='{vcpu}' cpuset='{cpu}'/>"
+               for vcpu, cpu in enumerate(pins))]
+    emulator = emulator_cpus(vcpus, host_cores)
+    if emulator is not None:
+        lines.append(f"    <emulatorpin cpuset='{format_cpuset(emulator)}'/>")
+    lines.append("  </cputune>")
+    return lines
 
 
 def _interface(network: tuple[str, str]) -> list[str]:

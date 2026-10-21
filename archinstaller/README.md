@@ -194,9 +194,17 @@ provisioned for TRIM forwarding). The flow:
      USB 3.0 (xHCI) when the
      Extension Pack is installed; video: VMSVGA with 256 MB under
      `--graphical`, 16 MB otherwise.
-   - **libvirt** (`qemu:///system`): q35 + UEFI, CPU topology mirroring
+   - **libvirt** (`qemu:///system`): q35 + UEFI, `host-passthrough` CPU
+     with `migratable='off'` (pure CPUID passthrough including invariant
+     TSC — the domains live on one host and are never live-migrated),
+     CPU topology mirroring
      the host SMT shape (e.g. 4 vCPUs on an SMT2 host → 2 cores x 2
-     threads) pinned to the high host CPU numbers with the emulator,
+     threads) pinned 1:1 to the high host CPUs so sibling vCPUs of a
+     guest core share one physical core (sibling pairs come from sysfs,
+     so split CPU numbering is handled too), with the emulator pinned
+     to the whole physical core just below the guest cores (unpinned
+     when the guest takes every core; a shared-cpuset fallback applies
+     when the host has fewer cores than the topology needs),
      full memory from the start with `<memballoon model='virtio'
      freePageReporting='on' autodeflate='on'/>`, qcow2 volume on virtio
      with `discard='unmap' detect_zeroes='unmap'`, a guest-agent channel,
