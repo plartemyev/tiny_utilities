@@ -1,9 +1,12 @@
 """Provision a fresh VirtualBox VM for archinstaller.
 
 The VM carries the future host's name and is configured for an
-unattended, TRIM-aware install: UEFI firmware, one virtio-scsi disk (a
-fresh VDI presented as a solid-state drive with discard enabled, so
-guest TRIM compacts the image), a virtio-net NIC on NAT with an SSH
+unattended, TRIM-aware install: UEFI firmware, one NVMe disk (a fresh VDI
+presented as a solid-state drive with discard enabled, so guest TRIM
+compacts the image; VirtualBox 7.2.22 rejects the previous virtio-scsi
+controller through VBoxManage, and NVMe is in the open-source base package
+since 7.2.0), a virtio-net
+NIC on NAT with an SSH
 port forward to the host, a serial port exposed as a host TCP listener
 (the blind boot-menu injection and the console session run through it),
 an HDA audio device on the default host audio driver (the guest side
@@ -22,7 +25,7 @@ from archinstaller import vbox
 from archinstaller.provision import pick_free_ports
 
 OSTYPE = "ArchLinux_64"
-SCSI_CONTROLLER = "archinstaller-scsi"
+DISK_CONTROLLER = "archinstaller-nvme"
 GUEST_ADDRESS = "10.0.2.15"  # first lease of the per-VM NAT engine, deterministic
 GRAPHICAL_VRAM_MB = 256
 CONSOLE_VRAM_MB = 16
@@ -70,7 +73,7 @@ def plan(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
          "--pae", "on", "--hwvirtex", "on", "--nested-paging", "on",
          "--nictype1", "virtio", "--nic1", "nat", "--cableconnected1", "on",
          "--nat-pf1", f"ssh,tcp,127.0.0.1,{ssh_port},{GUEST_ADDRESS},22",
-         "--uart1", "0x3F8", "4", "--uart-type", "16550A",
+         "--uart1", "0x3F8", "4", "--uart-type1", "16550A",
          "--uart-mode1", "tcpserver", str(serial_port),
          "--clipboard-mode", "bidirectional",
          "--audio-driver", "default",
@@ -83,9 +86,9 @@ def plan(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
     commands += [
         ("createmedium", "disk", "--filename", vdi,
          "--size", str(disk_size_gib * 1024), "--variant", "standard"),
-        ("storagectl", name, "--name", SCSI_CONTROLLER,
-         "--add", "scsi", "--controller", "VirtIO"),
-        ("storageattach", name, "--storagectl", SCSI_CONTROLLER,
+        ("storagectl", name, "--name", DISK_CONTROLLER,
+         "--add", "pcie", "--controller", "NVMe", "--hostiocache", "on"),
+        ("storageattach", name, "--storagectl", DISK_CONTROLLER,
          "--port", "0", "--device", "0", "--type", "hdd",
          "--medium", vdi, "--nonrotational", "on", "--discard", "on"),
         ("storagectl", name, "--name", "IDE", "--add", "ide"),

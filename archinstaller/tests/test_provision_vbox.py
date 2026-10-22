@@ -31,13 +31,15 @@ def test_provision_commands_build_the_full_vm(monkeypatch):
                  "--rtc-use-utc on", "--pae on", "--hwvirtex on",
                  "--nested-paging on", "--nictype1 virtio --nic1 nat",
                  "--nat-pf1 ssh,tcp,127.0.0.1,23951,10.0.2.15,22",
+                 "--uart1 0x3F8 4 --uart-type1 16550A",
                  "--uart-mode1 tcpserver 23950",
                  "--clipboard-mode bidirectional", "--usb-xhci on",
                  "--audio-driver default --audio-controller hda --audio-out on --audio-in on",
                  "--boot1 dvd --boot2 disk"):
         assert flag in modify, flag
     flat = [" ".join(args) for args in commands]
-    assert any("--add scsi --controller VirtIO" in line for line in flat)
+    assert any("--add pcie --controller NVMe --hostiocache on" in line
+               for line in flat)
     assert any("createmedium disk --filename" in line and "--size 46080" in line
                for line in flat)
     attach = [line for line in flat if "storageattach" in line]
@@ -127,7 +129,7 @@ def test_workbook_section_renders_shell_lines(monkeypatch):
         graphical=False, serial_port=23950, ssh_port=23951)
     assert "vboxmanage createvm --name testvm --ostype ArchLinux_64 --register" \
         in section
-    assert "vboxmanage storageattach testvm --storagectl archinstaller-scsi" \
+    assert "vboxmanage storageattach testvm --storagectl archinstaller-nvme" \
         in section
     assert "--nonrotational on --discard on" in section
     assert "Extension Pack is not installed" in section

@@ -31,6 +31,14 @@ def test_script_contains_configured_values():
     assert "mkswap -U clear --size 16G --file /swapfile" in script
 
 
+def test_script_partitions_nvme_disks_with_p_names():
+    script = build_install_script(make_cfg(disk="/dev/nvme0n1"))
+    assert "sfdisk '/dev/nvme0n1'" in script
+    assert "mkfs.fat -F 32 '/dev/nvme0n1p1'" in script
+    assert "mount --mkdir '/dev/nvme0n1p2' /mnt/new-root" in script
+    assert "mount --mkdir '/dev/nvme0n1p1' /mnt/new-root/boot" in script
+
+
 def test_grub_install_registers_entry_and_removable_fallback():
     script = build_install_script(make_cfg())
     entry = "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"

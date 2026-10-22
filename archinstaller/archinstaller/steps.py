@@ -8,6 +8,7 @@ here and nowhere else.
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 
 _SHELL_DIR = Path(__file__).parent / "shell"
@@ -237,13 +238,20 @@ def install_steps(cfg: InstallConfig) -> list[Step]:
     return steps
 
 
+def _partition(disk: str, number: int) -> str:
+    """Partition n of disk: NVMe controllers need the 'p' name separator."""
+    if re.fullmatch(r"nvme\d+n\d+", disk.rsplit("/", 1)[-1]):
+        return f"{disk}p{number}"
+    return f"{disk}{number}"
+
+
 def _formatting_step(cfg: InstallConfig) -> Step:
     options = " -o discard" if cfg.discard and cfg.virt != "none" else ""
     return Step("Creating filesystems and mounting", (
-        f"mkfs.fat -F 32 {_sh(cfg.disk + '1')}",
-        f"mkfs.ext4 -F {_sh(cfg.disk + '2')}",
-        f"mount --mkdir{options} {_sh(cfg.disk + '2')} /mnt/new-root",
-        f"mount --mkdir {_sh(cfg.disk + '1')} /mnt/new-root/boot",
+        f"mkfs.fat -F 32 {_sh(_partition(cfg.disk, 1))}",
+        f"mkfs.ext4 -F {_sh(_partition(cfg.disk, 2))}",
+        f"mount --mkdir{options} {_sh(_partition(cfg.disk, 2))} /mnt/new-root",
+        f"mount --mkdir {_sh(_partition(cfg.disk, 1))} /mnt/new-root/boot",
     ), rationale=(
         "On VM targets whose hypervisor forwards TRIM, root is mounted with the"
         " continuous 'discard' option so freed extents unmap the hypervisor-side drive"

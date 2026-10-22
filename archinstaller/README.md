@@ -124,7 +124,7 @@ System configuration — shared by `install` and `workbook`:
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--disk` | `/dev/vda` | disk to wipe; plain `sdX`/`vdX`/`hdX` only |
+| `--disk` | `/dev/vda` | disk to wipe; plain `sdX`/`vdX`/`hdX` or NVMe `nvmeXnY` devices |
 | `--hostname` | `arch-host-YYYY-MM-DD` | also names a provisioned VM |
 | `--username` | `nameless` | user to create (groups: video, scanner, optical, kvm, sys, wheel, uucp, games; +docker with `--devel`) |
 | `--ssh-pubkey` | `~/.ssh/id_ed25519.pub` | literal key or path to a file; validated |
@@ -170,7 +170,8 @@ and `--with-passwords`.
 Hardware provisioned per backend:
 
 - **vbox**: UEFI, VMSVGA video (256 MB under `--graphical`, 16 MB console),
-  virtio-scsi VDI attached with `--nonrotational on --discard on`, virtio-net
+  NVMe VDI (host I/O cache enabled) attached with `--nonrotational on
+  --discard on`, virtio-net
   on NAT with an SSH port forward `127.0.0.1:<port>` → `10.0.2.15:22` (free
   ports auto-picked in 23950–24000; the guest address is asserted over
   serial), serial port as a host TCP listener, HDA audio on the default host

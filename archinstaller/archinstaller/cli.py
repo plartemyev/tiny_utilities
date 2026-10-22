@@ -117,7 +117,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # system configuration: shared by install and workbook
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--disk", default="/dev/vda",
-                        help="disk to wipe: plain sdX/vdX/hdX device, e.g. /dev/vda (no NVMe)")
+                        help="disk to wipe: plain sdX/vdX/hdX device (e.g. /dev/vda) "
+                             "or NVMe nvmeXnY device (e.g. /dev/nvme0n1)")
     common.add_argument("--hostname", help="hostname for the new system (default: arch-host-YYYY-MM-DD)")
     common.add_argument("--username", default="nameless", help="user account to create (default: nameless)")
     common.add_argument("--ssh-pubkey", default="~/.ssh/id_ed25519.pub",
@@ -235,8 +236,8 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
                          "(oracle for vbox, kvm for libvirt)")
         if min(args.cores, args.ram_gib, args.disk_size_gib) < 1:
             parser.error("--cores, --ram-gib and --disk-size-gib must be >= 1")
-    if not re.fullmatch(r"(sd|vd|hd)[a-z]+", args.disk.rsplit("/", 1)[-1]):
-        parser.error(f"--disk must be a device like /dev/vda or /dev/sda (got {args.disk!r})")
+    if not re.fullmatch(r"(sd|vd|hd)[a-z]+|nvme\d+n\d+", args.disk.rsplit("/", 1)[-1]):
+        parser.error(f"--disk must be a device like /dev/vda or /dev/nvme0n1 (got {args.disk!r})")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", args.hostname or default_hostname()):
         parser.error(f"--hostname contains invalid characters (got {args.hostname!r})")
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", args.username):
@@ -287,7 +288,7 @@ def _run_provisioned(args: argparse.Namespace) -> None:
     if args.provision == "vbox":
         backend = provision_vbox
         keys: boot_inject.Keys = boot_inject.VBoxKeys(hostname)
-        args.virt, args.disk = "oracle", "/dev/sda"
+        args.virt, args.disk = "oracle", "/dev/nvme0n1"
     else:
         backend = provision_libvirt
         keys = boot_inject.VirshKeys(hostname)
@@ -379,7 +380,7 @@ def _run_workbook(args: argparse.Namespace) -> None:
     virt, discard, disk = args.virt or "none", bool(args.discard), args.disk
     provision_md = None
     if args.provision == "vbox":
-        virt, discard, disk = "oracle", True, "/dev/sda"
+        virt, discard, disk = "oracle", True, "/dev/nvme0n1"
         provision_md = _provision_workbook_section(args, hostname)
     elif args.provision == "libvirt":
         virt, discard, disk = "kvm", True, "/dev/vda"
