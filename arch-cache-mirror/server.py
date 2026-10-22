@@ -147,6 +147,12 @@ class Repo:
     # per-arch mirror overrides (set by build_repos for the ALARM tier);
     # they take precedence over `mirrors` when the request's arch matches
     arch_mirrors: dict[str, list[str]] = field(default_factory=dict)
+    # optional upstream metadata name (EXTRA_REPOS `name:metadata-name=url`):
+    # the repo's metadata files (.db/.files and their .sig) are fetched from
+    # the upstream under this name while being served and cached under
+    # `name`; package filenames never carry the repo name and always pass
+    # through unchanged.  Empty = metadata uses `name` too.
+    meta_name: str = ""
 
 
 @dataclass
@@ -176,8 +182,10 @@ class Config:
                 continue
             name, sep, url = pair.partition("=")
             if not sep or not name.strip() or not url.strip():
-                raise ValueError("bad EXTRA_REPOS entry %r (want name=url;...)" % pair)
-            extra.append(Repo(name.strip(), [url.strip()]))
+                raise ValueError(
+                    "bad EXTRA_REPOS entry %r (want name[:metadata-name]=url;...)" % pair)
+            local, _, meta = name.strip().partition(":")
+            extra.append(Repo(local.strip(), [url.strip()], meta_name=meta.strip()))
         return cls(
             listen_addr=os.environ.get("LISTEN_ADDR", "0.0.0.0"),
             listen_port=int(os.environ.get("LISTEN_PORT", "8080")),
@@ -721,8 +729,14 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
         headers["Range"] = _range_header(rng)
     last_status = None
     for mirror in repo_mirrors(repo, arch):
+        upstream_file = filename
+        if (repo.meta_name and _is_metadata(filename)
+                and filename.startswith(repo.name)):
+            # `name:metadata-name` extra repo: metadata carries the
+            # upstream's own repo name in its filename
+            upstream_file = repo.meta_name + filename[len(repo.name):]
         url = (mirror.replace("$repo", repo.name).replace("$arch", arch).rstrip("/")
-               + "/" + filename)
+               + "/" + upstream_file)
         # two attempts per mirror: the second covers a stale keep-alive
         # connection (e.g. right after the upstream mirror restarted)
         attempts = 2

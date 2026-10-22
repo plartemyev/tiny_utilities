@@ -143,7 +143,7 @@ home is docker-compose.yml.
 | `FRESH_WAIT`       | `5`                                        | max seconds such a db request waits for the fresh retrieval before being served the cached copy; `0` = serve cached immediately |
 | `OFFICIAL_REPOS`   | `core extra multilib`                      | repos served from `OFFICIAL_MIRRORS`                                                                  |
 | `OFFICIAL_MIRRORS` | geo.mirror.pkgbuild.com, mirror.rackspace.com (code default; also pinned in docker-compose.yml; space-separated, tried in order) | upstream URL templates containing `$repo` and/or `$arch` |
-| `EXTRA_REPOS`      | *none in code* — defined in docker-compose.yml | additional repos as `name=url` pairs separated by `;` or newlines; the url is a template containing `$arch` |
+| `EXTRA_REPOS`      | *none in code* — defined in docker-compose.yml | additional repos as `name=url` pairs separated by `;` or newlines; the url is a template containing `$arch`; `name:metadata-name=url` additionally fetches the repo's metadata (.db/.files and .sig) under `metadata-name` upstream (e.g. when serving another repo's release assets under a local pacman repo name) |
 | `ALARM_ARCHES`     | `aarch64 armv7h`                           | client architectures served from the Arch Linux ARM tier; empty = tier off                             |
 | `ALARM_REPOS`      | `core extra alarm aur`                     | repos of the ALARM tier (shared names become per-arch mirror overrides; ARM-only names exist for those arches only) |
 | `ALARM_MIRRORS`    | `http://mirror.archlinuxarm.org/$arch/$repo` | ALARM upstream URL templates containing `$repo` and/or `$arch`; empty = tier off                      |
@@ -156,6 +156,15 @@ escaping compose requires):
 xlibre  = https://packages.xlibre.net/arch/stable/$arch
 sonicde = https://sonicde-arch.github.io/$arch
 ```
+
+An entry may carry an upstream metadata alias, `name:metadata-name=url`:
+the repo's `.db`/`.files` (and `.sig`) are then fetched upstream under
+`metadata-name` while pacman goes on using `name` - e.g.
+`sonicde:sonicde-stable-testing=https://github.com/sonicde-arch/stable-testing/releases/download/$arch`
+serves the sonicde-stable-testing GitHub release assets under the local
+`sonicde` repo name.  Deployment-specific repoints belong in
+`docker-compose.override.yml` (its `EXTRA_REPOS` key replaces the base
+one entirely, so repeat all entries there).
 
 The proxy serves every repository under the uniform local layout
 `/<repo>/os/<arch>/<filename>` regardless of the upstream's layout, so

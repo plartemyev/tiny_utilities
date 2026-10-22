@@ -764,6 +764,15 @@ def test_from_env(base: str) -> None:
         assert [(r.name, r.mirrors) for r in cfg.extra_repos] == [
             ("x", ["https://x.example/$arch"]), ("y", ["https://y.example/$arch"])]
 
+        # `name:metadata-name` alias: fetch metadata under the upstream's
+        # own repo name while pacman keeps using the local one
+        os.environ["EXTRA_REPOS"] = ("s:sonicde-stable-testing=https://s.example/$arch;"
+                                     "plain=https://p.example/$arch")
+        cfg = Config.from_env()
+        assert [(r.name, r.meta_name, r.mirrors) for r in cfg.extra_repos] == [
+            ("s", "sonicde-stable-testing", ["https://s.example/$arch"]),
+            ("plain", "", ["https://p.example/$arch"])]
+
         # emptying either half disables the ALARM tier
         os.environ["ALARM_ARCHES"] = ""
         cfg = Config.from_env()
@@ -958,12 +967,69 @@ async def test_ranges(base: str) -> None:
             await up.close()
 
 
+async def test_meta_name_alias(base: str) -> None:
+    """A `name:metadata-name` extra repo fetches metadata (.db/.files)
+    under the upstream's own repo name while serving and caching it (and
+    packages, which never carry the repo name) under the local one."""
+    seen: list[str] = []
+
+    async def stub(request: web.Request) -> web.Response:
+        filename = request.match_info["filename"]
+        seen.append(filename)
+        return web.Response(body=b"DATA-" + filename.encode())
+
+    up_app = web.Application()
+    up_app.router.add_get("/dl/{arch}/{filename}", stub)
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir, db_ttl=3600, extra_repos=[
+        Repo("sonicde", ["http://127.0.0.1:%d/dl/$arch" % up.port],
+             meta_name="sonicde-stable-testing")])
+    app = build_app(cfg)
+    mirror = TestServer(app)
+    await mirror.start_server()
+    try:
+        base_url = str(mirror.make_url(""))
+        async with ClientSession() as http:
+            # the sync db is requested as sonicde.db but fetched upstream
+            # as sonicde-stable-testing.db and cached under the local name
+            db_url = base_url + "/sonicde/os/x86_64/sonicde.db"
+            async with http.get(db_url) as r:
+                assert r.status == 200
+                assert await r.read() == b"DATA-sonicde-stable-testing.db"
+            assert seen == ["sonicde-stable-testing.db"]
+            assert open(os.path.join(cache_dir, "sonicde/os/x86_64/sonicde.db"),
+                        "rb").read() == b"DATA-sonicde-stable-testing.db"
+
+            # fresh cached copy: served locally, no upstream contact
+            async with http.get(db_url) as r:
+                assert await r.read() == b"DATA-sonicde-stable-testing.db"
+            assert seen == ["sonicde-stable-testing.db"]
+
+            # package filenames never carry the repo name: pass through
+            async with http.get(base_url + "/sonicde/os/x86_64/" + PKG) as r:
+                assert await r.read() == b"DATA-" + PKG.encode()
+            assert seen[-1] == PKG
+
+            # the .files database follows the same alias
+            async with http.get(base_url + "/sonicde/os/x86_64/sonicde.files") as r:
+                assert await r.read() == b"DATA-sonicde-stable-testing.files"
+            assert seen[-1] == "sonicde-stable-testing.files"
+    finally:
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
 TESTS = [
     ("vercmp", test_vercmp),
     ("parsers", test_parsers),
     ("range-math", test_range_math),
     ("gc", test_gc),
     ("from-env", test_from_env),
+    ("meta-name-alias", test_meta_name_alias),
     ("mirror-flow", test_mirror_flow),
     ("alarm-routing", test_alarm_routing),
     ("db-ttl", test_db_ttl),
