@@ -754,10 +754,16 @@ def _run_installation(
             print("VirtualBox assist: disk attachments get --discard on; "
                   "enabling guest discard support.")
             discard = True
+        lan_mirror = None
         if local_mirror is not None and virt != "none":
             # VM targets: the guest's default gateway is the hypervisor host
             # with a per-backend static address - prefer it over the host's
             # roaming LAN IP so installs keep working after network changes.
+            # VBox NAT does not proxy guest TCP to the 10.0.2.2 alias
+            # (verified on 7.2.22: connect gets an instant refusal, while
+            # ping and the 10.0.2.3 DNS alias work), so the gateway URL is
+            # probed first and the LAN IP kept as fallback.
+            lan_mirror = local_mirror
             gateway = _target_gateway(conn)
             if gateway is not None:
                 print(f"VM target: advertising the local mirror via the guest "
@@ -769,7 +775,8 @@ def _run_installation(
                       "keeping the host LAN IP mirror address")
         _ensure_live_dns(conn.client)
         if local_mirror is not None:
-            _ensure_local_mirror(conn.client, local_mirror)
+            local_mirror = _ensure_local_mirror(conn.client, local_mirror,
+                                                fallback_url=lan_mirror)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -869,19 +876,32 @@ def _target_gateway(conn: SshConnection) -> str | None:
     return gateway
 
 
-def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str) -> None:
+def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
+                         fallback_url: str | None = None) -> str:
     """Verify the live environment can reach the local arch-cache-mirror.
 
     With --local-mirror the mirror is the only pacman source (the
     mirrorlist keeps no upstream fallback), so a dead mirror must abort
-    before pacstrap starts instead of failing deep inside it.
+    before pacstrap starts instead of failing deep inside it. Returns the
+    URL that passed the probe; when the primary URL is unreachable and a
+    fallback_url is given (VM targets: the host LAN IP behind the
+    gateway-alias URL - VBox NAT refuses guest TCP to the 10.0.2.2 alias,
+    verified on 7.2.22), the fallback is probed and returned instead.
     """
-    _code, _ = run_capture(client, f"curl -fsS --max-time 8 {base_url}/healthz", timeout=30)
-    if _code != 0:
-        sys.exit(f"the local mirror {base_url} is not reachable from the target "
-                 "(is the arch-cache-mirror container running and publishing port "
-                 f"{LOCAL_MIRROR_PORT} on the primary interface?); rerun with a "
-                 "working mirror or without --local-mirror")
+    if run_capture(client, f"curl -fsS --max-time 8 {base_url}/healthz",
+                   timeout=30)[0] == 0:
+        return base_url
+    if fallback_url is not None and fallback_url != base_url:
+        print(f"mirror {base_url} is not reachable from the target; "
+              f"trying the host LAN IP mirror {fallback_url} ...")
+        if run_capture(client,
+                       f"curl -fsS --max-time 8 {fallback_url}/healthz",
+                       timeout=30)[0] == 0:
+            return fallback_url
+    sys.exit(f"the local mirror {base_url} is not reachable from the target "
+             "(is the arch-cache-mirror container running and publishing port "
+             f"{LOCAL_MIRROR_PORT} on the primary interface?); rerun with a "
+             "working mirror or without --local-mirror")
 
 
 def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> None:

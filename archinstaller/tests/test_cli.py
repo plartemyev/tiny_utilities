@@ -344,6 +344,29 @@ def test_local_mirror_preflight_aborts_when_unreachable(monkeypatch):
         cli._ensure_local_mirror(None, "http://192.168.1.10:8282")
 
 
+def test_local_mirror_preflight_falls_back_to_lan_url(monkeypatch, capsys):
+    # VBox 7.2.22 NAT refuses guest TCP to the 10.0.2.2 gateway alias while
+    # the host LAN IP stays reachable: probe once, fall back, return it
+    seen = []
+    def fake_run(client, cmd, **kw):
+        seen.append(cmd)
+        return (7 if "10.0.2.2" in cmd else 0, "")
+    monkeypatch.setattr(cli, "run_capture", fake_run)
+    url = cli._ensure_local_mirror(None, "http://10.0.2.2:8282",
+                                   fallback_url="http://192.168.1.10:8282")
+    assert url == "http://192.168.1.10:8282"
+    assert len(seen) == 2
+    assert "trying the host LAN IP mirror http://192.168.1.10:8282" \
+        in capsys.readouterr().out
+
+
+def test_local_mirror_preflight_aborts_when_both_urls_fail(monkeypatch):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (7, ""))
+    with pytest.raises(SystemExit):
+        cli._ensure_local_mirror(None, "http://10.0.2.2:8282",
+                                 fallback_url="http://192.168.1.10:8282")
+
+
 def test_target_gateway_parsed_from_default_route(monkeypatch):
     monkeypatch.setattr(
         cli, "run_capture",
