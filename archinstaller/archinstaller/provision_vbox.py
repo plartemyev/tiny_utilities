@@ -8,10 +8,9 @@ port forward to the host, a serial port exposed as a host TCP listener
 (the blind boot-menu injection and the console session run through it),
 an HDA audio device on the default host audio driver (the guest side
 pins snd-hda-intel to position_fix=1, presupposing the device), UTC RTC
-and the guest-integration extras. USB 3.0 (xHCI) and the shared
-clipboard are enabled when the platform allows it; the graphical flag
-selects a desktop-capable video stack (VMSVGA with 256 MB) over the
-16 MB console one.
+and the shared clipboard. USB 3.0 (xHCI) requires the Extension Pack;
+the graphical flag selects a desktop-capable video stack (VMSVGA with
+256 MB) over the 16 MB console one.
 """
 from __future__ import annotations
 

@@ -18,7 +18,7 @@
     - Some remote MPRIS `Play` calls are refused by the phone app itself (e.g. a background browser tab stays `Paused` after a remote `Play`);
     - PyGObject `DBusProxy` `g-properties-changed`: the `changed` dict is a `GLib.Variant` — plain `in`/`[]` access raises `KeyError: 0`; call `.unpack()` first;
     - PyGObject `GLibUnix.signal_add` invokes the handler with zero args, while `GLib.unix_signal_add` passes `(user_data)`; the former is the non-deprecated variant;
-    - Existing tooling for this: `kdeconnect-media-logger/` (service) and `tmp/kdeconnect_media_probe.py` (exploratory probe).
+    - Existing tooling for this: `kdeconnect-media-logger/` (service).
 - opencode v2 server peculiarities (Arch package 2.0.18; verified in a systemd docker container):
     - standalone `opencode serve` honours `OPENCODE_SERVER_PASSWORD`: with it set, HTTP basic auth is
       enforced (401 without/wrong creds, 200 with `opencode:<password>`); without it a random password is
@@ -45,7 +45,7 @@
       reference the old disk-id — the firmware skips them and falls through to the still-attached ISO;
     - reliable fix: also install the signature-less fallback bootloader `\EFI\BOOT\BOOTX64.EFI`
       (`grub-install ... --removable`); it boots via the firmware's plain HDD option with no NVRAM dependency
-      (done in `archinstaller/archinstaller/script.py`, see the README deviations);
+      (done in `archinstaller/archinstaller/steps.py`, the GRUB step's second `--removable` install);
     - repairing an affected VM: boot the ISO, mount root + ESP, `arch-chroot` and re-run both `grub-install`
       variants, detach the ISO with `vboxmanage storageattach <vm> --storagectl IDE --port 0 --device 0
       --type dvddrive --medium emptydrive`, then power off (not reboot) so NVRAM flushes, and start again;
@@ -74,8 +74,9 @@
       the VM window shows the EFI logo forever while the guest runs fine over SSH; guest dmesg noise
       `vmwgfx seems to be running on an unsupported hypervisor` + `Failed to open channel` is cosmetic
       (GCM/MesaVmsvgaDrv fixer, present on every VMSVGA boot); recovery: `xrandr --output Virtual-1
-      --mode <mode>` inside the session (root needs `XAUTHORITY=/tmp/xauth_*` — SDDM writes a fresh
-      random-named file per boot, `/run/sddm/xauth_*` from the previous boot goes stale); permanent fix:
+      --mode <mode>` inside the session (root needs `XAUTHORITY=/tmp/xauth_*` — the display manager
+      writes a fresh random-named file per boot and the previous boot's copy goes stale; runtime dir:
+      SDDM → `/run/sddm/`, sonic-login-manager → `/run/soniclogin/`); permanent fix:
       `systemctl enable vboxservice` (now done by archinstaller for `virt == "oracle"`);
     - archinstaller enabled `qemu-guest-agent` for kvm/qemu but never `vboxservice` for VirtualBox
       targets (hit on a 2026-10-02 install → the blank screen above); installs made before commit
@@ -83,7 +84,7 @@
       `pacman -R open-vm-tools`);
     - `archinstaller --vbox-vm <name>` reboots from the host (poweroff → `<vm>.nvram` → `.nvram.bak` →
       `--boot2 disk --boot3 dvd` → start) so the first boot works out of the box;
-      `--resume <state-file>` finishes a previous run's post-boot stage; the state file
+      the `resume <state-file>` subcommand finishes a previous run's post-boot stage; the state file
       (`archinstaller-state-<hostname>.json`, mode 0600, holds generated passwords) is written before the
       reboot and deleted on success;
     - VirtualBox discard/TRIM forwarding (guest TRIM shrinking the VDI; wired into archinstaller as
@@ -120,9 +121,11 @@
     - the "missing" `initramfs-linux-fallback.img` on new installs is upstream default, not a tool bug:
       Arch's `/etc/mkinitcpio.d/linux.preset` ships `PRESETS=('default')` with the fallback preset
       commented out, so `mkinitcpio -P` builds the default image only;
-    - SDDM autologin requires `Session=` in `[Autologin]`: with only `User=` set the journal shows
-      "Unable to find autologin session entry" and the greeter appears instead (hit on a fresh install — the tool now
-      detects the session via `find` over `/usr/share/{x,wayland}-sessions` at install time);
+    - Autologin requires `Session=` in `[Autologin]`: with only `User=` set the journal shows
+      "Unable to find autologin session entry" and the greeter appears instead (observed under SDDM;
+      archinstaller now ships sonic-login-manager, its fork, with the same requirement — the tool
+      detects the session via `find` over `/usr/share/{x,wayland}-sessions` and writes
+      `/etc/soniclogin.conf.d/10-archinstaller.conf` at install time);
     - the autologin session-detection `find` must carry `|| true` under the install script's `set -euo pipefail`
       (hit 2026-10-07 on a libvirt target): the current sonicde set is X11-only (`sonic-workspace` ships
       `/usr/share/xsessions/sonicde.desktop`; nothing creates `/usr/share/wayland-sessions/`), and `find` exits 1
@@ -135,14 +138,12 @@
       to repartition a busy disk (hit 2026-10-07 on a libvirt target); the install script now releases the
       leftovers itself (`swapoff -a` + `umount -R /mnt/new-root`, both `|| true`, before `wipefs` — no-ops on
       a fresh ISO); the manual fallback is `ssh root@<target> 'swapoff -a; umount -R /mnt/new-root'`;
-    - SDDM autologin also cannot auto-unlock password-encrypted secret stores — pam_kwallet5 logs
+    - Autologin cannot auto-unlock password-encrypted secret stores (observed under SDDM, the
+      pre-sonic-login-manager DM) — pam_kwallet5 logs
       "Couldn't get password (it is empty)" and the wallet stays locked until the first app prompts
       (ksecretd, which ships inside the `kwallet` package since 6.x, has the same encrypted backing store);
       the only autologin-compatible auto-unlock is a blank wallet password (insecure) or TPM-sealed
       secrets (not wired into this stack);
-    - diagnostic helper: `tmp/vm_probe.py` (runs efibootmgr/lsblk/mounts over SSH into the ISO environment);
-      `tmp/finish_install.py` + `tmp/restart_opencode.py` replayed an interrupted install's stage two on
-      the target VM;
     - driving a running guest from the host without SSH (used for the icon debugging): `VBoxManage
       controlvm <vm> screenshotpng file.png` (watch the screen) and `keyboardputscancode` (set-1 hex
       bytes, extended keys as two bytes e.g. `e0 1f e0 f0 1f` for Meta — flaky, may type bare keys),
@@ -213,12 +214,14 @@
       plasma-powerdevil.service to apply). `PowerButtonAction` enum: 0 NoAction, 1 Sleep, 2 Hibernate,
       8 Shutdown, 16 PromptLogoutDialog (the non-mobile default), 32 LockScreen, 64 TurnOffScreen,
       128 ToggleScreenOnOff. Working setups, verified on anvil: console installs (no powerdevil) and
-      graphical VM installs with plasma-powerdevil **masked** (`systemctl --user mask
-      plasma-powerdevil.service`; archinstaller does this for `--graphical` on VM targets and keeps
-      the daemon on physical machines) → `VBoxManage controlvm <vm> acpipowerbutton` cleanly powers
-      off in ~5 s via logind; otherwise automate clean shutdowns with SSH `sudo systemctl poweroff`
-      (~10 s; guest poweroffs never hang, unlike guest-initiated reboots) or hard
-      `VBoxManage controlvm <vm> poweroff` (what `--vbox-vm` uses);
+      graphical VM installs with plasma-powerdevil **masked** (verified via `systemctl --user mask`;
+      archinstaller does the equivalent for `--graphical` on VM targets with a `/dev/null` symlink at
+      `~/.config/systemd/user/plasma-powerdevil.service`, and keeps the daemon on physical machines)
+      → `VBoxManage controlvm <vm> acpipowerbutton` cleanly powers off in ~5 s via logind;
+      otherwise automate clean shutdowns with SSH `sudo systemctl poweroff`
+      (~10 s; guest poweroffs never hang, unlike guest-initiated reboots) or a hard
+      `VBoxManage controlvm <vm> poweroff` as the last resort (archinstaller's `vbox.poweroff` — what
+      `--vbox-vm` and provisioned runs use — tries the ACPI button first, ~60 s, then hard-stops);
     - VirtualBox HDA guest audio freeze + ring-buffer loop (hit on anvil, VirtualBox 7.2.20 host /
       7.2.8 guest kernel, pipewire 1.6.9 + wireplumber 0.5.18, 2026-10-03): the emulated HDA
       advertises a DMA position buffer that never advances — guest
@@ -307,7 +310,7 @@
       extra-repo `Server` lines must use literal mirror repo segments
       (`http://<host-ip>:8282/xlibre/os/$arch`, `.../sonicde/os/$arch`) instead of the `$repo`
       template that works for the mirrorlist-included official repos (wired in
-      `archinstaller/script.py`, `_extra_repo_servers`). Host-side helper: `ip -4 route get 1.1.1.1`
+      `archinstaller/archinstaller/steps.py`, `_extra_repo_servers`). Host-side helper: `ip -4 route get 1.1.1.1`
       (its `src` field) is the cheap way to get the primary LAN interface's IPv4 for advertising a
       host service to LAN targets.
     - package/db fetch unification (2026-10-06): package misses, first-time db fetches and background
@@ -434,8 +437,8 @@
       - docker honors the mount verbatim (never rewrites it);
       - glibc hot-reloads the file: a long-running python process picked
         up an in-place rewrite within one lookup (verified with a probe
-        loop, `tmp/resolv_probe.py`) - NO container restarts (a restart
-        would abort in-flight downloads for nothing);
+        loop, `arch-cache-mirror/tmp/resolv_probe.py`) - NO container
+        restarts (a restart would abort in-flight downloads for nothing);
       - per-server failover becomes glibc-controlled: `options timeout:1
         attempts:2` (dead-first penalty ~2 s for A+AAAA vs 4 s embedded) -
         this is why the embedded resolver had to go: its timeout is not
@@ -472,9 +475,9 @@
         old unconditional line lied on quick-fail upstreams - DNS-dead
         upstreams were slow enough to mask it, which is why it never
         showed in the logs);
-      - diagnosis helpers kept: `tmp/resolv_probe.py` (long-running glibc
-        hot-reload probe) + `tmp/resolv-test.conf` (throwaway resolver
-        file for the probe container).
+      - diagnosis helpers kept: `arch-cache-mirror/tmp/resolv_probe.py` (long-running
+        glibc hot-reload probe) + `arch-cache-mirror/tmp/resolv-test.conf`
+        (throwaway resolver file for the probe container).
     - sonicde upstream REPUBLISHES package files in place (verified
       2026-10-18: one rebuild batch replaced 6 existing filenames at
       once - e.g. sonic-frameworks-io-fuse-6.0.0-2 went 88614 -> 88327 B

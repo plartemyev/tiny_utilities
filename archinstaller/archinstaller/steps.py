@@ -41,8 +41,8 @@ BASE_PACKAGES = package_list("base")
 
 CONSOLE_PACKAGES = package_list("console")
 
-# Development tooling split out of the console list; appended to the console
-# install step today, ready to be made opt-in separately.
+# Development tooling split out of the console list; appended only with --devel
+# (console-devel always; graphical-devel additionally with --graphical).
 CONSOLE_DEVEL_PACKAGES = package_list("console-devel")
 
 # Installed before SONICDE_PACKAGES: xlibre-xserver Provides: xorg-server, and
@@ -58,8 +58,8 @@ SONICDE_PACKAGES = package_list("sonicde")
 
 GRAPHICAL_PACKAGES = package_list("graphical")
 
-# Development tooling split out of the graphical list; appended to the
-# graphical install step today, ready to be made opt-in separately.
+# Development tooling split out of the graphical list; appended only with
+# --devel (in addition to console-devel, and only when --graphical is set).
 GRAPHICAL_DEVEL_PACKAGES = package_list("graphical-devel")
 
 IGNORE_PKG = package_list("ignore")
@@ -513,10 +513,10 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
                 " returns pages to the host only when the guest notices pressure:"
                 " freePageReporting hands back free-page hints and autodeflate inflates"
                 " the balloon under host pressure. watermark_scale_factor = 500 wakes"
-                " kswapd at 5% free memory (0.1% default) and the raised"
-                " vfs_cache_pressure reclaims dentries/inodes sooner, keeping the page"
-                " cache from claiming memory the hypervisor could reuse. (The"
-                " pagecache-limit sysctls are SUSE out-of-tree, not mainline.)"
+                " kswapd at 5% free memory (0.1% default) and the lowered"
+                " vfs_cache_pressure makes reclaim target the page cache rather than"
+                " the dentry/inode caches, keeping memory the hypervisor could reuse."
+                " (The pagecache-limit sysctls are SUSE out-of-tree, not mainline.)"
             )),
         ] if cfg.virt != "none" else []),
         *([

@@ -10,8 +10,8 @@ replacing both video-console keystroke automation and target-IP
 scanning.
 
 On the host side the serial endpoint is a plain byte stream: a TCP
-listener for VirtualBox (--uart-mode1 tcpserver), a unix or TCP socket
-for libvirt (<serial type='unix'/'tcp'>).
+listener for both VirtualBox (--uart-mode1 tcpserver) and libvirt
+(<serial type='tcp'>).
 """
 from __future__ import annotations
 

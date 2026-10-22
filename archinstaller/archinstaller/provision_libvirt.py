@@ -1,6 +1,6 @@
 """Provision a fresh libvirt VM (qemu:///system) for archinstaller.
 
-The domain XML matches the agreed spec: q35 chipset with UEFI firmware,
+The domain XML: q35 chipset with UEFI firmware,
 a host-passthrough CPU with migratable='off' (pure CPUID passthrough,
 invariant TSC included — these VMs are never live-migrated), CPU
 topology mirroring the host SMT shape (vCPUs split into cores x
