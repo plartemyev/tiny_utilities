@@ -49,13 +49,14 @@ def pick_free_ports(count: int, host: str = "127.0.0.1") -> list[int]:
 
 
 def boot_with_serial(restart, keys: boot_inject.Keys, serial_port: int,
-                     password: str) -> str:
-    """Boot the VM into a serial-driven live ISO; return the guest's IP.
+                     password: str) -> list[str]:
+    """Boot the VM into a serial-driven live ISO; return the guest's IPs.
 
     Injects console=ttyS0 at the bootloader menu, logs in as root, sets
     the live root password (the SSH transport uses it right after) and
-    waits for the guest's DHCP address. A restart between attempts
-    re-enters the menu window with a different delay.
+    waits for the guest's DHCP address(es) — dual-NIC targets lease two.
+    A restart between attempts re-enters the menu window with a different
+    delay.
     """
     for attempt in range(BOOT_ATTEMPTS):
         if attempt:
@@ -68,7 +69,7 @@ def boot_with_serial(restart, keys: boot_inject.Keys, serial_port: int,
             session.connect()
             console.login_root(session, timeout_s=BOOT_TIMEOUT_S)
             console.set_live_password(session, password)
-            return console.await_guest_ip(session)
+            return console.await_guest_addresses(session)
         except console.SerialError as exc:
             tail = bytes(session.transcript[-200:])
             print(f"boot attempt {attempt + 1}/{BOOT_ATTEMPTS} failed: {exc}"
@@ -100,7 +101,7 @@ def workbook_boot_section(serial_port: int, host_side: str, password: str,
         + tr(language,
              "Log in as `root` (the live ISO has no root password yet), set the"
              " root password the install's SSH transport will use, and read the"
-             " guest's DHCP address:") + "\n\n"
+             " guest's DHCP addresses:") + "\n\n"
         + "```\n"
         + "archiso login: root\n"
         + f"root@archiso ~ # passwd -s <<< '{password}'\n"

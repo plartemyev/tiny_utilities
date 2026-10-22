@@ -186,6 +186,14 @@ class InstallConfig:
     timezone: str = ""
     opencode: bool = False
     opencode_password: str | None = None
+    # VirtualBox dual-NIC: the host-only NIC's MAC and the static address
+    # (CIDR) pinned for it. Empty on every other target: no profile is
+    # written. The static profile (not a DHCP lease) is what keeps the
+    # address deterministic — VirtualBox's host-only DHCP server matches
+    # per-MAC fixed-address configs against the DHCP client-id option,
+    # which NetworkManager sends, so a server-side binding goes unheard.
+    hostonly_mac: str = ""
+    hostonly_address: str = ""
 
 
 def opencode_unit(opencode_password: str) -> str:
@@ -581,6 +589,31 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
                 " keeps accurate."
             )),
         ] if cfg.virt == "oracle" else []),
+        *([
+            Step("Pinning the host-only network address", (
+                _heredoc("cat > /etc/NetworkManager/system-connections/hostonly.nmconnection <<'HOSTONLY'",
+                         "[connection]",
+                         "id=hostonly",
+                         "type=ethernet",
+                         "[ethernet]",
+                         f"mac-address={_mac_colons(cfg.hostonly_mac)}",
+                         "[ipv4]",
+                         "method=manual",
+                         f"address1={cfg.hostonly_address}",
+                         "[ipv6]",
+                         "method=disabled",
+                         "HOSTONLY"),
+                "chmod 600 /etc/NetworkManager/system-connections/hostonly.nmconnection",
+            ), rationale=(
+                "The host-only NIC is the fast host<->guest path (SSH transport, local"
+                " mirror). Its address is pinned statically, keyed by MAC: VirtualBox's"
+                " host-only DHCP server matches per-MAC fixed-address configs against"
+                " the DHCP client-id option, which NetworkManager sends, so a"
+                " server-side binding alone is not honored. The profile hands out no"
+                " gateway or DNS — both stay on the NAT NIC, keeping roaming behaviour"
+                " unchanged."
+            )),
+        ] if cfg.virt == "oracle" and cfg.hostonly_mac else []),
         Step("Installing the DNS fallback NetworkManager dispatcher", (
             _heredoc("cat > /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback <<'DNS_HOOK'",
                      *_DNS_FALLBACK_HOOK, "DNS_HOOK"),
@@ -737,6 +770,18 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
 
 def _heredoc(start: str, *lines: str) -> str:
     return "\n".join((start, *lines))
+
+
+def _mac_colons(mac: str) -> str:
+    """080027AB4315 -> 08:00:27:AB:43:15 (NetworkManager's MAC spelling).
+
+    Workbook renderings carry a {{HOSTONLY_MAC}} placeholder instead of a
+    real MAC; anything that is not a bare 12-hex-digit address passes
+    through untouched.
+    """
+    if re.fullmatch(r"[0-9A-Fa-f]{12}", mac) is None:
+        return mac
+    return ":".join(mac[index:index + 2] for index in range(0, len(mac), 2)).upper()
 
 
 def _mirrorlist_line(cfg: InstallConfig) -> str:

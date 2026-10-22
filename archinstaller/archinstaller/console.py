@@ -172,11 +172,13 @@ def set_live_password(console: SerialConsole, password: str,
         raise SerialError(f"passwd failed over serial (rc: {match and match.group(1)})")
 
 
-def await_guest_ip(console: SerialConsole) -> str:
-    """Poll the guest's global IPv4 until DHCP lands (bounded).
+def await_guest_addresses(console: SerialConsole) -> list[str]:
+    """Poll the guest's global IPv4 addresses until DHCP lands (bounded).
 
     DHCP races the serial login, and a dead link (e.g. an unbridged tap)
     never answers at all — hence a fixed poll budget instead of one shot.
+    Dual-NIC targets (VirtualBox NAT + host-only) lease two addresses;
+    the caller selects by subnet.
     """
     for _ in range(IP_POLL_TRIES):
         section = run_marked(console,
@@ -184,7 +186,7 @@ def await_guest_ip(console: SerialConsole) -> str:
                              COMMAND_TIMEOUT_S)
         addresses = parse_ips(section)
         if addresses:
-            return addresses[0]
+            return addresses
         time.sleep(IP_POLL_DELAY_S)
     raise SerialTimeout(
         f"no global IPv4 on the guest after {IP_POLL_TRIES} serial polls")

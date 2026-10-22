@@ -174,12 +174,25 @@ Hardware provisioned per backend:
 
 - **vbox**: UEFI, VMSVGA video (256 MB under `--graphical`, 16 MB console),
   NVMe VDI (host I/O cache enabled) attached with `--nonrotational on
-  --discard on`, virtio-net
-  on NAT with an SSH port forward `127.0.0.1:<port>` → `10.0.2.15:22` (free
-  ports auto-picked in 23950–24000; the guest address is asserted over
-  serial), serial port as a host TCP listener, HDA audio on the default host
-  driver, UTC RTC, shared clipboard, USB 3.0 (xHCI) when the Extension Pack
-  is installed.
+  --discard on`, two virtio-net NICs — NAT (the internet uplink; an SSH
+  port forward `127.0.0.1:<port>` → `10.0.2.15:22` is kept as the fallback
+  path, free ports auto-picked in 23950–24000) and a host-only adapter (the
+  fast host↔guest path: the SSH transport and the local package mirror ride
+  it; the install pins its address with a static NetworkManager profile
+  keyed by the NIC's MAC — VirtualBox's host-only DHCP server matches
+  per-MAC configs against the client-id option NetworkManager sends, so a
+  server-side binding alone is not honored), a serial
+  port as a host TCP listener, HDA audio on the default host driver, UTC
+  RTC, shared clipboard, USB 3.0 (xHCI) when the Extension Pack is
+  installed. The host-only network (`vboxnet0` plus its DHCP server) is
+  created automatically when missing.
+
+  The split is throughput-driven (iperf2, VBox 7.2.22): every NAT path is
+  capped by the userland NAT engine (~200–800 Mbit/s), while the host-only
+  bridge carries 1.2–2.5 Gbit/s with the same virtio NIC (SSH single-stream:
+  ~300 → ~630 Mbit/s). The NAT NIC stays the default route and the only DNS
+  source — the host-only DHCP server hands out neither — so roaming
+  behaviour is unchanged.
 - **libvirt** (`qemu:///system`): q35 + UEFI, `host-passthrough` CPU with
   `migratable='off'` and topology mirroring the host SMT shape, vCPUs pinned
   1:1 to the high host CPUs so sibling vCPUs of a guest core share one
@@ -208,7 +221,8 @@ both cases.
 Name collisions (existing VM/domain or volume) are an error — pass another
 `--hostname`. If the rebooted system is not reachable, stage two falls back
 per backend: libvirt looks up the domain's DHCP lease by MAC; VirtualBox
-needs nothing (the NAT port forward is fixed).
+first retries over the NAT port-forward (NIC1) before printing recovery
+steps.
 
 ## Graphical installs (`--graphical`)
 
@@ -276,9 +290,21 @@ template). Signing keys still come from their upstream `.asc` homes.
 
 The mirror host is the guest's default gateway for VM targets (the hypervisor
 host, static per backend — the URL survives host network roams) and the
-host's primary-interface IPv4 for physical targets. Reachability is verified
-via `/healthz` before anything destructive; there is no public fallback, so a
-mirror that dies mid-install fails the install.
+host's primary-interface IPv4 for physical targets. Provisioned VirtualBox
+targets instead use the host-only gateway (NIC2's `192.168.56.1` — the host
+itself at a forever-static address): the mirror traffic rides the fast
+host-only path instead of the capped NAT engine. That path ingresses on the
+host-only interface, so the host firewall needs a one-time exception (the
+tool falls back to the slower NAT-hairpin URL with a warning until it is
+in place):
+
+```bash
+firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.56.0/24 port port=8282 protocol=tcp accept'
+firewall-cmd --reload
+```
+
+Reachability is verified via `/healthz` before anything destructive; there
+is no public fallback, so a mirror that dies mid-install fails the install.
 
 ## opencode service (`--opencode`)
 

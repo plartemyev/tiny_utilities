@@ -508,10 +508,10 @@ _EXACT: dict[str, str] = {
 
     "Log in as `root` (the live ISO has no root password yet), set the"
     " root password the install's SSH transport will use, and read the"
-    " guest's DHCP address:":
+    " guest's DHCP addresses:":
         "Войдите как `root` (в live-ISO ещё нет пароля root), задайте пароль"
         " root, который будет использовать SSH-транспорт установки, и считайте"
-        " DHCP-адрес гостевой системы:",
+        " DHCP-адреса гостевой системы:",
 }
 
 
@@ -569,10 +569,12 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
     # provision workbook prose
     (re.compile(r"Provision the VirtualBox VM '(?P<name>[^']*)' \(serial line"
-                r" on TCP (?P<serial>\d+), SSH port forward"
-                r" 127\.0\.0\.1:(?P<ssh>\d+)\):"),
+                r" on TCP (?P<serial>\d+), SSH over the host-only network at"
+                r" the pinned address; NAT port-forward"
+                r" 127\.0\.0\.1:(?P<ssh>\d+) is the fallback\):"),
      "Создание ВМ VirtualBox '{name}' (последовательная линия на TCP {serial},"
-     " проброс SSH-порта 127.0.0.1:{ssh}):"),
+     " SSH через host-only сеть на закреплённом адресе; проброс SSH-порта"
+     " 127.0.0.1:{ssh} — резервный путь):"),
     (re.compile(r"> The VirtualBox Extension Pack is not installed on this"
                 r" host; USB 3\.0 \(xHCI\) is not enabled\. After installing"
                 r" it, run `vboxmanage modifyvm (?P<name>[^`]+) --usb-xhci on`"

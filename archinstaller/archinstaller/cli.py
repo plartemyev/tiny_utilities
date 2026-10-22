@@ -48,6 +48,21 @@ DEFAULT_LOGIN_PASSWORD = "local0instaLl"
 GENERATED_PASSWORD_LENGTH = 10
 OPENCODE_WEB_USER = "opencode"  # server-side basic-auth username, fixed by opencode v2
 LOCAL_MIRROR_PORT = 8282  # arch-cache-mirror sibling project, host-published port
+PF_FALLBACK_TIMEOUT_S = 90  # NAT port-forward retry after a host-only miss
+
+
+def _hostonly_mirror_hint(hostonly) -> str:
+    """The one-time host firewall command the fast mirror path needs.
+
+    Guest→host traffic ingresses on the host-only interface, which lands
+    in the default firewalld zone; the NAT-hairpin fallback bypasses the
+    host firewall entirely (host-local delivery), which is why the fast
+    path alone needs this exception.
+    """
+    return ("guest→host on the host-only network is firewalled by default; run "
+            "once on the host: firewall-cmd --permanent --add-rich-rule="
+            f"'rule family=ipv4 source address={hostonly.network} port "
+            f"port={LOCAL_MIRROR_PORT} protocol=tcp accept' && firewall-cmd --reload")
 
 # workbook placeholders: rendered instead of passwords unless --with-passwords
 PLACEHOLDER_ROOT = "{{ROOT_PASSWORD}}"
@@ -299,23 +314,37 @@ def _run_provisioned(args: argparse.Namespace) -> None:
     args.discard = True  # both backends are provisioned for TRIM forwarding
     print(f"Provisioning {args.provision} VM {hostname!r} ({args.cores} vCPUs, "
           f"{args.ram_gib} GiB RAM, {args.disk_size_gib} GiB disk) ...")
-    serial_port, ssh_port = backend.provision(
+    serial_port, ssh_port, hostonly = backend.provision(
         hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
         cores=args.cores, iso_path=os.path.expanduser(args.iso_path),
         graphical=args.graphical)
-    guest_ip = provision.boot_with_serial(
+    guest_addresses = provision.boot_with_serial(
         restart=lambda: backend.restart(hostname), keys=keys,
         serial_port=serial_port, password=login_password)
+    mirror_override = None
+    mirror_hint = None
     if args.provision == "vbox":
-        provision_vbox.ensure_nat_address(guest_ip)
-        print(f"Guest address (serial): {guest_ip}; "
-              f"host side: 127.0.0.1:{ssh_port}")
-    args.target = "127.0.0.1" if args.provision == "vbox" else guest_ip
-    args.target_port = ssh_port
-    local_mirror = _local_mirror_url(args)
+        nat_ip, hostonly_ip = provision_vbox.select_guest_addresses(
+            guest_addresses, hostonly)
+        print(f"Guest addresses (serial): NAT {nat_ip}, host-only {hostonly_ip}; "
+              f"SSH goes over the host-only path, 127.0.0.1:{ssh_port} "
+              "(the NAT port-forward) stays as the fallback")
+        args.target = hostonly_ip
+        args.target_port = 22
+    else:
+        args.target = guest_addresses[0]
+        args.target_port = ssh_port
+    lan_mirror = _local_mirror_url(args)
+    if hostonly is not None and lan_mirror is not None:
+        # NIC2's gateway is the host itself at a forever-static address;
+        # the LAN-IP URL stays as the (slower, NAT-hairpin) fallback for
+        # hosts without the one-time firewall exception.
+        mirror_override = f"http://{hostonly.gateway}:{LOCAL_MIRROR_PORT}"
+        mirror_hint = _hostonly_mirror_hint(hostonly)
     _run_installation(args, hostname, login_password, root_password, user_password,
                       opencode_password, public_key, jump=None, guest_reboot=False,
-                      local_mirror=local_mirror)
+                      local_mirror=lan_mirror, mirror_override=mirror_override,
+                      mirror_hint=mirror_hint, hostonly=hostonly)
     state_path = _state_path(hostname)
     _save_state(state_path, _state_object(args, hostname, root_password,
                                           user_password, opencode_password,
@@ -327,13 +356,26 @@ def _run_provisioned(args: argparse.Namespace) -> None:
     clear_stale_host_key(args.target, args.target_port)
     if not wait_for_ssh(args.target, args.target_port, args.username, None,
                         args.reboot_timeout, None, key_filename=private_key):
-        found = backend.find_booted_target(hostname)
-        if not found:
-            _print_recovery_instructions(state_path)
-            sys.exit(1)
-        print(f"Target found at {found} (was {args.target}).")
-        args.target = found
-        clear_stale_host_key(args.target, args.target_port)
+        recovered = False
+        if args.provision == "vbox":
+            # NIC1's NAT port-forward is the documented fallback path when
+            # the host-only lease did not come back after the reboot.
+            print(f"{args.target} did not come back; trying the NAT "
+                  f"port-forward 127.0.0.1:{ssh_port} ...")
+            clear_stale_host_key("127.0.0.1", ssh_port)
+            recovered = wait_for_ssh("127.0.0.1", ssh_port, args.username,
+                                     None, PF_FALLBACK_TIMEOUT_S, None,
+                                     key_filename=private_key)
+            if recovered:
+                args.target, args.target_port = "127.0.0.1", ssh_port
+        if not recovered:
+            found = backend.find_booted_target(hostname)
+            if not found:
+                _print_recovery_instructions(state_path)
+                sys.exit(1)
+            print(f"Target found at {found} (was {args.target}).")
+            args.target = found
+            clear_stale_host_key(args.target, args.target_port)
     _finish_install(args, hostname, user_password, opencode_password,
                     generated_notes, private_key, None, state_path)
 
@@ -405,6 +447,12 @@ def _run_workbook(args: argparse.Namespace) -> None:
         timezone=args.timezone,
         opencode=args.opencode,
         opencode_password=opencode_password,
+        # provisioned vbox: the MAC exists only after createvm, so the
+        # rendered profile carries a placeholder like the passwords do
+        hostonly_mac="{{HOSTONLY_MAC}}" if args.provision == "vbox" else "",
+        hostonly_address=(f"{provision_vbox.HOSTONLY_GATEWAY.rsplit('.', 1)[0]}"
+                          f".{provision_vbox.HOSTONLY_STATIC_FIRST}/24"
+                          if args.provision == "vbox" else ""),
     )
     workbook = build_workbook(cfg, passwords_embedded=embed,
                               provision=provision_md, language=args.language)
@@ -440,8 +488,11 @@ def _provision_workbook_section(args: argparse.Namespace, hostname: str,
             hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
             cores=args.cores, iso_path=iso_path, graphical=args.graphical,
             serial_port=serial_port, ssh_port=ssh_port, language=language)
-        host_side = (f"127.0.0.1:{ssh_port} (the NAT port forward; the guest "
-                     f"itself is {provision_vbox.GUEST_ADDRESS})")
+        host_side = (f"{provision_vbox.HOSTONLY_GATEWAY.rsplit('.', 1)[0]}"
+                     f".{provision_vbox.HOSTONLY_STATIC_FIRST} on the host-only"
+                     " network (the NAT port-forward 127.0.0.1:"
+                     f"{ssh_port} is the fallback; the guest's NAT address is "
+                     f"{provision_vbox.GUEST_ADDRESS})")
     else:
         serial_port = provision_libvirt.pick_free_ports(1)[0]
         network, needs_start = provision_libvirt.plan_network()
@@ -733,6 +784,9 @@ def _run_installation(
     jump: JumpConfig | None,
     guest_reboot: bool = True,
     local_mirror: str | None = None,
+    mirror_override: str | None = None,
+    mirror_hint: str | None = None,
+    hostonly: "provision_vbox.HostonlyConfig | None" = None,
 ) -> None:
     print(f"Connecting to live environment {args.target}:{args.target_port} ...")
     conn = connect_target(args.target, args.target_port, args.login_user, login_password, jump)
@@ -760,7 +814,16 @@ def _run_installation(
                   "enabling guest discard support.")
             discard = True
         lan_mirror = None
-        if local_mirror is not None and virt != "none":
+        if local_mirror is not None and mirror_override is not None:
+            # Provisioned VirtualBox: NIC2's gateway is the host itself at
+            # a forever-static address (the LAN-IP URL would roam); the
+            # NAT-hairpin LAN URL remains the slower fallback.
+            lan_mirror = local_mirror
+            local_mirror = mirror_override
+            print(f"VM target: advertising the local mirror via the host-only "
+                  f"gateway {mirror_override} (static; survives host network "
+                  f"roams)")
+        elif local_mirror is not None and virt != "none":
             # VM targets: the guest's default gateway is the hypervisor host
             # with a per-backend static address - prefer it over the host's
             # roaming LAN IP so installs keep working after network changes.
@@ -781,7 +844,8 @@ def _run_installation(
         _ensure_live_dns(conn.client)
         if local_mirror is not None:
             local_mirror = _ensure_local_mirror(conn.client, local_mirror,
-                                                fallback_url=lan_mirror)
+                                                fallback_url=lan_mirror,
+                                                hint=mirror_hint)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -799,6 +863,8 @@ def _run_installation(
             timezone=args.timezone,
             opencode=args.opencode,
             opencode_password=opencode_password,
+            hostonly_mac=hostonly.mac if hostonly else "",
+            hostonly_address=hostonly.guest_cidr if hostonly else "",
         )
         print(f"Uploading installation script to {INSTALL_SCRIPT_PATH} ...")
         upload_text(conn.client, build_install_script(cfg), INSTALL_SCRIPT_PATH)
@@ -882,7 +948,8 @@ def _target_gateway(conn: SshConnection) -> str | None:
 
 
 def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
-                         fallback_url: str | None = None) -> str:
+                         fallback_url: str | None = None,
+                         hint: str | None = None) -> str:
     """Verify the live environment can reach the local arch-cache-mirror.
 
     With --local-mirror the mirror is the only pacman source (the
@@ -890,8 +957,9 @@ def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
     before pacstrap starts instead of failing deep inside it. Returns the
     URL that passed the probe; when the primary URL is unreachable and a
     fallback_url is given (VM targets: the host LAN IP behind the
-    gateway-alias URL - VBox NAT refuses guest TCP to the 10.0.2.2 alias,
-    verified on 7.2.22), the fallback is probed and returned instead.
+    gateway-alias or host-only URL), the fallback is probed and returned
+    instead - with a warning, because the fallback path is the slower
+    NAT-hairpin one on dual-NIC VirtualBox targets.
     """
     if run_capture(client, f"curl -fsS --max-time 8 {base_url}/healthz",
                    timeout=30)[0] == 0:
@@ -902,11 +970,15 @@ def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
         if run_capture(client,
                        f"curl -fsS --max-time 8 {fallback_url}/healthz",
                        timeout=30)[0] == 0:
+            print(f"WARNING: continuing over the slower NAT-hairpin path."
+                  + (f" {hint}" if hint else ""))
             return fallback_url
-    sys.exit(f"the local mirror {base_url} is not reachable from the target "
-             "(is the arch-cache-mirror container running and publishing port "
-             f"{LOCAL_MIRROR_PORT} on the primary interface?); rerun with a "
-             "working mirror or without --local-mirror")
+    message = (f"the local mirror {base_url} is not reachable from the target "
+               "(is the arch-cache-mirror container running and publishing port "
+               f"{LOCAL_MIRROR_PORT} on the primary interface?)")
+    if hint:
+        message += f"; {hint}"
+    sys.exit(message + "; rerun with a working mirror or without --local-mirror")
 
 
 def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> None:

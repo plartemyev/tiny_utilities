@@ -42,9 +42,12 @@ class LibvirtError(RuntimeError):
 
 
 def provision(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
-              iso_path: str, graphical: bool,
-              uri: str = DEFAULT_URI) -> tuple[int, int]:
-    """Create, define and start the VM; return (serial port, 22).
+              iso_path: str, graphical: bool, uri: str = DEFAULT_URI
+              ) -> tuple[int, int, None]:
+    """Create, define and start the VM.
+
+    Returns (serial port, 22, None) — the third element mirrors the
+    VirtualBox backend's host-only handle; libvirt has none.
 
     The VM is reached from the host at its DHCP address directly (NAT
     and routed networks) or via the bridge, so no port forward exists.
@@ -68,7 +71,7 @@ def provision(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
     _define(uri, xml, f"archinstaller-provision-{name}.xml")
     print(f"libvirt network: {network[0]} {network[1]}; starting VM ...")
     _run(uri, "start", name)
-    return serial_port, 22
+    return serial_port, 22, None
 
 
 def restart(name: str, uri: str = DEFAULT_URI) -> None:

@@ -11,6 +11,9 @@ packages = [
     { include = "archinstaller" },
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.poetry.scripts]
 archinstaller = "archinstaller.__main__:main"
 

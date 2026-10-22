@@ -106,25 +106,35 @@ def test_set_live_password_fails_on_nonzero_rc():
     raise AssertionError("expected SerialError on rc=1")
 
 
-def test_await_guest_ip_polls_until_dhcp_lands(monkeypatch):
+def test_await_guest_addresses_polls_until_dhcp_lands(monkeypatch):
     fake = FakeSerial([
         b"AIBEGIN\nAIEND",  # DHCP not there yet
         b"AIBEGIN\n2: enp1s0    inet 192.168.122.188/24 scope global\nAIEND",
     ])
     sleeps = []
     monkeypatch.setattr(console.time, "sleep", lambda seconds: sleeps.append(seconds))
-    ip = console.await_guest_ip(fake)
-    assert ip == "192.168.122.188"
+    ips = console.await_guest_addresses(fake)
+    assert ips == ["192.168.122.188"]
     assert len(fake.sent) == 2
     # run_marked's settle sleeps are in there too; exactly one is a poll delay
     assert sleeps.count(console.IP_POLL_DELAY_S) == 1
 
 
-def test_await_guest_ip_gives_up_after_bounded_polls(monkeypatch):
+def test_await_guest_addresses_returns_every_dual_nic_lease(monkeypatch):
+    fake = FakeSerial([
+        b"AIBEGIN\nAIEND",  # DHCP not there yet
+        b"AIBEGIN\n2: enp0s3    inet 10.0.2.15/24 scope global\n"
+        b"    3: enp0s8    inet 192.168.56.50/24 scope global\nAIEND",
+    ])
+    monkeypatch.setattr(console.time, "sleep", lambda seconds: None)
+    assert console.await_guest_addresses(fake) == ["10.0.2.15", "192.168.56.50"]
+
+
+def test_await_guest_addresses_gives_up_after_bounded_polls(monkeypatch):
     fake = FakeSerial([b"AIBEGIN\nAIEND"] * (console.IP_POLL_TRIES + 5))
     monkeypatch.setattr(console.time, "sleep", lambda seconds: None)
     try:
-        console.await_guest_ip(fake)
+        console.await_guest_addresses(fake)
     except SerialTimeout:
         assert len(fake.sent) == console.IP_POLL_TRIES
         return

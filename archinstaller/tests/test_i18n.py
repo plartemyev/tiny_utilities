@@ -113,9 +113,11 @@ def test_workbook_chrome_patterns():
 def test_provision_prose_patterns():
     vbox_intro = i18n.tr(
         "ru", "Provision the VirtualBox VM 'h1' (serial line on TCP 23950,"
-              " SSH port forward 127.0.0.1:23951):")
+              " SSH over the host-only network at the pinned address; NAT"
+              " port-forward 127.0.0.1:23951 is the fallback):")
     assert "Создание ВМ VirtualBox 'h1'" in vbox_intro
     assert "TCP 23950" in vbox_intro and "127.0.0.1:23951" in vbox_intro
+    assert "резервный путь" in vbox_intro
     libvirt_intro = i18n.tr(
         "ru", "Provision the libvirt domain 'h1' on qemu:///system (network:"
               " default active, serial line on TCP 23950):")
