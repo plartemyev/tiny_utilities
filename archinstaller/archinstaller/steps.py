@@ -427,6 +427,19 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
                 " engineering and security tooling on top of the console toolbox."
             )),
         )
+    if cfg.opencode and not cfg.devel:
+        # opencode sits in CONSOLE_DEVEL_PACKAGES; without this step
+        # --opencode would still create the user unit in stage two, whose
+        # ExecStart then dies with status 203/EXEC (no binary).
+        steps.append(
+            Step("Installing opencode (long step)", (
+                "retry pacman -Sy --needed --noconfirm opencode",
+            ), rationale=(
+                "Requested with --opencode: the stage-two user service needs"
+                " the /usr/bin/opencode binary, which otherwise only ships"
+                " with --devel."
+            )),
+        )
     if cfg.graphical:
         steps.extend([
             Step("Installing Xlibre X server (long step)", (

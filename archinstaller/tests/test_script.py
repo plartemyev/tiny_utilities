@@ -39,18 +39,6 @@ def test_script_partitions_nvme_disks_with_p_names():
     assert "mount --mkdir '/dev/nvme0n1p1' /mnt/new-root/boot" in script
 
 
-def test_install_script_releases_target_mounts_before_exit():
-    # the script must exit with /mnt/new-root unmounted so the host-side
-    # poweroff (clean or forced) never races a pending write
-    script = build_install_script(make_cfg())
-    cleanup = script.index("Releasing the target mounts and swap")
-    assert "swapoff -a 2>/dev/null || true" in script[cleanup:]
-    umount_at = script.index("umount -R /mnt/new-root 2>/dev/null || true",
-                             cleanup)
-    # the chroot heredoc closed before the cleanup step starts
-    assert script.rindex("CHROOT\n", 0, umount_at) < cleanup
-
-
 def test_grub_install_registers_entry_and_removable_fallback():
     script = build_install_script(make_cfg())
     entry = "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
@@ -292,6 +280,32 @@ def test_devel_flag_selects_the_development_lists():
         "Installing graphical development packages")
     assert both.index("Installing graphical development packages") < both.index(
         "Enabling sonic-login-manager display manager")
+
+
+def test_opencode_flag_installs_the_binary_without_devel():
+    # opencode the package lives in the devel list; --opencode alone used to
+    # create only the stage-two user unit, whose ExecStart then died with
+    # status 203/EXEC (no /usr/bin/opencode on the system)
+    plain = build_install_script(make_cfg(opencode=True, opencode_password="pw"))
+    assert "Installing opencode" in plain
+    assert "noconfirm opencode\n" in plain
+
+    devel = build_install_script(make_cfg(devel=True, opencode=True,
+                                          opencode_password="pw"))
+    assert "Installing opencode" not in devel  # ships with the devel list
+    assert "opencode" in devel  # CONSOLE_DEVEL_PACKAGES carries the binary
+
+
+def test_install_script_releases_target_mounts_before_exit():
+    # the script must exit with /mnt/new-root unmounted so the host-side
+    # poweroff (clean or forced) never races a pending write
+    script = build_install_script(make_cfg())
+    cleanup = script.index("Releasing the target mounts and swap")
+    assert "swapoff -a 2>/dev/null || true" in script[cleanup:]
+    umount_at = script.index("umount -R /mnt/new-root 2>/dev/null || true",
+                             cleanup)
+    # the chroot heredoc closed before the cleanup step starts
+    assert script.rindex("CHROOT\n", 0, umount_at) < cleanup
 
 
 def test_no_soniclogin_autologin_without_graphical():

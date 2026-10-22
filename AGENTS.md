@@ -106,6 +106,12 @@
       VBoxManage call at 60 s (showvminfo can block behind VBoxSVC's machine lock during frontend
       teardown). Recovery recipe for a crashed finalize: state file survives → poweroff/eject ISO
       (`storageattach ... --medium emptydrive`)/`--boot1 disk`/`startvm` → `archinstaller resume <state>`.
+    - `--opencode` without `--devel` used to create only the stage-two user unit: the `opencode` PACKAGE
+      lives in `packages/console-devel.txt`, so the unit's `ExecStart=/usr/bin/opencode` died with
+      status 203/EXEC and stage two aborted at the service poll. `install_steps` now appends an explicit
+      `pacman -Sy opencode` step when `cfg.opencode and not cfg.devel`. On an affected guest:
+      `pacman -Sy opencode` + `systemctl --user reset-failed opencode.service` (the start-limit-hit from
+      the EXEC loop also blocks plain restarts), then re-run `resume` (its steps are idempotent).
     - VirtualBox discard/TRIM forwarding (guest TRIM shrinking the VDI; wired into archinstaller as
       `vbox.enable_discard` + guest-side fstrim/swap/root-discard config): `--discard on` and
       `--nonrotational on` are **per-attachment** flags on `VBoxManage storageattach` (not `modifyvm`),
