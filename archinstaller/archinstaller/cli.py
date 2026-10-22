@@ -323,12 +323,14 @@ def _run_provisioned(args: argparse.Namespace) -> None:
     mirror_override = None
     mirror_hint = None
     if args.provision == "vbox":
-        nat_ip, hostonly_ip = provision_vbox.select_guest_addresses(
+        nat_ip, live_hostonly_ip = provision_vbox.select_guest_addresses(
             guest_addresses, hostonly)
-        print(f"Guest addresses (serial): NAT {nat_ip}, host-only {hostonly_ip}; "
-              f"SSH goes over the host-only path, 127.0.0.1:{ssh_port} "
-              "(the NAT port-forward) stays as the fallback")
-        args.target = hostonly_ip
+        print(f"Guest addresses (serial): NAT {nat_ip}, host-only "
+              f"{live_hostonly_ip}; the live install runs over SSH there, "
+              f"while the installed system will sit at the pinned "
+              f"{hostonly.guest_ip} (127.0.0.1:{ssh_port}, the NAT "
+              "port-forward, stays as the fallback)")
+        args.target = live_hostonly_ip
         args.target_port = 22
     else:
         args.target = guest_addresses[0]
@@ -344,6 +346,12 @@ def _run_provisioned(args: argparse.Namespace) -> None:
                       opencode_password, public_key, jump=None, guest_reboot=False,
                       local_mirror=lan_mirror, mirror_override=mirror_override,
                       mirror_hint=mirror_hint, hostonly=hostonly)
+    if args.provision == "vbox":
+        # Stage two waits at the pinned address: the installed system's
+        # static NM profile owns it, while the live environment's host-only
+        # lease is a dynamic pool address that dies with the ISO.
+        args.target = hostonly.guest_ip
+        print(f"Stage two will wait at the pinned host-only address {args.target}.")
     state_path = _state_path(hostname)
     _save_state(state_path, _state_object(args, hostname, root_password,
                                           user_password, opencode_password,

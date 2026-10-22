@@ -7,3 +7,4 @@ tmp/
 *.override.yml
 archinstaller-workbook-*.md
 arch-cache-mirror/dns-resolv.conf
+archinstaller-state-*.json
