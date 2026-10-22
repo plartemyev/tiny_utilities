@@ -51,7 +51,7 @@ LOCAL_MIRROR_PORT = 8282  # arch-cache-mirror sibling project, host-published po
 PF_FALLBACK_TIMEOUT_S = 90  # NAT port-forward retry after a host-only miss
 
 
-def _hostonly_mirror_hint(hostonly) -> str:
+def _hostonly_mirror_hint() -> str:
     """The one-time host firewall command the fast mirror path needs.
 
     Guest→host traffic ingresses on the host-only interface, which lands
@@ -60,9 +60,8 @@ def _hostonly_mirror_hint(hostonly) -> str:
     path alone needs this exception.
     """
     return ("guest→host on the host-only network is firewalled by default; run "
-            "once on the host: firewall-cmd --permanent --add-rich-rule="
-            f"'rule family=ipv4 source address={hostonly.network} port "
-            f"port={LOCAL_MIRROR_PORT} protocol=tcp accept' && firewall-cmd --reload")
+            "once on the host: firewall-cmd --permanent "
+            f"--add-port={LOCAL_MIRROR_PORT}/tcp && firewall-cmd --reload")
 
 # workbook placeholders: rendered instead of passwords unless --with-passwords
 PLACEHOLDER_ROOT = "{{ROOT_PASSWORD}}"
@@ -340,7 +339,7 @@ def _run_provisioned(args: argparse.Namespace) -> None:
         # the LAN-IP URL stays as the (slower, NAT-hairpin) fallback for
         # hosts without the one-time firewall exception.
         mirror_override = f"http://{hostonly.gateway}:{LOCAL_MIRROR_PORT}"
-        mirror_hint = _hostonly_mirror_hint(hostonly)
+        mirror_hint = _hostonly_mirror_hint()
     _run_installation(args, hostname, login_password, root_password, user_password,
                       opencode_password, public_key, jump=None, guest_reboot=False,
                       local_mirror=lan_mirror, mirror_override=mirror_override,

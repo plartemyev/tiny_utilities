@@ -296,10 +296,11 @@ itself at a forever-static address): the mirror traffic rides the fast
 host-only path instead of the capped NAT engine. That path ingresses on the
 host-only interface, so the host firewall needs a one-time exception (the
 tool falls back to the slower NAT-hairpin URL with a warning until it is
-in place):
+in place); the opened port also serves physical LAN targets, which reach
+the same mirror on the host's LAN address:
 
 ```bash
-firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.56.0/24 port port=8282 protocol=tcp accept'
+firewall-cmd --permanent --add-port=8282/tcp
 firewall-cmd --reload
 ```
 
