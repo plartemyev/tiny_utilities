@@ -150,7 +150,7 @@ Transport — `install` only:
 | `--login-user` / `--login-password` | `root` / `local0instaLl` | live ISO credentials; with `--provision` the tool sets this password over serial itself |
 | `--jump-host`, `--jump-port`, `--jump-user`, `--jump-password` | — | SSH jump, like `ssh -J` (password prompted when omitted) |
 | `--install-timeout` | `7200` | seconds allowed for the install script |
-| `--reboot-timeout` | `900` | seconds to wait for SSH after the reboot |
+| `--reboot-timeout` | `60` | seconds to wait for SSH after the reboot |
 | `--no-subnet-scan` | off | disable the /24 hostname fallback scan |
 | `--vbox-vm NAME` | — | host-side reboot assist for an existing VirtualBox VM (+ discard flags on its disk attachments); incompatible with `--provision` |
 

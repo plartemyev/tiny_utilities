@@ -199,8 +199,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p_install.add_argument("--jump-password", help="jump host password (prompted if omitted)")
     p_install.add_argument("--install-timeout", type=int, default=7200,
                            help="seconds to wait for the install script (default: 7200)")
-    p_install.add_argument("--reboot-timeout", type=int, default=900,
-                           help="seconds to wait for SSH after reboot (default: 900)")
+    p_install.add_argument("--reboot-timeout", type=int, default=60,
+                           help="seconds to wait for SSH after reboot (default: 60)")
     p_install.add_argument("--no-subnet-scan", action="store_true",
                            help="do not scan the target's /24 for the machine if it came back "
                                 "at a different address (the scan verifies the configured hostname)")
