@@ -37,6 +37,6 @@ flush table ip lan-routed-bypass
 table ip lan-routed-bypass {
     chain prerouting {
         type nat hook prerouting priority dstnat - 1; policy accept;
-        iifname "virbr2" ip saddr 192.168.1.224/27 tcp dport 8282 dnat to :8282
+        iifname "virbr2" ip saddr 172.29.152.0/24 tcp dport 8282 dnat to :8282
     }
 }

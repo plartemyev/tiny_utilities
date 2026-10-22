@@ -466,7 +466,7 @@ table is owned by this unit alone: docker, libvirt and firewalld
 regenerate only their own tables, so it survives all of their restarts
 (including `firewall-cmd --reload`, which libvirt answers by re-applying
 its zone bindings).  Guests should address the mirror via the static
-`lan-routed` gateway (`http://192.168.1.225:8282`, this network's own
+`lan-routed` gateway (`http://172.29.152.225:8282`, this network's own
 address) instead of the host's roaming LAN IP; archinstaller does this
 automatically for VM targets by using the guest's default gateway.
 
