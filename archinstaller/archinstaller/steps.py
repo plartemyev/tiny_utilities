@@ -600,6 +600,20 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
                 " normal locking."
             )),
         ] if cfg.virt != "none" else []),
+        *([
+            Step("Enabling the SPICE agent daemon (kvm/qemu target)", (
+                "systemctl add-wants sockets.target spice-vdagentd.socket",
+            ), rationale=(
+                "spice-vdagentd.socket has no [Install] section, so nothing enables"
+                " or starts it: the session agent then skips itself (its"
+                " ConditionPathExists waits for the daemon's socket) and the guest"
+                " loses clipboard sharing and console-resize resolution following."
+                " add-wants creates the symlink `systemctl enable` refuses to; the"
+                " daemon itself activates on the first session-agent connection."
+                " Needs the domain's com.redhat.spice.0 spicevmc channel, which the"
+                " provisioning adds."
+            )),
+        ] if cfg.virt in ("kvm", "qemu") else []),
         Step(None, (
             f"chown -R {user}:{user} {home}/.config",
         ), spaced=False),

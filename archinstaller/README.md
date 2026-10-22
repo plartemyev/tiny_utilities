@@ -104,7 +104,7 @@ Guest adaptation by detected hypervisor:
 | Target | Adaptation |
 |---|---|
 | physical | none |
-| kvm / qemu | `qemu-guest-agent` enabled |
+| kvm / qemu | `qemu-guest-agent` enabled; graphical installs also enable the SPICE agent daemon (`spice-vdagentd.socket` has no `[Install]` section, so `systemctl add-wants` is used) |
 | oracle (VirtualBox) | `virtualbox-guest-utils` (graphical) or `-nox` (console), `vboxservice` enabled, HDA `position_fix=1` pin |
 | vmware | `open-vm-tools` on graphical installs |
 | everything else | `hyperv` / `qemu-guest-agent` sit in the base list, inert |
@@ -185,7 +185,9 @@ Hardware provisioned per backend:
   `discard='unmap' detect_zeroes='unmap'`, a guest-agent channel, virtio NIC
   on the first usable network (physical bridge → `lan-routed` → default NAT),
   ICH9 HD audio via the spice backend, spice with GL under `--graphical`
-  (local GL-less spice otherwise), TCP serial.
+  (local GL-less spice otherwise), a `com.redhat.spice.0` spicevmc agent
+  channel (the guest's spice-vdagent transport: clipboard sharing and
+  console-resize resolution following), TCP serial.
 
 Boot and install flow: at the ISO's systemd-boot menu the tool blindly types
 `e`, appends `console=ttyS0,115200` and boots (hypervisor keystrokes ~10 s

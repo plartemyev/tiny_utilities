@@ -12,7 +12,10 @@ freePageReporting and autodeflate hands unused pages back), a qcow2
 volume on virtio with discard/detect-zeroes unmap, a virtio NIC on the
 first usable network — physical bridge, then the lan-routed network,
 then default NAT — spice per the graphical flag, an ICH9 HD Audio
-device routed through the spice audio backend, and a TCP serial port
+device routed through the spice audio backend, a spicevmc agent
+channel (com.redhat.spice.0) so the guest's spice-vdagent can talk
+to the spice server (clipboard sharing, console-resize resolution
+following), and a TCP serial port
 for the blind boot-menu injection and the console session.
 """
 from __future__ import annotations
@@ -303,6 +306,8 @@ def domain_xml(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
         "    </disk>",
         ("    <channel type='unix'><target type='virtio' "
          "name='org.qemu.guest_agent.0'/></channel>"),
+        ("    <channel type='spicevmc'><target type='virtio' "
+         "name='com.redhat.spice.0'/></channel>"),
         *_interface(network),
         "    <serial type='tcp'>",
         "      <source mode='bind' host='127.0.0.1' "

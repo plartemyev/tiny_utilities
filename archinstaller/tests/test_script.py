@@ -98,6 +98,20 @@ def test_graphical_physical_targets_keep_screen_locking():
     assert "Lock Session" not in script
 
 
+def test_graphical_kvm_targets_enable_the_spice_agentd_socket():
+    script = build_install_script(make_cfg(graphical=True, virt="kvm"))
+    assert "systemctl add-wants sockets.target spice-vdagentd.socket" in script
+
+
+def test_spice_agentd_socket_only_enabled_on_spice_graphics():
+    for virt in ("none", "oracle", "vmware", "microsoft"):
+        script = build_install_script(make_cfg(graphical=True, virt=virt))
+        assert "spice-vdagentd.socket" not in script, virt
+    # console installs install no spice-vdagent at all
+    script = build_install_script(make_cfg(graphical=False, virt="kvm"))
+    assert "spice-vdagentd.socket" not in script
+
+
 def test_dns_fallback_dispatcher_installed_in_base_system():
     script = build_install_script(make_cfg())
     assert ("cat > /etc/NetworkManager/dispatcher.d/90-archinstaller-dns-fallback"

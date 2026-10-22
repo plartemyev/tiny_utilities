@@ -100,6 +100,7 @@ def test_domain_xml_matches_the_spec_graphical():
         "<target dev='vda' bus='virtio'/>",
         "<source file='/iso/arch.iso'/>",
         "<channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>",
+        "<channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>",
         "<source bridge='lan0'/>",
         "<model type='virtio'/>",
         "service='23950'",
