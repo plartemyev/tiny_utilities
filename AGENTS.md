@@ -87,6 +87,25 @@
       the `resume <state-file>` subcommand finishes a previous run's post-boot stage; the state file
       (`archinstaller-state-<hostname>.json`, mode 0600, holds generated passwords) is written before the
       reboot and deleted on success;
+    - VirtualBox power-off finalization (hit 2026-10-22, three identical `--provision vbox`
+      finalize crashes with "did not power off in time" while the VM was already off): ROOT CAUSE was
+      `_is_powered_off` matching VMState="poweroffed" — a string `showvminfo --machinereadable` never
+      reports; the real state string is **"poweroff"**. The matcher never matched, so every wait
+      exhausted its budget on an already-off machine and the hard-poweroff fallback's transient
+      "Machine 'X' is not currently running." error got swallowed in between. Unit tests replicated the
+      fiction by mocking "poweroffed". Fixed by matching ("poweroff", "aborted"); the
+      ARCHINSTALLER_VBOX_TRACE=1 trace (logs every vboxmanage call with rc + parsed VMState) is what
+      exposed it. Guest ACPI-shutdown duration after the button varies widely (10 s to ~100 s across
+      runs — a stop-job stall, see the 2026-10-03 hang notes), so the escalation ladder stands:
+      ACPI button → hard controlvm poweroff (short wait) → `startvm <vm> --type emergencystop`.
+      Probe-verified on 7.2.22: `controlvm poweroff` on an off VM says "not currently running",
+      `startvm --type emergencystop` on an off VM says "not locked by a session"
+      (VBOX_E_INVALID_OBJECT_STATE) — both are the goal state already reached, not failures. Caveat:
+      an emergency stop leaves VMState="aborted" and skips the clean NVRAM flush; tolerated because
+      installs boot via the \EFI\BOOT\BOOTX64.EFI fallback. Also: `vbox._run` now bounds every
+      VBoxManage call at 60 s (showvminfo can block behind VBoxSVC's machine lock during frontend
+      teardown). Recovery recipe for a crashed finalize: state file survives → poweroff/eject ISO
+      (`storageattach ... --medium emptydrive`)/`--boot1 disk`/`startvm` → `archinstaller resume <state>`.
     - VirtualBox discard/TRIM forwarding (guest TRIM shrinking the VDI; wired into archinstaller as
       `vbox.enable_discard` + guest-side fstrim/swap/root-discard config): `--discard on` and
       `--nonrotational on` are **per-attachment** flags on `VBoxManage storageattach` (not `modifyvm`),

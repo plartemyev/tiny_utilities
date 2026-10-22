@@ -12,11 +12,15 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import time
 
 VBOX_MANAGE = "vboxmanage"
 VMSTATE_POLL_SECONDS = 2
 VMSTATE_POLL_TRIES = 30  # 30 * 2s per wait phase
+HARD_STOP_POLL_TRIES = 5  # a forced stop completes in sub-second once it lands
+COMMAND_TIMEOUT_S = 60  # VBoxManage calls are fast; a hang means a VBoxSVC lock
+_TRACE = bool(os.environ.get("ARCHINSTALLER_VBOX_TRACE"))
 
 
 class VboxError(RuntimeError):
@@ -43,15 +47,53 @@ def vm_info(vm: str) -> dict[str, str]:
 
 
 def poweroff(vm: str) -> None:
-    """Cleanly power the VM off; falls back to a hard stop on timeout."""
-    if vm_info(vm).get("VMState") == "poweroffed":
+    """Cleanly power the VM off, escalating when the guest stalls.
+
+    Already-off states need nothing: 'poweroff' is the goal, and
+    'aborted' (the frontend process died, e.g. a VirtualBoxVM GUI crash
+    during exit) means no VM is running anymore either.
+
+    Ladder: the ACPI button opens a clean-shutdown window; a guest that
+    outlasts it gets a hard controlvm poweroff; if even that fails to
+    land (it can error transiently while the VM is mid-teardown, and a
+    live ISO may legitimately need minutes to finish its own ACPI
+    shutdown), the emergency stop kills the VM process outright. The
+    emergency stop leaves VMState="aborted" and skips the clean NVRAM
+    flush - tolerated here: installs boot via the \\EFI\\BOOT\\BOOTX64.EFI
+    fallback bootloader instead of stored firmware entries.
+    """
+    if _is_powered_off(vm):
         return
     _run("controlvm", vm, "acpipowerbutton")
     try:
         _wait_powered_off(vm)
     except VboxError:
+        pass  # slow guest teardown or a dead button: escalate below
+    if _is_powered_off(vm):
+        return
+    try:
         _run("controlvm", vm, "poweroff")
-        _wait_powered_off(vm)
+    except VboxError as exc:
+        # the VM can enter its own shutdown (or exit) between the checks
+        # and the hard stop; VBoxManage then refuses with "not currently
+        # running" although the goal is already reached or imminent
+        if "not currently running" not in str(exc):
+            raise
+    try:
+        _wait_powered_off(vm, tries=HARD_STOP_POLL_TRIES)
+    except VboxError:
+        pass  # the hard stop failed to land: last resort below
+    if _is_powered_off(vm):
+        return
+    try:
+        _run("startvm", vm, "--type", "emergencystop")
+    except VboxError as exc:
+        # off-by-now again: emergencystop reports the machine as not
+        # locked by a session (or not currently running)
+        if ("not locked by a session" not in str(exc)
+                and "not currently running" not in str(exc)):
+            raise
+    _wait_powered_off(vm)
 
 
 def reset_nvram(vm: str) -> str:
@@ -112,16 +154,39 @@ def start(vm: str, headless: bool = False) -> None:
     _run(*args)
 
 
-def _wait_powered_off(vm: str) -> None:
-    for _ in range(VMSTATE_POLL_TRIES):
-        if vm_info(vm).get("VMState") == "poweroffed":
+def _is_powered_off(vm: str) -> bool:
+    # showvminfo reports "poweroff" (not "poweroffed") - a wrong expected
+    # string here made every wait poll forever on an already-off machine
+    return vm_info(vm).get("VMState") in ("poweroff", "aborted")
+
+
+def _wait_powered_off(vm: str, tries: int = VMSTATE_POLL_TRIES) -> None:
+    for _ in range(tries):
+        if _is_powered_off(vm):
             return
         time.sleep(VMSTATE_POLL_SECONDS)
     raise VboxError(f"VM {vm!r} did not power off in time")
 
 
 def _run(*args: str) -> str:
-    proc = subprocess.run([VBOX_MANAGE, *args], capture_output=True, text=True, check=False)
+    if _TRACE:
+        print(f"[vbox {time.strftime('%H:%M:%S')}] $ {' '.join(args)}",
+              file=sys.stderr, flush=True)
+    try:
+        proc = subprocess.run([VBOX_MANAGE, *args], capture_output=True,
+                              text=True, check=False,
+                              timeout=COMMAND_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise VboxError(f"vboxmanage {' '.join(args)} timed out after "
+                        f"{COMMAND_TIMEOUT_S}s (VBoxSVC lock held?)")
+    if _TRACE:
+        state = ""
+        if args[0] == "showvminfo":
+            match = re.search(r'VMState="([^"]+)"', proc.stdout)
+            state = f" state={match.group(1)}" if match else ""
+        print(f"[vbox {time.strftime('%H:%M:%S')}] -> rc={proc.returncode}"
+              f"{state} {proc.stderr.strip()[:120]}",
+              file=sys.stderr, flush=True)
     if proc.returncode != 0:
         raise VboxError(f"vboxmanage {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout
