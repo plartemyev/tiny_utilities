@@ -122,6 +122,8 @@ _EXACT: dict[str, str] = {
         "Настройка вытеснения памяти гостевой системы (небольшой кэш страниц)",
     "Working around the frozen VirtualBox HDA DMA position reporting":
         "Обход остановки отчётов о DMA-позиции HDA в VirtualBox",
+    "Pinning the host-only network address":
+        "Закрепление адреса host-only сети",
     "Installing the DNS fallback NetworkManager dispatcher":
         "Установка обработчика NetworkManager для резервного DNS",
     "Installing and enabling firewalld":
@@ -449,6 +451,21 @@ _EXACT: dict[str, str] = {
         " кольцевого буфера ALSA — короткий фрагмент повторяется бесконечно."
         " position_fix=1 читает вместо буфера регистр LPIB, который эмуляция"
         " поддерживает точным.",
+
+    "The host-only NIC is the fast host<->guest path (SSH transport, local"
+    " mirror). Its address is pinned statically, keyed by MAC: VirtualBox's"
+    " host-only DHCP server matches per-MAC fixed-address configs against"
+    " the DHCP client-id option, which NetworkManager sends, so a"
+    " server-side binding alone is not honored. The profile hands out no"
+    " gateway or DNS — both stay on the NAT NIC, keeping roaming behaviour"
+    " unchanged.":
+        "Host-only адаптер — быстрый канал хост↔гость (SSH-транспорт,"
+        " локальное зеркало). Его адрес закреплён статически с привязкой к"
+        " MAC: DHCP-сервер host-only сети VirtualBox сопоставляет конфигурации"
+        " фиксированных адресов по MAC с опцией DHCP client-id, которую"
+        " отправляет NetworkManager, поэтому серверная привязка сама по себе"
+        " не учитывается. Профиль не выдаёт ни шлюза, ни DNS — оба остаются"
+        " на NAT-адаптере, и поведение при смене сетей не меняется.",
 
     "Probes the connection's DHCP DNS servers on every network event and uses"
     " them only while at least one answers, so router DNS, search domains and"

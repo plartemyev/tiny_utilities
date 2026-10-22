@@ -100,6 +100,8 @@ def test_russian_translation_covers_prose_keeps_commands():
     assert "## 1. Разметка диска /dev/vda (раздел ESP на 1 ГиБ, остальное — под корень)" in ru
     assert "Установка загрузчика GRUB" in ru
     assert "Обход остановки отчётов о DMA-позиции HDA в VirtualBox" in ru
+    assert "Закрепление адреса host-only сети" in ru
+    assert "Pinning the host-only network address" not in ru
     assert "Generating /etc/fstab" not in ru
     assert "> По завершении установки выполните перезагрузку" in ru
     # numbered-section structure survives translation
