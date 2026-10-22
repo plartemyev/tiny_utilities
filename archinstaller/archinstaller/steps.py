@@ -282,6 +282,23 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             "The locale line is uncommented in /etc/locale.gen before locale-gen; the"
             " sed pattern escapes the dots in the locale name."
         )),
+        *([
+            Step("Reserving DRM card0 for the guest GPU (spice agent mapping)", (
+                ("sed -i 's/^GRUB_CMDLINE_LINUX=.*/"
+                 "GRUB_CMDLINE_LINUX=\"initcall_blacklist=sysfb_init\"/'"
+                 " /etc/default/grub"),
+            ), rationale=(
+                "Built-in simpledrm registers DRM minor 0 at boot and is kicked off"
+                " by the real GPU driver's aperture takeover afterwards, leaving the"
+                " GPU as card1 with no card0. spice-vdagent enumerates cards"
+                " card0..card9 but stops at the first missing index, so its"
+                " server-display to X-output PCI mapping fails and the agent drops"
+                " to output-index matching (single display only). Blacklisting the"
+                " sysfb_init initcall stops the firmware framebuffer device from"
+                " ever registering, so the GPU driver takes minor 0 = card0."
+                " Must land before the grub-mkconfig in the next step."
+            )),
+        ] if cfg.graphical and cfg.virt in ("kvm", "qemu") else []),
         Step("Installing GRUB bootloader", (
             "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB",
             "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB --removable",

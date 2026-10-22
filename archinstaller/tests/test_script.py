@@ -103,13 +103,26 @@ def test_graphical_kvm_targets_enable_the_spice_agentd_socket():
     assert "systemctl add-wants sockets.target spice-vdagentd.socket" in script
 
 
+def test_graphical_kvm_targets_reserve_drm_card0_for_the_gpu():
+    script = build_install_script(make_cfg(graphical=True, virt="qemu"))
+    assert ("sed -i 's/^GRUB_CMDLINE_LINUX=.*/"
+            "GRUB_CMDLINE_LINUX=\"initcall_blacklist=sysfb_init\"/'"
+            " /etc/default/grub") in script
+    # the cmdline must land before the grub.cfg generation that reads it
+    assert script.index("initcall_blacklist=sysfb_init") < script.index(
+        "grub-mkconfig -o /boot/grub/grub.cfg")
+
+
 def test_spice_agentd_socket_only_enabled_on_spice_graphics():
     for virt in ("none", "oracle", "vmware", "microsoft"):
         script = build_install_script(make_cfg(graphical=True, virt=virt))
         assert "spice-vdagentd.socket" not in script, virt
+        # the card0 reservation matters to the spice agent only
+        assert "initcall_blacklist=sysfb_init" not in script, virt
     # console installs install no spice-vdagent at all
     script = build_install_script(make_cfg(graphical=False, virt="kvm"))
     assert "spice-vdagentd.socket" not in script
+    assert "initcall_blacklist=sysfb_init" not in script
 
 
 def test_dns_fallback_dispatcher_installed_in_base_system():

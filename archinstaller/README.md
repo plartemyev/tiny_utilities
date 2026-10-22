@@ -104,7 +104,7 @@ Guest adaptation by detected hypervisor:
 | Target | Adaptation |
 |---|---|
 | physical | none |
-| kvm / qemu | `qemu-guest-agent` enabled; graphical installs also enable the SPICE agent daemon (`spice-vdagentd.socket` has no `[Install]` section, so `systemctl add-wants` is used) |
+| kvm / qemu | `qemu-guest-agent` enabled; graphical installs also enable the SPICE agent daemon (`spice-vdagentd.socket` has no `[Install]` section, so `systemctl add-wants` is used) and pin the GPU to DRM card0 (`initcall_blacklist=sysfb_init` in the kernel cmdline) so spice-vdagent's card-enumeration finds it and maps server displays to X outputs by PCI address |
 | oracle (VirtualBox) | `virtualbox-guest-utils` (graphical) or `-nox` (console), `vboxservice` enabled, HDA `position_fix=1` pin |
 | vmware | `open-vm-tools` on graphical installs |
 | everything else | `hyperv` / `qemu-guest-agent` sit in the base list, inert |
