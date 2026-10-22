@@ -94,7 +94,10 @@ def test_language_defaults_to_english_identity():
 
 
 def test_russian_translation_covers_prose_keeps_commands():
-    ru = build_workbook(make_cfg(virt="oracle", discard=True), language="ru")
+    ru = build_workbook(make_cfg(virt="oracle", discard=True,
+                                 hostonly_mac="080027AB4315",
+                                 hostonly_address="192.168.56.50/24"),
+                        language="ru")
     assert "# Руководство archinstaller — arch-host-2026-10-17" in ru
     assert "## 0. Сведения о целевой машине" in ru
     assert "## 1. Разметка диска /dev/vda (раздел ESP на 1 ГиБ, остальное — под корень)" in ru
