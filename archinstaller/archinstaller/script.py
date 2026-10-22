@@ -4,6 +4,7 @@ from __future__ import annotations
 from archinstaller.steps import (
     CHROOT,
     InstallConfig,
+    POST_CHROOT,
     Step,
     install_steps,
     shell_lines,
@@ -18,7 +19,7 @@ _CHROOT_PREAMBLE = shell_lines("chroot-preamble.sh")
 def build_install_script(cfg: InstallConfig) -> str:
     lines = list(_BASH_HEADER)
     for step in install_steps(cfg):
-        if step.context == CHROOT:
+        if step.context in (CHROOT, POST_CHROOT):
             continue
         _append_spaced(lines, step)
     lines.append("")  # blank between the live section and the chroot block
@@ -28,6 +29,10 @@ def build_install_script(cfg: InstallConfig) -> str:
             continue
         _append_spaced(lines, step)
     lines.append("CHROOT")
+    for step in install_steps(cfg):
+        if step.context != POST_CHROOT:
+            continue
+        _append_spaced(lines, step)
     return "\n".join(lines) + "\n"
 
 

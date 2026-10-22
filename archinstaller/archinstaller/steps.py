@@ -124,6 +124,7 @@ PACKAGE_CACHE_PRUNE_HOOK = "\n".join([
 # SSH after the first reboot.
 LIVE = "live"
 CHROOT = "chroot"
+POST_CHROOT = "post-chroot"  # live env again, after the chroot heredoc exits
 POST_BOOT = "post-boot"
 
 
@@ -235,6 +236,16 @@ def install_steps(cfg: InstallConfig) -> list[Step]:
         ), rationale="UUID-based fstab for the new system."),
     ]
     steps.extend(_chroot_steps(cfg))
+    steps.append(
+        Step("Releasing the target mounts and swap", (
+            "swapoff -a 2>/dev/null || true",
+            "umount -R /mnt/new-root 2>/dev/null || true",
+        ), rationale=(
+            "The script exits with the installed filesystem unmounted, so the"
+            " host-side poweroff (clean or forced) never races a pending write;"
+            " the same commands double as the pre-install cleanup at the top."
+        ), context=POST_CHROOT, spaced=False),
+    )
     return steps
 
 

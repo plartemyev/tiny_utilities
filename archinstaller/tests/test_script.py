@@ -39,6 +39,18 @@ def test_script_partitions_nvme_disks_with_p_names():
     assert "mount --mkdir '/dev/nvme0n1p1' /mnt/new-root/boot" in script
 
 
+def test_install_script_releases_target_mounts_before_exit():
+    # the script must exit with /mnt/new-root unmounted so the host-side
+    # poweroff (clean or forced) never races a pending write
+    script = build_install_script(make_cfg())
+    cleanup = script.index("Releasing the target mounts and swap")
+    assert "swapoff -a 2>/dev/null || true" in script[cleanup:]
+    umount_at = script.index("umount -R /mnt/new-root 2>/dev/null || true",
+                             cleanup)
+    # the chroot heredoc closed before the cleanup step starts
+    assert script.rindex("CHROOT\n", 0, umount_at) < cleanup
+
+
 def test_grub_install_registers_entry_and_removable_fallback():
     script = build_install_script(make_cfg())
     entry = "grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB"
