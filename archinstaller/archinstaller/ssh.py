@@ -116,10 +116,17 @@ def run_capture(
                 raise TimeoutError(f"command timed out after {timeout}s: {command}")
             if chan.recv_ready():
                 chunks.append(chan.recv(RECV_CHUNK))
+            elif chan.recv_stderr_ready():
+                # drain stderr inside the loop: _pending waits for it, so
+                # leaving it unread would spin until the timeout on any
+                # stderr-only command (e.g. curl failing with no stdout)
+                chunks.append(chan.recv_stderr(RECV_CHUNK))
             else:
                 time.sleep(PUMP_INTERVAL)
         while chan.recv_ready():
             chunks.append(chan.recv(RECV_CHUNK))
+        while chan.recv_stderr_ready():
+            chunks.append(chan.recv_stderr(RECV_CHUNK))
         return chan.recv_exit_status(), b"".join(chunks).decode(errors="replace")
     finally:
         chan.close()
