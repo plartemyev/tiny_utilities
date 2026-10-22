@@ -88,6 +88,28 @@ def test_virt_conditionals():
     assert "systemctl enable qemu-guest-agent" not in none
 
 
+def test_language_defaults_to_english_identity():
+    cfg = make_cfg(virt="oracle", discard=True)
+    assert build_workbook(cfg, language="en") == build_workbook(cfg)
+
+
+def test_russian_translation_covers_prose_keeps_commands():
+    ru = build_workbook(make_cfg(virt="oracle", discard=True), language="ru")
+    assert "# Руководство archinstaller — arch-host-2026-10-17" in ru
+    assert "## 0. Сведения о целевой машине" in ru
+    assert "## 1. Разметка диска /dev/vda (раздел ESP на 1 ГиБ, остальное — под корень)" in ru
+    assert "Установка загрузчика GRUB" in ru
+    assert "Обход остановки отчётов о DMA-позиции HDA в VirtualBox" in ru
+    assert "Generating /etc/fstab" not in ru
+    assert "> По завершении установки выполните перезагрузку" in ru
+    # numbered-section structure survives translation
+    assert "## 2. " in ru
+    # commands stay language-independent
+    assert "systemctl enable vboxservice" in ru
+    assert "genfstab -U /mnt/new-root >> /mnt/new-root/etc/fstab" in ru
+    assert "sudo ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf" in ru
+
+
 def test_provision_section_replaces_target_facts():
     md = build_workbook(make_cfg(), provision="PROVISION-SECTION-MARKER")
     assert "PROVISION-SECTION-MARKER" in md

@@ -209,6 +209,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                             help="embed real passwords (explicit ones, generated for the rest) "
                                  "instead of placeholders; the file is then written with mode 0600 "
                                  "and must be handled as a secret")
+    p_workbook.add_argument("--language", choices=("en", "ru"), default="en",
+                            help="prose language of the rendered workbook; commands stay "
+                                 "language-independent (default: en)")
 
     p_resume = sub.add_parser("resume",
                               help="finish a previous install post-reboot from its state file")
@@ -381,10 +384,10 @@ def _run_workbook(args: argparse.Namespace) -> None:
     provision_md = None
     if args.provision == "vbox":
         virt, discard, disk = "oracle", True, "/dev/nvme0n1"
-        provision_md = _provision_workbook_section(args, hostname)
+        provision_md = _provision_workbook_section(args, hostname, args.language)
     elif args.provision == "libvirt":
         virt, discard, disk = "kvm", True, "/dev/vda"
-        provision_md = _provision_workbook_section(args, hostname)
+        provision_md = _provision_workbook_section(args, hostname, args.language)
     cfg = InstallConfig(
         disk=disk,
         hostname=hostname,
@@ -404,7 +407,7 @@ def _run_workbook(args: argparse.Namespace) -> None:
         opencode_password=opencode_password,
     )
     workbook = build_workbook(cfg, passwords_embedded=embed,
-                              provision=provision_md)
+                              provision=provision_md, language=args.language)
     out = args.out or f"archinstaller-workbook-{hostname}.md"
     mode = 0o600 if embed else 0o644
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
@@ -423,7 +426,8 @@ def _run_workbook(args: argparse.Namespace) -> None:
           "rotate the passwords once convenient.")
 
 
-def _provision_workbook_section(args: argparse.Namespace, hostname: str) -> str:
+def _provision_workbook_section(args: argparse.Namespace, hostname: str,
+                                language: str = "en") -> str:
     """The backend's provisioning commands plus the boot/serial instructions.
 
     Host-side facts (free ports, VirtualBox machine folder, Extension Pack,
@@ -435,7 +439,7 @@ def _provision_workbook_section(args: argparse.Namespace, hostname: str) -> str:
         section = provision_vbox.workbook_section(
             hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
             cores=args.cores, iso_path=iso_path, graphical=args.graphical,
-            serial_port=serial_port, ssh_port=ssh_port)
+            serial_port=serial_port, ssh_port=ssh_port, language=language)
         host_side = (f"127.0.0.1:{ssh_port} (the NAT port forward; the guest "
                      f"itself is {provision_vbox.GUEST_ADDRESS})")
     else:
@@ -445,10 +449,11 @@ def _provision_workbook_section(args: argparse.Namespace, hostname: str) -> str:
             hostname, disk_size_gib=args.disk_size_gib, ram_gib=args.ram_gib,
             cores=args.cores, graphical=args.graphical, iso_path=iso_path,
             serial_port=serial_port, network=network,
-            network_start=needs_start)
+            network_start=needs_start, language=language)
         host_side = "the address printed by the ip command above"
     boot = provision.workbook_boot_section(serial_port, host_side,
-                                           DEFAULT_LOGIN_PASSWORD)
+                                           DEFAULT_LOGIN_PASSWORD,
+                                           language=language)
     return section + "\n" + boot
 
 

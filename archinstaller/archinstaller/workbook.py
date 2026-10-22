@@ -6,10 +6,12 @@ with its rationale and the commands in fenced blocks.
 """
 from __future__ import annotations
 
+import dataclasses
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from archinstaller.i18n import tr
 from archinstaller.steps import (
     CHROOT,
     POST_BOOT,
@@ -51,27 +53,28 @@ class _Section:
 
 
 def build_workbook(cfg: InstallConfig, *, passwords_embedded: bool = False,
-                   provision: str | None = None) -> str:
+                   provision: str | None = None, language: str = "en") -> str:
     steps = install_steps(cfg)
     steps += post_boot_steps(cfg.username, cfg.hostname, cfg.timezone,
                              cfg.opencode, cfg.opencode_password)
+    steps = [_translated(step, language) for step in steps]
     blocks: list[str] = [
-        f"# archinstaller workbook — {cfg.hostname}",
+        tr(language, f"# archinstaller workbook — {cfg.hostname}"),
         "",
-        _facts_line(cfg),
+        tr(language, _facts_line(cfg)),
         "",
     ]
     if passwords_embedded:
-        blocks += [_caution(cfg), ""]
+        blocks += [tr(language, _caution(cfg)), ""]
     if provision is not None:
         # a provisioned run has no unknown target: the VM's virt kind and
         # discard support are decided by --provision, so the target-facts
         # step is replaced by the provisioning and boot sections
         blocks += [provision, ""]
     else:
-        blocks += _target_facts_section(cfg)
+        blocks += _target_facts_section(cfg, language)
 
-    state = _RenderState(blocks, cfg)
+    state = _RenderState(blocks, cfg, language)
     for step in steps:
         state.add(step)
     state.flush()
@@ -79,12 +82,29 @@ def build_workbook(cfg: InstallConfig, *, passwords_embedded: bool = False,
     return "\n".join(blocks).rstrip("\n") + "\n"
 
 
+def _translated(step: Step, language: str) -> Step:
+    """Workbook-side translation of a step's prose.
+
+    Applied here, never in steps.py: the same title doubles as the
+    install script's `log` line, which stays English for every language.
+    """
+    if language == "en":
+        return step
+    return dataclasses.replace(
+        step,
+        title=tr(language, step.title) if step.title else None,
+        rationale=tr(language, step.rationale),
+    )
+
+
 class _RenderState:
     """Sections steps into numbered workbook headings, in order."""
 
-    def __init__(self, blocks: list[str], cfg: InstallConfig) -> None:
+    def __init__(self, blocks: list[str], cfg: InstallConfig,
+                 language: str = "en") -> None:
         self._blocks = blocks
         self._cfg = cfg
+        self._language = language
         self._context: str | None = None
         self._current: _Section | None = None
         self._pending: list[str] = []  # continuation before any titled step
@@ -96,9 +116,10 @@ class _RenderState:
             self._pending = []
             self._context = step.context
             if self._context == CHROOT:
-                self._blocks += [_CHROOT_NOTE, ""]
+                self._blocks += [tr(self._language, _CHROOT_NOTE), ""]
             elif self._context == POST_BOOT:
-                self._blocks += [_POST_BOOT_NOTE.format(user=self._cfg.username), ""]
+                self._blocks += [tr(self._language,
+                                    _POST_BOOT_NOTE.format(user=self._cfg.username)), ""]
         if step.title:
             self.flush()
             self._current = _Section(step.title, step.rationale)
@@ -165,7 +186,7 @@ def _caution(cfg: InstallConfig) -> str:
     return _CAUTION.format(which=which)
 
 
-def _target_facts_section(cfg: InstallConfig) -> list[str]:
+def _target_facts_section(cfg: InstallConfig, language: str = "en") -> list[str]:
     dev = cfg.disk.rsplit("/", 1)[-1]
     probes = [
         "test -d /sys/firmware/efi && echo 'UEFI: ok'",
@@ -177,16 +198,16 @@ def _target_facts_section(cfg: InstallConfig) -> list[str]:
         probes.append(f"curl -fsS --max-time 8 {cfg.local_mirror}/healthz"
                       " && echo 'mirror: ok'")
     return [
-        "## 0. Target facts",
+        tr(language, "## 0. Target facts"),
         "",
-        _wrap("The blocks below were rendered for the facts listed in the"
-              " header. Verify them on the target first."),
+        _wrap(tr(language, "The blocks below were rendered for the facts listed in the"
+                      " header. Verify them on the target first.")),
         "",
         _fence(probes),
         "",
-        _wrap("If systemd-detect-virt or discard_max_bytes disagree with the"
-              " rendered values, re-render the workbook with matching"
-              " `--virt` / `--discard` flags."),
+        _wrap(tr(language, "If systemd-detect-virt or discard_max_bytes disagree with the"
+                      " rendered values, re-render the workbook with matching"
+                      " `--virt` / `--discard` flags.")),
         "",
     ]
 

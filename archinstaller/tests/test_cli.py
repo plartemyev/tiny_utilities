@@ -24,7 +24,7 @@ def make_args(**overrides):
         "iso_path": "~/Downloads/archlinux.iso",
         "install_timeout": 1, "reboot_timeout": 1,
         "no_subnet_scan": False, "vbox_vm": None,
-        "out": None, "with_passwords": False, "state_file": None,
+        "out": None, "with_passwords": False, "language": "en", "state_file": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -204,11 +204,22 @@ def test_workbook_parsing_needs_no_target():
     args = cli._parse_args(["workbook", "--ssh-pubkey", "k"])
     assert args.command == "workbook"
     assert args.out is None and args.with_passwords is False
+    assert args.language == "en"  # English unless asked otherwise
     pinned = cli._parse_args(["workbook", "--ssh-pubkey", "k",
                               "--out", "w.md", "--with-passwords",
                               "--virt", "kvm", "--discard"])
     assert pinned.out == "w.md" and pinned.with_passwords is True
     assert pinned.virt == "kvm" and pinned.discard is True
+
+
+def test_workbook_language_flag_parsing():
+    argv = ["workbook", "--ssh-pubkey", "k"]
+    assert cli._parse_args(argv + ["--language", "ru"]).language == "ru"
+    try:
+        cli._parse_args(argv + ["--language", "de"])
+    except SystemExit:
+        return
+    raise AssertionError("--language must be choice-validated")
 
 
 def test_transport_flags_rejected_for_workbook():
@@ -499,3 +510,19 @@ def test_run_workbook_opencode_password_embedded_only_with_flag(tmp_path):
     text = out.read_text()
     assert "OPENCODE_SERVER_PASSWORD=" in text
     assert "{{OPENCODE_PASSWORD}}" not in text
+
+
+def test_run_workbook_language_ru_renders_russian_prose(tmp_path, capsys):
+    out = tmp_path / "w.md"
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out),
+                     language="ru")
+    cli._run_workbook(args)
+    text = out.read_text()
+    assert "# Руководство archinstaller —" in text
+    assert "Установка загрузчика GRUB" in text
+    assert "Generating /etc/fstab" not in text
+    # commands and mode are language-independent
+    assert "genfstab -U /mnt/new-root >> /mnt/new-root/etc/fstab" in text
+    assert out.stat().st_mode & 0o777 == 0o644
+    captured = capsys.readouterr().out
+    assert "Workbook written to" in captured

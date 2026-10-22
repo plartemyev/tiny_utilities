@@ -22,6 +22,7 @@ import re
 import shlex
 
 from archinstaller import vbox
+from archinstaller.i18n import tr
 from archinstaller.provision import pick_free_ports
 
 OSTYPE = "ArchLinux_64"
@@ -102,24 +103,25 @@ def plan(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
 
 def workbook_section(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
                      iso_path: str, graphical: bool, serial_port: int,
-                     ssh_port: int) -> str:
+                     ssh_port: int, language: str = "en") -> str:
     """Render plan() as copy-paste shell lines for the workbook."""
     extpack = extpack_installed()
     note = ""
     if not extpack:
-        note = ("> The VirtualBox Extension Pack is not installed on this host;"
-                " USB 3.0 (xHCI) is not enabled. After installing it, run"
-                f" `vboxmanage modifyvm {name} --usb-xhci on` (VM powered off).\n\n")
+        note = tr(language,
+                  "> The VirtualBox Extension Pack is not installed on this host;"
+                  " USB 3.0 (xHCI) is not enabled. After installing it, run"
+                  f" `vboxmanage modifyvm {name} --usb-xhci on` (VM powered off).\n\n")
     body = "\n".join(shlex.join(("vboxmanage", *arguments))
                      for arguments in plan(
                          name, disk_size_gib=disk_size_gib, ram_gib=ram_gib,
                          cores=cores, iso_path=iso_path, graphical=graphical,
                          serial_port=serial_port, ssh_port=ssh_port,
                          extpack=extpack, machine_folder=_machine_folder(name)))
-    return (f"Provision the VirtualBox VM {name!r} (serial line on TCP"
-            f" {serial_port}, SSH port forward 127.0.0.1:{ssh_port}):\n\n"
-            + note
-            + "```bash\n" + body + "\n```\n")
+    intro = tr(language,
+               f"Provision the VirtualBox VM {name!r} (serial line on TCP"
+               f" {serial_port}, SSH port forward 127.0.0.1:{ssh_port}):")
+    return (intro + "\n\n" + note + "```bash\n" + body + "\n```\n")
 
 
 def restart(name: str) -> None:

@@ -1,5 +1,7 @@
 # archinstaller
 
+> Русский: [README.ru.md](README.ru.md)
+
 Unattended Arch Linux installer. `install` drives the stock Arch ISO live
 environment over SSH — or a freshly provisioned local VirtualBox/libvirt VM,
 from VM creation through a rebooted, SSH-reachable system. `workbook` renders
@@ -162,8 +164,9 @@ Provisioned-VM options (`install` and `workbook` with `--provision`):
 | `--cores` | `4` | guest vCPUs |
 | `--iso-path` | `~/Downloads/archlinux.iso` | must be an existing, readable `.iso`; the stock ISO is used unmodified |
 
-Workbook-only: `--out PATH` (default `archinstaller-workbook-<hostname>.md`)
-and `--with-passwords`.
+Workbook-only: `--out PATH` (default `archinstaller-workbook-<hostname>.md`),
+`--with-passwords` and `--language ru` (render the prose in Russian; default
+`en`).
 
 ## Provisioned runs (`--provision vbox|libvirt`)
 
@@ -292,7 +295,8 @@ address, username and password.
 Renders the identical run — provisioning (optional), partitioning, chroot
 configuration, post-boot steps — as numbered markdown sections with rationale
 and copy-paste blocks; the install script's `retry` helper is unwrapped so
-every block runs standalone.
+every block runs standalone. With `--language ru` the prose — headings,
+rationales and notes — renders in Russian; commands stay as-is.
 
 It shares the system-configuration arguments with `install` and needs no
 target: the two probe-derived facts are pinned by flags (defaults

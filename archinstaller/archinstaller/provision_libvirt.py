@@ -25,6 +25,7 @@ import re
 import subprocess
 import time
 
+from archinstaller.i18n import tr
 from archinstaller.provision import pick_free_ports
 
 DEFAULT_URI = "qemu:///system"
@@ -337,7 +338,7 @@ def domain_xml(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
 def workbook_section(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
                      graphical: bool, iso_path: str, serial_port: int,
                      network: tuple[str, str], network_start: bool,
-                     uri: str = DEFAULT_URI) -> str:
+                     uri: str = DEFAULT_URI, language: str = "en") -> str:
     """Render the provisioning commands and the domain XML for the workbook.
 
     The XML comes from the same domain_xml() provision() uses, so the
@@ -356,10 +357,14 @@ def workbook_section(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
                      cores=cores, graphical=graphical, serial_port=serial_port,
                      iso_path=iso_path, network=network,
                      host_cores=host_cores())
-    return (f"Provision the libvirt domain {name!r} on {uri} (network:"
-            f" {network[0]} {network[1]}, serial line on TCP {serial_port}):\n\n"
-            "```bash\n" + "\n".join(lines) + "\n```\n\n"
-            + f"Save the domain XML as `archinstaller-provision-{name}.xml`:\n\n"
+    intro = tr(language,
+               f"Provision the libvirt domain {name!r} on {uri} (network:"
+               f" {network[0]} {network[1]}, serial line on TCP {serial_port}):")
+    return (intro + "\n\n"
+            + "```bash\n" + "\n".join(lines) + "\n```\n\n"
+            + tr(language,
+                 f"Save the domain XML as `archinstaller-provision-{name}.xml`:")
+            + "\n\n"
             + "```xml\n" + xml + "```\n")
 
 
