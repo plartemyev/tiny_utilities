@@ -6,6 +6,7 @@ apksigcopier
 aws-cli-v2
 base-devel
 bash-language-server
+binwalk
 blendr
 cargo-ndk
 cfr
