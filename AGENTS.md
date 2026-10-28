@@ -525,3 +525,38 @@
       `cache/<repo>/os/<arch>/<repo>.db`, compare %CSIZE%/%SHA256SUM%
       against the cached files, `curl -sI` the upstream URL for
       Last-Modified.
+    - pacman "Operation too slow. Less than 1 bytes/sec" storms from the
+      local mirror (hit 2026-10-28, all traffic newly routed via the
+      Cambodia Wireguard exit): the untracked
+      `docker-compose.override.yml` pinned `mirror.kku.ac.th` first, and
+      kku is unreachable through that tunnel (0 bytes in 11 s while
+      osbeck/cyberbits/rackspace stream 130-200 KB/s single-stream). The
+      mirror's `connect=10s` timeout per dead upstream equals pacman's
+      10 s zero-progress low-speed abort window, so pacman killed every
+      fresh-miss transfer at almost exactly the moment the mirror finally
+      failed over to the second mirror (its log then shows
+      "Cannot write to closing transport" = client already gone, nothing
+      cached, retry repeats the dance). Fix: pin only mirrors verified
+      through the CURRENT exit (`curl -so /dev/null -w '%{speed_download}'
+      <core.db>` per candidate) in the override; dropped
+      geo.mirror.pkgbuild.com entirely — it is a redirector that picks the
+      mirror by EXIT IP, and from the Cambodia exit it 302'd straight into
+      the dead kku (its direct-serve replies are fine, so it works until
+      it doesn't - non-deterministic by design). Rule: behind the VPN,
+      "nearest mirror" always means nearest to the EXIT, and reachability
+      must be probed through the tunnel, not assumed from mirror status
+      pages. Mitigations implemented same day (server.py + test_mirror.py,
+      all tests + e2e pass): UPSTREAM_TIMEOUT connect/sock_connect 10 s ->
+      5 s (under half of pacman's 10 s zero-progress abort), a mirror that
+      times out on CONNECT is now attempted ONCE (the second attempt is
+      only for stale keep-alives, which fail instantly, not by timeout -
+      `ConnectionTimeoutError` skips it), and a client that hangs up
+      mid-download no longer aborts the fetch: a full fetch finishes into
+      the cache inline (log "client gone, cached for retry"), an abandoned
+      resume relay schedules a whole-file background fill
+      (`_finish_into_cache`), so pacman's retry is served from cache.
+      Test-harness trap: aiohttp's TestServer hardcodes
+      handler_cancellation=True (handlers are cancelled on client hangup)
+      while production web.run_app does not cancel - the client-abort test
+      must run under `ProdSemanticsServer` (test_mirror.py) or the fill
+      dies before it detaches.

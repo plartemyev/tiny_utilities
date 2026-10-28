@@ -13,7 +13,10 @@ same URL layout.  On a request the proxy:
   first reachable upstream mirror while streaming the bytes to the
   requesting pacman and keeping a copy: the download lands in a
   temporary file which is atomically renamed into the cache, so the
-  cache only ever gains complete files;
+  cache only ever gains complete files.  A client that hangs up
+  mid-download (pacman's 10 s low-speed abort) does not abort the
+  fetch: the proxy detaches and finishes it into the cache, so the
+  retry is served from there;
 * serves cached metadata (.db/.files and their .sig) without upstream
   contact while younger than DB_TTL; a request for an older copy
   triggers a fresh upstream retrieval that the client waits for (bounded
@@ -32,9 +35,10 @@ same URL layout.  On a request the proxy:
   that answers such a request with a plain 200 aborts the resume (curl
   error 33, "HTTP server does not seem to support byte ranges"): cached
   files are sliced locally (206), an uncached one is fetched ranged from
-  upstream and relayed, and an upstream that ignores the range is
-  downloaded whole into the cache while only the requested window is
-  forwarded;
+  upstream and relayed (a relay abandoned by its client schedules a
+  whole-file background fill, so the next attempt hits the cache), and
+  an upstream that ignores the range is downloaded whole into the cache
+  while only the requested window is forwarded;
 * periodically prunes the cache: superseded package versions
   (KEEP_VERSIONS), files untouched for CACHE_AGE and, when CACHE_SIZE
   is set, the oldest files until the total is back under the limit.
@@ -67,6 +71,7 @@ from aiohttp import (
     ClientError,
     ClientSession,
     ClientTimeout,
+    ConnectionTimeoutError,
     TCPConnector,
     web,
 )
@@ -77,7 +82,10 @@ CHUNK_SIZE = 64 * 1024
 TMP_SUBDIR = "tmp"
 STALE_TMP_SECONDS = 24 * 3600
 SIZE_GC_TARGET = 0.9  # once over CACHE_SIZE, shrink to 90% of it
-UPSTREAM_TIMEOUT = ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=60)
+# connect budget per upstream attempt: strictly under half of pacman's
+# 10 s zero-progress low-speed abort, so one dead mirror still leaves the
+# failover room to start delivering bytes to the client in time
+UPSTREAM_TIMEOUT = ClientTimeout(total=None, connect=5, sock_connect=5, sock_read=60)
 
 DEFAULT_OFFICIAL_REPOS = "core extra multilib"
 DEFAULT_OFFICIAL_MIRRORS = (
@@ -684,6 +692,33 @@ async def _relay_range(request: web.Request, upstream, repo: Repo, arch: str,
     return response
 
 
+def _finish_into_cache(app: web.Application, repo: Repo, arch: str,
+                       filename: str, local: str) -> None:
+    """Fetch `filename` into the cache in the background after its client
+    hung up (pacman's low-speed abort mid-resume): single-flight per file,
+    skipped when the file landed meanwhile, so the client's retry (or the
+    next client) is served from the cache instead of repeating the same
+    doomed upstream attempt."""
+    async def fill() -> None:
+        try:
+            async with file_lock(app, local):
+                if os.path.exists(local):
+                    return
+                outcome, _, _ = await _fetch_upstream(
+                    app, None, repo, arch, filename, local)
+                if outcome != "ok":
+                    LOG.warning("background fill of %s failed "
+                                "(all mirrors)", filename)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("background fill of %s crashed", filename)
+
+    task = asyncio.create_task(fill())
+    app["bg_tasks"].add(task)
+    task.add_done_callback(app["bg_tasks"].discard)
+
+
 async def _fetch_upstream(app: web.Application, request: web.Request | None,
                           repo: Repo, arch: str, filename: str, local: str, *,
                           revalidate: bool = False,
@@ -714,6 +749,13 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
     bytes already flowed - the client retries the whole file), nothing
     lands in the cache, and the usual mirror/retry machinery applies.
 
+    A client that hangs up mid-stream (pacman's 10 s low-speed abort) no
+    longer aborts the fetch: the proxy detaches and finishes the download
+    into the cache, so the client's retry (or the next client) is served
+    from there instead of repeating the same doomed upstream attempt.  A
+    resume relay (upstream 206) that loses its client schedules the
+    whole-file fetch into the cache the same way.
+
     Returns (outcome, response, last-upstream-status) with outcome 'ok',
     'not-modified' or 'failed' ('failed' means every mirror was exhausted
     before any byte reached a client; response is None then)."""
@@ -728,6 +770,7 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
     if rng is not None:
         headers["Range"] = _range_header(rng)
     last_status = None
+    client_gone = False  # client hung up: keep filling the cache anyway
     for mirror in repo_mirrors(repo, arch):
         upstream_file = filename
         if (repo.meta_name and _is_metadata(filename)
@@ -763,8 +806,21 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
                     if rng is not None and upstream.status == 206:
                         # honored range: relay the window untouched
                         prepared = True  # bytes may flow from here on
-                        return "ok", await _relay_range(
-                            request, upstream, repo, arch, filename, url), None
+                        try:
+                            return "ok", await _relay_range(
+                                request, upstream, repo, arch, filename,
+                                url), None
+                        except ConnectionError:
+                            # the resuming client hung up before its window
+                            # was done: fill the whole file into the cache
+                            # in the background so the retry hits it, then
+                            # let the interruption handling report the drop
+                            LOG.warning("resume relay for %s abandoned by "
+                                        "the client; fetching it whole "
+                                        "into the cache", filename)
+                            _finish_into_cache(app, repo, arch, filename,
+                                               local)
+                            raise
                     if rng is not None and upstream.status == 416:
                         # the window is past the upstream file's end (it was
                         # replaced by a smaller one): mirrors share the file,
@@ -798,12 +854,11 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
                                 last_status = 416
                                 break  # next mirror
                     response = None
-                    if request is not None:
+                    if request is not None and not client_gone:
                         response = _client_response(length, window, total)
                         await response.prepare(request)
                         prepared = True
                     received = 0
-                    client_gone = False
                     with open(tmp, "wb") as out:
                         async for chunk in upstream.content.iter_chunked(CHUNK_SIZE):
                             out.write(chunk)
@@ -819,32 +874,40 @@ async def _fetch_upstream(app: web.Application, request: web.Request | None,
                                     try:
                                         await response.write(piece)
                                     except ConnectionError:
-                                        if window is None:
-                                            raise
-                                        # a resuming client hangs up once its
-                                        # window is delivered: keep filling
-                                        # the cache for the next request
+                                        # the client hung up (pacman's 10 s
+                                        # low-speed abort, or a resuming
+                                        # client done with its window):
+                                        # detach and keep filling the cache
+                                        # for the next request
                                         client_gone = True
                     os.replace(tmp, local)
-                    if response is not None:
+                    if response is not None and not client_gone:
                         try:
                             await response.write_eof()
                         except ConnectionError:
-                            if window is None:
-                                raise
-                    LOG.info("miss %s/%s/%s (%s%s) <- %s", repo.name, arch,
+                            client_gone = True
+                    LOG.info("miss %s/%s/%s (%s%s%s) <- %s", repo.name, arch,
                              filename, human_size(received),
                              ", window %d-%d" % window if window is not None else "",
+                             ", client gone, cached for retry"
+                             if client_gone else "",
                              url)
                     return "ok", response, None
             except (ClientError, TimeoutError, OSError) as exc:
                 _quiet_unlink(tmp)
-                if prepared:
-                    # bytes already went to the client; drop the connection and
-                    # let the client retry the whole file
+                if prepared and not client_gone:
+                    # bytes already went to a live client; drop the connection
+                    # and let the client retry the whole file
                     LOG.warning("stream interrupted for %s: %s", filename, exc)
                     raise
                 LOG.warning("upstream %s failed for %s: %s", url, filename, exc)
+                if isinstance(exc, ConnectionTimeoutError):
+                    # the connect budget ran out: this mirror is unreachable,
+                    # and a second attempt would only burn another timeout
+                    # against it (stale keep-alives fail fast, not by
+                    # timeout) - move straight to the next mirror so a live
+                    # client's low-speed budget survives the dead one
+                    break
                 continue  # retry the same mirror, then fall through
             except asyncio.CancelledError:
                 _quiet_unlink(tmp)

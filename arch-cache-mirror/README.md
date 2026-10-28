@@ -23,7 +23,11 @@ Behaviour per request:
   pacman while being downloaded* from the first reachable upstream
   mirror and land in the cache at the same time. The cache only ever
   gains complete files: downloads are written to a temp file and
-  atomically renamed into place.  A repository that nevertheless
+  atomically renamed into place.  A client that hangs up mid-download
+  (pacman's 10 s low-speed abort) does **not** abort the fetch: the
+  proxy detaches and finishes it into the cache, so the client's retry
+  (or the next client) is served from the cache instead of repeating
+  the same doomed upstream attempt.  A repository that nevertheless
   republishes a filename in place is handled by the db-driven validation
   described in the Caveats.
 - **databases** (`.db`, `.files`, `.db.sig`, `.files.sig`) are the
@@ -45,10 +49,19 @@ Behaviour per request:
   answers that with a plain 200 aborts the resume): cached files are
   sliced locally (206 + `Content-Range`, 416 past EOF); on a miss the
   range is relayed to the upstream and its 206 streams through without
-  caching (partials never land in the cache); an upstream that ignores
-  the range is downloaded whole into the cache while only the requested
-  window is forwarded - a resuming client may give up on a far window,
-  but its retry then resumes from the now-cached copy;
+  caching (partials never land in the cache) - a relay abandoned by its
+  client schedules a whole-file background fill, so the next attempt
+  hits the cache; an upstream that ignores the range is downloaded whole
+  into the cache while only the requested window is forwarded - a
+  resuming client may give up on a far window, but its retry then
+  resumes from the now-cached copy;
+- **upstream failover** moves on fast: the connect budget is 5 s per
+  attempt (under half of pacman's 10 s zero-progress abort), and a
+  mirror that *times out* on connect is skipped after a single attempt
+  (its second-attempt retry exists for stale keep-alive connections,
+  which fail instantly, not by timeout) - one dead mirror cannot eat
+  the client's whole low-speed budget before a healthy mirror gets its
+  turn;
 - the repository -> upstream mapping is built at startup from
   environment variables; `core`/`extra`/`multilib` come with sensible
   defaults, `xlibre` and `sonicde` are preconfigured, and Arch Linux
@@ -487,10 +500,12 @@ parsing/resolution, GC passes, env parsing) plus a loopback integration
 test with a stub upstream (cache miss streaming, cache hit,
 fresh-on-request db retrieval, the FRESH_WAIT stale fallback, short-body
 upstream, 404 pass-through with negative caching, unknown repo,
-same-file single-flight, byte-range resume: cached slices, upstream 206
-relay, a range-ignoring upstream still filling the cache, 416, HEAD
-without a body, in-place-republish pruning). Tests need `aiohttp` and
-write only to `./tmp`:
+same-file single-flight, client-abort fills: a hung-up client no longer
+aborts a fresh fetch nor a resume relay - both finish into the cache -
+and a connect-timeout mirror is attempted once, byte-range resume:
+cached slices, upstream 206 relay, a range-ignoring upstream still
+filling the cache, 416, HEAD without a body, in-place-republish
+pruning). Tests need `aiohttp` and write only to `./tmp`:
 
 ```bash
 python test_mirror.py             # host, needs aiohttp

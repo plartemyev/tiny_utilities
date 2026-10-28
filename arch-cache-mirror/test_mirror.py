@@ -19,7 +19,7 @@ import tempfile
 import time
 import traceback
 
-from aiohttp import ClientError, ClientSession, web
+from aiohttp import ClientError, ClientSession, ConnectionTimeoutError, web
 from aiohttp.test_utils import TestServer
 
 import server
@@ -51,6 +51,18 @@ def _cfg(cache_dir: str, **kw) -> Config:
     )
     defaults.update(kw)
     return Config(**defaults)
+
+
+class ProdSemanticsServer(TestServer):
+    """TestServer with the production handler semantics: aiohttp's test
+    harness hardcodes handler_cancellation=True (the handler task is
+    cancelled when the client hangs up), while web.run_app - how the
+    mirror runs in production - does not cancel.  The client-abort fill
+    depends on that difference, so tests for it must run uncancelled."""
+
+    async def _make_runner(self, **kwargs):
+        kwargs["handler_cancellation"] = False
+        return await super()._make_runner(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1035,146 @@ async def test_meta_name_alias(base: str) -> None:
             await up.close()
 
 
+async def test_client_abort_fill(base: str) -> None:
+    """A client that hangs up mid-download no longer aborts the fetch: a
+    full fetch finishes into the cache ('client gone, cached for retry'),
+    and a resume relay abandoned by its client schedules the whole-file
+    fill in the background - the retry is served from the cache instead
+    of repeating the doomed upstream attempt.  A connect-timeout dead
+    mirror skips its second attempt so the failover fits into the
+    client's 10 s low-speed budget."""
+    assert server.UPSTREAM_TIMEOUT.connect == 5, "must stay under pacman's 10 s abort"
+    upstream: dict[str, dict] = {}
+    calls: list = []  # (filename, Range header or None)
+
+    async def stub(request: web.Request) -> web.Response:
+        filename = request.match_info["filename"]
+        rec = upstream[filename]
+        rec["calls"] += 1
+        rng = request.headers.get("Range")
+        calls.append((filename, rng))
+        body: bytes = rec["body"]
+        if rng is not None:  # honor the resume range, stream slowly
+            start = int(rng.split("=")[1].rstrip("-") or 0)
+            payload, status = body[start:], 206
+            headers = {"Content-Range": "bytes %d-%d/%d"
+                       % (start, len(body) - 1, len(body))}
+        else:
+            payload, status = body, 200
+            headers = {}
+        resp = web.StreamResponse(status=status, headers=headers)
+        await resp.prepare(request)
+        for i in range(0, len(payload), 16384):
+            await resp.write(payload[i:i + 16384])
+            await asyncio.sleep(0.01)
+        await resp.write_eof()
+        return resp
+
+    up_app = web.Application()
+    up_app.router.add_get("/testrepo/{arch}/{filename}", stub)
+    up = TestServer(up_app)
+    await up.start_server()
+
+    cache_dir = os.path.join(base, "cache")
+    cfg = _cfg(cache_dir, extra_repos=[
+        Repo("slow", ["http://127.0.0.1:%d/testrepo/$arch" % up.port]),
+        Repo("t2", ["http://127.0.0.1:1/dead/$arch",
+                    "http://127.0.0.1:%d/testrepo/$arch" % up.port])])
+    app = build_app(cfg)
+    mirror = ProdSemanticsServer(app)
+    await mirror.start_server()
+    try:
+        base_url = str(mirror.make_url(""))
+        body_a = bytes(64 * 1024 * i % 251 for i in range(64 * 1024 * 4))
+        body_b = bytes(64 * 1024 * 3)
+        body_c = b"C-BODY"
+        upstream["gone-1.0-1-x86_64.pkg.tar.zst"] = dict(body=body_a, calls=0)
+        upstream["resume-1.0-1-x86_64.pkg.tar.zst"] = dict(body=body_b, calls=0)
+        upstream["after-dead-1.0-1-x86_64.pkg.tar.zst"] = dict(body=body_c, calls=0)
+        url_a = base_url + "/slow/os/x86_64/gone-1.0-1-x86_64.pkg.tar.zst"
+        url_b = base_url + "/slow/os/x86_64/resume-1.0-1-x86_64.pkg.tar.zst"
+        url_c = base_url + "/t2/os/x86_64/after-dead-1.0-1-x86_64.pkg.tar.zst"
+        cached_a = os.path.join(cache_dir, "slow/os/x86_64/gone-1.0-1-x86_64.pkg.tar.zst")
+        cached_b = os.path.join(
+            cache_dir, "slow/os/x86_64/resume-1.0-1-x86_64.pkg.tar.zst")
+        cached_c = os.path.join(
+            cache_dir, "t2/os/x86_64/after-dead-1.0-1-x86_64.pkg.tar.zst")
+
+        # --- full fetch, client hangs up mid-stream: the fetch keeps
+        # going into the cache and the retry is served from there
+        async with ClientSession() as http:
+            r = await http.get(url_a)
+            assert r.status == 200, r.status
+            got = b""
+            while len(got) < 64 * 1024:  # read a little, then hang up
+                got += await r.content.read(16 * 1024)
+            r.close()
+        assert await eventually(
+            lambda: os.path.exists(cached_a)
+            and open(cached_a, "rb").read() == body_a), \
+            "aborted fetch must finish into the cache"
+        assert upstream["gone-1.0-1-x86_64.pkg.tar.zst"]["calls"] == 1, \
+            "the fetch must continue, not restart"
+        async with ClientSession() as http:
+            async with http.get(url_a) as r:
+                assert r.status == 200 and await r.read() == body_a
+        assert upstream["gone-1.0-1-x86_64.pkg.tar.zst"]["calls"] == 1, \
+            "the retry must be a cache hit"
+
+        # --- resume relay abandoned by its client: background fill of the
+        # whole file, no Range on the fill request
+        async with ClientSession() as http:
+            r = await http.get(url_b, headers={"Range": "bytes=1024-"})
+            assert r.status == 206, r.status
+            got = b""
+            while len(got) < 64 * 1024:
+                got += await r.content.read(16 * 1024)
+            r.close()
+        assert await eventually(
+            lambda: os.path.exists(cached_b)
+            and open(cached_b, "rb").read() == body_b), \
+            "abandoned resume relay must schedule the background fill"
+        assert [(f, rng) for f, rng in calls if f.endswith("resume-1.0-1-x86_64.pkg.tar.zst")] \
+            == [("resume-1.0-1-x86_64.pkg.tar.zst", "bytes=1024-"),
+                ("resume-1.0-1-x86_64.pkg.tar.zst", None)], calls
+        async with ClientSession() as http:
+            async with http.get(url_b) as r:
+                assert r.status == 200 and await r.read() == body_b
+            async with http.get(url_b, headers={"Range": "bytes=100-"}) as r:
+                assert r.status == 206 and await r.read() == body_b[100:]
+
+        # --- connect-timeout dead mirror: single attempt, failover serves
+        real_client = mirror.app["client"]
+        dead = {"attempts": 0}
+
+        class DeadFirst:
+            def get(self, url, **kw):
+                if "/dead/" in url:
+                    dead["attempts"] += 1
+                    raise ConnectionTimeoutError("Connection timeout to host " + url)
+                return real_client.get(url, **kw)
+
+            def __getattr__(self, name):
+                return getattr(real_client, name)
+
+        mirror.app._state["client"] = DeadFirst()
+        try:
+            async with ClientSession() as http:
+                async with http.get(url_c) as r:
+                    assert r.status == 200 and await r.read() == body_c
+            assert dead["attempts"] == 1, \
+                "a connect timeout must skip the second attempt on the dead mirror"
+            assert open(cached_c, "rb").read() == body_c
+        finally:
+            # restore through _state: plain __setitem__ after startup warns
+            # (aiohttp's "changing state of started application" deprecation)
+            mirror.app._state["client"] = real_client
+    finally:
+        await mirror.close()
+        if not up.closed:
+            await up.close()
+
+
 TESTS = [
     ("vercmp", test_vercmp),
     ("parsers", test_parsers),
@@ -1037,6 +1189,7 @@ TESTS = [
     ("db-revalidation", test_db_revalidation),
     ("republish-prune", test_republish_prune),
     ("single-flight", test_single_flight),
+    ("client-abort-fill", test_client_abort_fill),
     ("byte-ranges", test_ranges),
 ]
 
