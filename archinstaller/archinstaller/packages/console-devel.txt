@@ -13,6 +13,7 @@ cfr
 clang
 container-diff
 corepack
+chntpw
 dive
 docker-buildx
 docker-compose
