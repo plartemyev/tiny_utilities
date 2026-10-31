@@ -42,6 +42,7 @@ libmirage
 libvirt-dbus
 lua-language-server
 lua-socket
+ipcalc
 molecule
 mono-msbuild-sdkresolver
 npm
@@ -95,10 +96,12 @@ vim-auto-pairs
 vim-devicons
 vim-jad
 vim-syntastic
-vint
+vint`
 virt-firmware
 virt-what
+vnstat
 vkd3d
 wit
 yaml-language-server
 yarn
+zmap

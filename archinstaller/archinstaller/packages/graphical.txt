@@ -9,6 +9,7 @@ colord-gtk
 devilspie
 dleyna
 dolphin-plugins
+easyeffects
 filelight
 firefox-i18n-en-ca
 firefox-i18n-ru
