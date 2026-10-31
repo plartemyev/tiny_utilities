@@ -4,6 +4,7 @@ gameconqueror
 kgraphviewer
 radeontop
 renderdoc
+regina
 scrcpy
 texlive-latexextra
 virglrenderer
