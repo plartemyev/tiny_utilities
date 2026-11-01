@@ -106,6 +106,7 @@ systemd-lsp
 tcpdump
 terragrunt
 tflint
+trace-cmd
 typescript-language-server
 uv
 vim-ale
