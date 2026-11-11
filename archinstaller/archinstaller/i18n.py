@@ -88,12 +88,12 @@ _EXACT: dict[str, str] = {
         "Установка хука очистки кэша пакетов",
     "Fetching and signing third-party repository keys":
         "Получение и локальная подпись ключей сторонних репозиториев",
-    "Installing the zcode build dependencies":
-        "Установка зависимостей сборки zcode",
+    "Preparing the zcode repository location and build dependencies":
+        "Подготовка расположения репозитория zcode и зависимостей сборки",
     "Unpacking the zcode-build scripts":
         "Распаковка скриптов сборки zcode",
-    "Building zcode from upstream (long step, first run ~1-2 h)":
-        "Сборка zcode из upstream (длительный шаг, первый запуск ~1-2 ч)",
+    "Building zcode from upstream (long step, first run ~20 min)":
+        "Сборка zcode из upstream (длительный шаг, первый запуск ~20 мин)",
     "Registering the local zcode repository and installing zcode":
         "Регистрация локального репозитория zcode и установка zcode",
     "Installing the nightly zcode rebuild timer":
@@ -525,11 +525,19 @@ _EXACT: dict[str, str] = {
     "The zcode packages are built on this machine from upstream"
     " (telemetry stripped): makepkg/base-devel for packaging, python"
     " for the strip script, and ruby for fpm (electron-builder's"
-    " pacman target) on graphical installs.":
+    " pacman target) on graphical installs. The packages are"
+    " published into a world-readable local repository — pacman's"
+    " download sandbox (DownloadUser=alpm) fetches file://"
+    " repositories as the unprivileged alpm user and cannot read"
+    " inside the 0700 home.":
         "Пакеты zcode собираются на этой машине из upstream (с вырезанной"
         " телеметрией): makepkg/base-devel для упаковки, python для скрипта"
         " вырезания и ruby для fpm (pacman-цель electron-builder) при"
-        " графической установке.",
+        " графической установке. Пакеты публикуются в доступный всем для"
+        " чтения локальный репозиторий — песочница загрузки pacman"
+        " (DownloadUser=alpm) забирает file://-репозитории от имени"
+        " непривилегированного пользователя alpm и не может читать внутри"
+        " домашнего каталога с правами 0700.",
 
     "The build scripts travel as one tarball uploaded by archinstaller"
     " (the zcode_build package-data tree). When replaying this"
@@ -543,13 +551,15 @@ _EXACT: dict[str, str] = {
     "Checks out zai-org/ZCode, strips the telemetry surface"
     " (assert-anchored; a drifted upstream fails the run instead of"
     " shipping telemetry), builds the packages and publishes them"
-    " into the local pacman repository at ~/zcode-build/out. The"
-    " persistent cache/ next to it keeps re-runs incremental.":
+    " into the local pacman repository. The persistent cache/ next"
+    " to the scripts keeps re-runs incremental, and the build"
+    " early-exits when upstream and the scripts are unchanged.":
         "Получает исходники zai-org/ZCode, вырезает телеметрию (привязано к"
         " якорям; разошедшийся upstream валит запуск вместо доставки"
         " телеметрии), собирает пакеты и публикует их в локальный pacman-"
-        "репозиторий ~/zcode-build/out. Расположенный рядом постоянный cache/"
-        " делает повторные запуски инкрементальными.",
+        "репозиторий. Расположенный рядом постоянный cache/ делает повторные"
+        " запуски инкрементальными, а при неизменных upstream и скриптах"
+        " сборка завершается сразу после проверки.",
 
     "The repository the previous step published is local-only"
     " (file:// server), so no signature checking applies — the"
@@ -573,13 +583,19 @@ _EXACT: dict[str, str] = {
     " package; listening on 0.0.0.0 requires a token (the runner"
     " refuses to start otherwise), passed via --token and equivalent"
     " to agent-level access, so the unit file is the secret here."
-    " The start is queued with --no-block because a blocking start"
-    " can hold the SSH channel open; verify with `systemctl --user"
-    " is-active zcode-web.service`.":
+    " Headless systems have no OS credential store, so the unit"
+    " points zcode at a generated secret file (regenerating it"
+    " would lose stored credentials). The start is queued with"
+    " --no-block because a blocking start can hold the SSH channel"
+    " open; verify with `systemctl --user is-active"
+    " zcode-web.service`.":
         "zcode --web отдаёт браузерную рабочую среду из установленного пакета;"
         " прослушивание 0.0.0.0 требует токен (иначе запуск невозможен),"
         " передаваемый через --token и эквивалентный доступу уровня агента,"
-        " поэтому файл юнита здесь и есть секрет. Запуск ставится в очередь"
+        " поэтому файл юнита здесь и есть секрет. На безголовых системах нет"
+        " хранилища секретов ОС, поэтому юнит указывает zcode на"
+        " сгенерированный файл секрета (его перегенерация приведёт к потере"
+        " сохранённых учётных данных). Запуск ставится в очередь"
         " с --no-block, поскольку блокирующий запуск способен удерживать канал"
         " SSH открытым; проверка выполняется командой `systemctl --user"
         " is-active zcode-web.service`.",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import dataclasses
 import ipaddress
 import socket
@@ -7,6 +9,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import paramiko
 
@@ -40,6 +43,28 @@ class SshConnection:
             self.jump_client.close()
 
 
+def _key_is_encrypted(path: str) -> bool:
+    """True when the private key file needs a passphrase to load.
+
+    OpenSSH-format keys carry the bcrypt KDF name inside the base64 body
+    (searching the raw bytes would miss it); PEM keys declare encryption
+    in the plain Proc-Type header.
+    """
+    try:
+        text = Path(path).read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if "ENCRYPTED" in text:
+        return True
+    body = "".join(line for line in text.splitlines()
+                   if not line.startswith("-----"))
+    try:
+        decoded = base64.b64decode(body, validate=False)
+    except (binascii.Error, ValueError):
+        return False
+    return b"bcrypt" in decoded
+
+
 def connect_target(
     host: str,
     port: int,
@@ -56,6 +81,13 @@ def connect_target(
         sock = jump_client.get_transport().open_channel(
             "direct-tcpip", (host, port), (jump.host, jump.port),
         )
+    if key_filename is not None and password is None and _key_is_encrypted(key_filename):
+        # paramiko raises PasswordRequiredException before ever trying the
+        # agent; with password auth there is no fallback, so only drop the
+        # explicit key when agent/default keys can take over
+        print(f"private key {key_filename} is passphrase-protected; "
+              "authenticating via the ssh agent instead")
+        key_filename = None
     try:
         client = _connect_single(host, port, username, password, sock=sock,
                                  key_filename=key_filename, timeout=timeout)

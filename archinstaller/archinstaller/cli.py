@@ -715,6 +715,7 @@ def _state_object(args: argparse.Namespace, hostname: str, root_password: str, u
         "hostname": hostname,
         "timezone": args.timezone,
         "reboot_timeout": args.reboot_timeout,
+        "graphical": args.graphical,
         "private_key": private_key,
         "jump": dataclasses.asdict(jump) if jump is not None else None,
         "opencode": opencode_password is not None,
@@ -779,6 +780,7 @@ def _resume_stage(path: str) -> None:
         username=state["username"],
         timezone=state["timezone"],
         jump_host=state["jump"]["host"] if state.get("jump") is not None else None,
+        graphical=state.get("graphical", False),
     )
     opencode_password = state["opencode_password"] if state["opencode"] else None
     zcode_token = state["zcode_token"] if state["zcode"] else None
@@ -911,7 +913,7 @@ def _run_installation(
             opencode=args.opencode,
             opencode_password=opencode_password,
             zcode=args.zcode,
-            zcode_token=zcode_token,
+            zcode_token=None,  # stage two gets the real token via _finish_install
             hostonly_mac=hostonly.mac if hostonly else "",
             hostonly_address=hostonly.guest_cidr if hostonly else "",
         )
@@ -1090,10 +1092,12 @@ def _run_step(conn: SshConnection, step, user_password: str) -> None:
     timeout = step.timeout if step.timeout is not None else 60
     for command in step.commands:
         if step.root:
-            run_streaming(conn.client, f"sudo -S -p '' {command}",
-                          stdin_text=user_password + "\n", timeout=timeout)
+            code = run_streaming(conn.client, f"sudo -S -p '' {command}",
+                                 stdin_text=user_password + "\n", timeout=timeout)
         else:
-            run_streaming(conn.client, command, timeout=timeout)
+            code = run_streaming(conn.client, command, timeout=timeout)
+        if code != 0:
+            sys.exit(f"stage-two step {step.title!r} failed with code {code}: {command}")
 
 
 def _wait_user_service_active(client: paramiko.SSHClient, unit: str,

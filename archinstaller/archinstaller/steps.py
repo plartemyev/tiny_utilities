@@ -86,10 +86,12 @@ OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
 ZCODE_WEB_PORT = 8290
 ZCODE_UNIT_PATH = ".config/systemd/user/zcode-web.service"
 # On-target zcode build (archinstaller/zcode_build package data). The build
-# tree lands in the created user's home; out/ inside it is registered as a
-# local file:// pacman repository, so pacman -Syu picks up the nightly
-# rebuilds of the zcode-update timer.
+# tree lands in the created user's home; the published packages live in
+# /var/cache/zcode-build/out — pacman's download sandbox (DownloadUser=alpm,
+# enabled by stock pacman.conf on current Arch) fetches file:// repositories
+# as the unprivileged 'alpm' user, which cannot traverse a 0700 home.
 ZCODE_BUILD_HOME = "zcode-build"
+ZCODE_REPO_DIR = "/var/cache/zcode-build/out"
 ZCODE_BUILD_TIMEOUT = 3 * 60 * 60  # first build: checkout + pnpm + electron
 ZCODE_UPDATE_TIMER = "03:17"       # off the busy hour marks, like the old nightly
 
@@ -253,6 +255,10 @@ def zcode_web_unit(zcode_token: str) -> str:
         "After=network-online.target",
         "",
         "[Service]",
+        # headless servers have no Secret Service: zcode's credential store
+        # needs an explicit secret file (0600, 32-4096 bytes) or it refuses
+        # to start (CREDENTIAL_SECURE_STORAGE_UNAVAILABLE)
+        "Environment=ZCODE_CREDENTIAL_SECRET_FILE=%h/.zcode/v2/credential-secret",
         f"ExecStart=/usr/bin/zcode --web --host 0.0.0.0 --port {ZCODE_WEB_PORT}"
         f" --no-open --token {zcode_token}",
         "Restart=on-failure",
@@ -306,6 +312,7 @@ def zcode_update_units(desktop: bool) -> tuple[str, str]:
         "[Service]\n"
         "Type=oneshot\n"
         f"{desktop_env}"
+        f"Environment=ZCODE_OUT={ZCODE_REPO_DIR}\n"
         f"ExecStart=/bin/bash %h/{ZCODE_BUILD_HOME}/build.sh\n"
     )
     timer = (
@@ -888,14 +895,6 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
         build_deps = ("base-devel git python"
                       + (" ruby ruby-rubygems" if zcode_desktop else ""))
         steps.extend([
-            Step("Installing the zcode build dependencies", (
-                f"pacman -Sy --needed --noconfirm {build_deps}",
-            ), rationale=(
-                "The zcode packages are built on this machine from upstream"
-                " (telemetry stripped): makepkg/base-devel for packaging, python"
-                " for the strip script, and ruby for fpm (electron-builder's"
-                " pacman target) on graphical installs."
-            ), context=POST_BOOT, root=True),
             Step("Unpacking the zcode-build scripts", (
                 f"mkdir -p ~/{ZCODE_BUILD_HOME}",
                 (f"base64 -d /home/{username}/zcode-build.tar.b64"
@@ -907,25 +906,50 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
                 " workbook manually, copy that directory from the archinstaller"
                 " source to ~/zcode-build instead."
             ), context=POST_BOOT),
-            Step("Building zcode from upstream (long step, first run ~1-2 h)", (
-                f"cd ~/{ZCODE_BUILD_HOME} && ZCODE_DESKTOP={int(zcode_desktop)} ./build.sh",
+            Step("Preparing the zcode repository location and build dependencies", (
+                # a stale [zcode] section (a resumed run after the repo was
+                # registered but not yet populated) would break every
+                # pacman -Sy below; it is re-registered after the first build
+                "sed -i '/^\\[zcode\\]$/,+2d' /etc/pacman.conf",
+                f"install -d -o {username} -g {username} {ZCODE_REPO_DIR}",
+                # a valid EMPTY repo db keeps pacman -Sy working even while
+                # the first build has not published anything yet (pacman's
+                # download sandbox reads the repo as the 'alpm' user, hence
+                # the world-readable location outside the 0700 home)
+                ("[ -f %s/zcode.db.tar.gz ] ||"
+                 " tar -czf %s/zcode.db.tar.gz -T /dev/null"
+                 % (ZCODE_REPO_DIR, ZCODE_REPO_DIR)),
+                f"chown {username}:{username} {ZCODE_REPO_DIR}/zcode.db.tar.gz",
+                f"ln -sf zcode.db.tar.gz {ZCODE_REPO_DIR}/zcode.db",
+                f"pacman -Sy --needed --noconfirm {build_deps}",
+            ), rationale=(
+                "The zcode packages are built on this machine from upstream"
+                " (telemetry stripped): makepkg/base-devel for packaging, python"
+                " for the strip script, and ruby for fpm (electron-builder's"
+                " pacman target) on graphical installs. The packages are"
+                " published into a world-readable local repository — pacman's"
+                " download sandbox (DownloadUser=alpm) fetches file://"
+                " repositories as the unprivileged alpm user and cannot read"
+                " inside the 0700 home."
+            ), context=POST_BOOT, root=True),
+                    Step("Building zcode from upstream (long step, first run ~20 min)", (
+                (f"cd ~/{ZCODE_BUILD_HOME} && ZCODE_OUT={ZCODE_REPO_DIR}"
+                 f" ZCODE_DESKTOP={int(zcode_desktop)} ./build.sh"),
             ), rationale=(
                 "Checks out zai-org/ZCode, strips the telemetry surface"
                 " (assert-anchored; a drifted upstream fails the run instead of"
                 " shipping telemetry), builds the packages and publishes them"
-                " into the local pacman repository at ~/zcode-build/out. The"
-                " persistent cache/ next to it keeps re-runs incremental."
+                " into the local pacman repository. The persistent cache/ next"
+                " to the scripts keeps re-runs incremental, and the build"
+                " early-exits when upstream and the scripts are unchanged."
             ), context=POST_BOOT, id="zcode-build",
                 timeout=ZCODE_BUILD_TIMEOUT),
             Step("Registering the local zcode repository and installing zcode", (
-                # sh -c: the whole guard+append must run elevated — a bare
-                # `grep || cat` after the sudo prefix would append as the user
-                _heredoc("sh -c \"grep -q '^\\[zcode\\]' /etc/pacman.conf ||"
-                         " cat >> /etc/pacman.conf\" <<'ZCODE'\n"
+                _heredoc("sh -c \"cat >> /etc/pacman.conf\" <<'ZCODE'\n"
                          "\n"
                          "[zcode]\n"
                          "SigLevel = Never\n"
-                         f"Server = file:///home/{username}/{ZCODE_BUILD_HOME}/out",
+                         f"Server = file://{ZCODE_REPO_DIR}",
                          "ZCODE"),
                 f"pacman -Sy --needed --noconfirm {desktop_pkgs}",
             ), rationale=(
@@ -949,7 +973,14 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
                 " --user -u zcode-update.service."
             ), context=POST_BOOT, id="zcode-update"),
             Step("Installing the zcode-web user service", (
-                "mkdir -p ~/.config/systemd/user",
+                "mkdir -p ~/.config/systemd/user ~/.zcode/v2",
+                # headless: no Secret Service, so zcode's credential store
+                # needs this file; never regenerate — it encrypts stored
+                # credentials
+                ("[ -f ~/.zcode/v2/credential-secret ] ||"
+                 " { head -c 48 /dev/urandom | base64"
+                 " > ~/.zcode/v2/credential-secret;"
+                 " chmod 600 ~/.zcode/v2/credential-secret; }"),
                 _heredoc(f"cat > {ZCODE_UNIT_PATH} <<'UNIT'",
                          *zcode_web_unit(zcode_token).splitlines(), "UNIT"),
                 f"chmod 644 $HOME/{ZCODE_UNIT_PATH}",
@@ -961,9 +992,12 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
                 " package; listening on 0.0.0.0 requires a token (the runner"
                 " refuses to start otherwise), passed via --token and equivalent"
                 " to agent-level access, so the unit file is the secret here."
-                " The start is queued with --no-block because a blocking start"
-                " can hold the SSH channel open; verify with `systemctl --user"
-                " is-active zcode-web.service`."
+                " Headless systems have no OS credential store, so the unit"
+                " points zcode at a generated secret file (regenerating it"
+                " would lose stored credentials). The start is queued with"
+                " --no-block because a blocking start can hold the SSH channel"
+                " open; verify with `systemctl --user is-active"
+                " zcode-web.service`."
             ), context=POST_BOOT, id="zcode-service"),
             Step(f"Opening port {ZCODE_WEB_PORT} in firewalld", (
                 f"firewall-cmd --permanent --add-port={ZCODE_WEB_PORT}/tcp",

@@ -14,7 +14,8 @@
 #   - nightly by the zcode-update.timer user unit;
 #   - manually: cd ~/zcode-build && ./build.sh
 #
-# Layout: out/ is the served pacman repository (packages + zcode.db);
+# Layout: out/ (or /var/cache/zcode-build/out on archinstaller targets) is
+# the published pacman repository (packages + zcode.db);
 # cache/ is the persistent state (upstream shallow checkout, pinned Node,
 # pnpm store, electron cache, gem home); tmp/ is per-run scratch, wiped upfront.
 set -euo pipefail
@@ -23,6 +24,13 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 CACHE="${ZCODE_CACHE:-$DIR/cache}"
 WORK="${ZCODE_WORK:-$DIR/tmp}"
 OUT="${ZCODE_OUT:-$DIR/out}"
+# on archinstaller targets the published repo lives outside the (0700) home:
+# pacman's download sandbox fetches file:// repositories as the unprivileged
+# 'alpm' user, which cannot read the home directory
+if [ -z "${ZCODE_OUT:-}" ] && [ -d /var/cache/zcode-build/out ] \
+    && [ -w /var/cache/zcode-build/out ]; then
+    OUT=/var/cache/zcode-build/out
+fi
 REF="${ZCODE_REF:-origin/main}"
 UPSTREAM_URL="${ZCODE_UPSTREAM_URL:-https://github.com/zai-org/ZCode.git}"
 BUILD_DESKTOP="${ZCODE_DESKTOP:-0}"
@@ -62,15 +70,19 @@ if [ "$BUILD_DESKTOP" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Telemetry build-env hygiene: these are compile-time capability injections
-# (scripts/build-time-config.mjs). Explicitly empty = the capability is
-# compiled out; public checkouts have no config/private/ defaults anyway.
+# Telemetry build-env hygiene: the ENDPOINT/AUTO_UPDATE variables are
+# compile-time capability injections (scripts/build-time-config.mjs) —
+# explicitly empty means the capability is compiled out; public checkouts
+# have no config/private/ defaults anyway. ZCODE_DIST_BASE_URL is different:
+# build:zcode REQUIRES it to be set (its default lives in the internal-only
+# config/private/), so it gets a dummy URL — with auto-update compiled out
+# nothing ever fetches from it.
 # ---------------------------------------------------------------------------
 export ZCODE_ARMS_RUM_ENDPOINT=""
 export ZCODE_TELEMETRY_REPORT_ENDPOINT=""
 export ZCODE_AUTO_UPDATE=""
 export COREPACK_ENABLE_PROJECT_SPEC=0
-export ZCODE_DIST_BASE_URL=""
+export ZCODE_DIST_BASE_URL="http://127.0.0.1:8283/"
 [ -n "$ELECTRON_MIRROR" ] && export ELECTRON_MIRROR
 
 # ---------------------------------------------------------------------------
@@ -176,6 +188,9 @@ log "toolchain: node $NODE_VERSION, pnpm $PNPM_VERSION"
 cd "$SRC"
 export ELECTRON_CACHE=$CACHE/electron
 pnpm install --no-frozen-lockfile --prefer-offline --store-dir "$CACHE/pnpm-store"
+# upstream prerequisite (build-zcode staging errors out without it):
+# tsc -b @zcode/shared + the CLI package chain the SEA/TUI runtime needs
+pnpm build:sea:prepare
 pnpm build:zcode
 VERSION=$(node -p "require('./package.json').version")
 TARBALL=$SRC/dist/zcode/releases/$VERSION/zcode-$VERSION.tar.gz
@@ -284,7 +299,7 @@ ln -s zcode.db.tar.gz "$OUT/zcode.db"
 # index; stale files would otherwise accumulate forever). The [0-9] boundary
 # keeps "zcode-*" from also matching the zcode-desktop files.
 for prefix in "zcode-[0-9]" "zcode-desktop-[0-9]"; do
-    ls "$OUT/$prefix"*.pkg.tar.zst 2>/dev/null | sort -V | head -n -1 | while read -r old; do
+    { ls "$OUT/$prefix"*.pkg.tar.zst 2>/dev/null || true; } | sort -V | head -n -1 | while read -r old; do
         rm -f "$old"
         log "pruned old package $old"
     done

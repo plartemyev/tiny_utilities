@@ -69,11 +69,23 @@ def fixture_checkout(root: Path) -> None:
     write(root, "patches/@arms__rum-electron@0.0.3.patch", "fake patch\n")
     write(root, "apps/zcode-cli/packages/telemetry/src/bootstrap.ts", (
         "export function resolveOtlpTraceEndpoint(env: EnvRecord): string | undefined {\n"
-        "  return env.OTLP_URL;\n"
+        "  const traceEndpoint = env.OTLP_URL?.trim();\n"
+        "  if (traceEndpoint) return validHttpUrl(traceEndpoint);\n"
+        "  return undefined;\n"
         "}\n"
         "\n"
         "export function resolveOtlpMetricEndpoint(env: EnvRecord): string | undefined {\n"
-        "  return env.OTLP_METRIC_URL;\n"
+        "  const metricEndpoint = env.OTLP_METRIC_URL?.trim();\n"
+        "  if (metricEndpoint) return validHttpUrl(metricEndpoint);\n"
+        "  return undefined;\n"
+        "}\n"
+        "\n"
+        "function validHttpUrl(value: string): string | undefined {\n"
+        "  try {\n"
+        "    return new URL(value).protocol.startsWith(\"http\") ? value : undefined;\n"
+        "  } catch {\n"
+        "    return undefined;\n"
+        "  }\n"
         "}\n"
         "\n"
         "async function createPreparedOwner(\n"
@@ -156,6 +168,12 @@ def test_strip_applies_every_layer(tmp_path):
     bootstrap = (checkout / "apps/zcode-cli/packages/telemetry/src/bootstrap.ts").read_text()
     assert bootstrap.count("return undefined; // telemetry strip") == 2
     assert "never activate" in bootstrap            # createPreparedOwner replaced
+    # narrowing-sensitive bodies must be REMOVED, not left unreachable:
+    # tsc does not narrow inside unreachable code (regression: the real
+    # upstream bodies failed the package build with TS2345)
+    assert "return validHttpUrl(traceEndpoint)" not in bootstrap
+    assert "return validHttpUrl(metricEndpoint)" not in bootstrap
+    assert "resolveTelemetryIdentity" in bootstrap   # the next function survives
     assert not (checkout / "apps/zcode-cli/packages/telemetry/src/otlp-exporter.ts").exists()
 
     exporter = (checkout / "packages/desktop/src/main/rendererActionTraceExporter.ts").read_text()
@@ -212,6 +230,7 @@ def test_zcode_update_units_bake_the_desktop_flag():
     from archinstaller.steps import zcode_update_units
     service, timer = zcode_update_units(desktop=True)
     assert "Environment=ZCODE_DESKTOP=1" in service
+    assert "Environment=ZCODE_OUT=/var/cache/zcode-build/out" in service
     assert "build.sh" in service
     assert "OnCalendar=*-*-* 03:17:00" in timer
     assert "Persistent=true" in timer

@@ -80,16 +80,23 @@ def strip_bootstrap(root: pathlib.Path) -> None:
     text = read_text(root, relative)
     note = "  return undefined; // telemetry strip: OTLP activation removed"
 
-    def early_return(signature):
+    # Replace the WHOLE function body, not just prepend a return: TypeScript
+    # does not apply control-flow narrowing inside unreachable code, so a
+    # kept body after the early return fails tsc on its narrowing-sensitive
+    # lines (observed live: resolveOtlp*Endpoint callers pass `string | undefined`).
+    def neutralize(signature):
         nonlocal text
-        if signature not in text:
-            die(f"anchor not found in {relative}: {signature!r}")
         if text.count(signature) != 1:
             die(f"anchor not unique in {relative}: {signature!r}")
-        text = text.replace(signature, signature + "\n" + note, 1)
+        end = text.find("\n}\n", text.index(signature))
+        if end < 0:
+            die(f"closing brace not found for {signature!r} in {relative}")
+        end += len("\n}\n")
+        text = (text[:text.index(signature)] + signature + "\n" + note
+                + "\n}\n" + text[end:])
 
-    early_return("export function resolveOtlpTraceEndpoint(env: EnvRecord): string | undefined {")
-    early_return("export function resolveOtlpMetricEndpoint(env: EnvRecord): string | undefined {")
+    neutralize("export function resolveOtlpTraceEndpoint(env: EnvRecord): string | undefined {")
+    neutralize("export function resolveOtlpMetricEndpoint(env: EnvRecord): string | undefined {")
 
     # Replace the whole createPreparedOwner body: it dynamically imports the
     # (deleted) otlp-exporter module, so it must go entirely.

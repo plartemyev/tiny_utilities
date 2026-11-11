@@ -347,8 +347,9 @@ What the flag does on the target (stage two, over SSH):
   telemetry back), `pnpm build:zcode` with the pinned Node runtime
   vendored into the package, and — with `--graphical` — the Electron
   desktop app; a post-build gate verifies the artifacts are clean. The
-  first build takes 1–2 h and several GB of downloads; the persistent
-  `~/zcode-build/cache/` makes re-runs incremental;
+  first build took ~14 min on the reference 4 vCPU / 8 GiB libvirt target
+  (warm pnpm store; ~20 min fully cold) and lands several GB of caches in
+  `~/zcode-build/cache/`, making re-runs incremental;
 - publishes the packages into a **local pacman repository**
   (`~/zcode-build/out`, registered in `/etc/pacman.conf` as a `file://`
   server) and installs `zcode` (+ `zcode-desktop` when `--graphical`)

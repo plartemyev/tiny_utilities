@@ -62,19 +62,23 @@ Environment knobs: `ZCODE_REF`, `ZCODE_DESKTOP`, `ZCODE_ELECTRON_MIRROR`,
 `ZCODE_SHALLOW=0` (full history fetch, for exotic refs like old commit
 SHAs), `ZCODE_UPSTREAM_URL` (alternate upstream/mirror).
 
-## Speed profile
+## Speed profile (measured on a 4 vCPU / 8 GiB libvirt target)
 
-The first run pays everything: shallow upstream clone (one tree, not the
-history), the multi-GB pnpm dependency download, the Electron binary and
-the full TS/bundler build — expect the better part of an hour or two on a
-typical VM, dominated by network. Everything below `cache/` persists
-across builds and reboots, so re-runs skip all downloads and pay only the
-CPU cost of the rebuild (minutes). On top of that, `build.sh` early-exits
-after the fetch when the upstream commit, the strip scripts and the
-desktop flag are all unchanged since the last build (recorded in
-`out/build-stamp.txt`) — quiet weeks make the nightly a no-op that costs
-one `git fetch`. `ZCODE_FORCE=1` overrides. `pnpm install` runs with
-`--prefer-offline`, so a warm store also skips the registry round-trips.
+The first run pays everything: shallow upstream clone (~18.6k files), the
+multi-GB pnpm dependency download, the Electron binary and the full
+TS/bundler build. Measured end-to-end on the reference target: **~14 min**
+with a warm pnpm store, ~20 min fully cold — nowhere near the 1–2 h first
+guesses. Everything below `cache/` persists across builds and reboots
+(pnpm store 2.8 GiB, checkout 1.3 GiB, pinned Node 229 MiB), so re-runs
+download nothing and pay only the CPU cost (~13 min).
+
+On top of that, `build.sh` early-exits after the fetch when the upstream
+commit, the strip scripts and the desktop flag are all unchanged since the
+last build (recorded in `out/build-stamp.txt`) — quiet weeks make the
+nightly a no-op that costs one `git fetch` and a few seconds. Verified
+live: a manual re-run right after an install exits with `up to date`.
+`ZCODE_FORCE=1` overrides. `pnpm install` runs with `--prefer-offline`,
+so a warm store also skips the registry round-trips.
 
 ## Build dependencies (installed by archinstaller)
 

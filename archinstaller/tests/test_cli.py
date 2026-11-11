@@ -87,6 +87,7 @@ def test_zcode_unit_contents():
     assert "After=network-online.target" in unit
     assert (f"ExecStart=/usr/bin/zcode --web --host 0.0.0.0 --port {ZCODE_WEB_PORT}"
             " --no-open --token tok_abc123-_" in unit)
+    assert "ZCODE_CREDENTIAL_SECRET_FILE=" in unit  # headless credential store
     assert "Restart=on-failure" in unit
     assert "WantedBy=default.target" in unit
 
@@ -282,6 +283,37 @@ def test_state_roundtrip(tmp_path: Path):
     cli._save_state(str(path), state)
     assert path.stat().st_mode & 0o777 == 0o600
     assert cli._load_state(str(path)) == state
+    assert state["graphical"] is False  # resume needs it for zcode_desktop
+
+
+def test_ssh_encrypted_key_falls_back_to_agent(monkeypatch, capsys, tmp_path: Path):
+    """An encrypted private key must not kill the stage-two reconnect:
+    paramiko raises PasswordRequiredException before ever trying the agent,
+    so connect_target drops the explicit key up front."""
+    from archinstaller import ssh as ssh_mod
+
+    unencrypted = tmp_path / "plain_key"
+    unencrypted.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                           "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n"
+                           "-----END OPENSSH PRIVATE KEY-----\n")
+    encrypted = tmp_path / "locked_key"
+    encrypted.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                         "b3BlbnNzaC1rZXktdjEAAAAABGJjcnlwdAAAAAAAAAABCds2\n"
+                         "-----END OPENSSH PRIVATE KEY-----\n")
+    assert not ssh_mod._key_is_encrypted(str(unencrypted))
+    assert ssh_mod._key_is_encrypted(str(encrypted))
+
+    captured = {}
+    monkeypatch.setattr(ssh_mod, "_connect_single",
+                        lambda host, port, username, password, **kw:
+                        captured.update(kw) or "client")
+    conn = ssh_mod.connect_target("t", 22, "u", None, key_filename=str(encrypted))
+    assert conn.client == "client"
+    assert captured["key_filename"] is None  # dropped: the agent takes over
+    assert "passphrase-protected" in capsys.readouterr().out
+
+    conn = ssh_mod.connect_target("t", 22, "u", None, key_filename=str(unencrypted))
+    assert captured["key_filename"] == str(unencrypted)  # kept as-is
 
 
 def test_wait_user_service_active_polls_until_active(monkeypatch):
@@ -431,26 +463,90 @@ def test_zcode_post_boot_uploads_payload_and_builds(monkeypatch):
     steps = post_boot_steps("alice", "hst", "TZ", False, None,
                             True, "tok", zcode_desktop=True)
     titles = [s.title for s in steps]
-    assert "Installing the zcode build dependencies" in titles
+    assert "Preparing the zcode repository location and build dependencies" in titles
     build = next(s for s in steps if s.id == "zcode-build")
     assert build.timeout == ZCODE_BUILD_TIMEOUT
     assert "ZCODE_DESKTOP=1" in build.commands[0]
+    assert "ZCODE_OUT=/var/cache/zcode-build/out" in build.commands[0]
     assert not build.root
     repo = next(s for s in steps if "Registering the local zcode repository" in s.title)
-    assert "file:///home/alice/zcode-build/out" in repo.commands[0]
+    assert "file:///var/cache/zcode-build/out" in repo.commands[0]
     assert "zcode zcode-desktop" in repo.commands[1]
     assert repo.root
+    # deps step bootstraps the world-readable repo location (pacman's
+    # DownloadUser=alpm sandbox cannot read the 0700 home)
+    deps = next(s for s in steps
+                if "Preparing the zcode repository location" in s.title)
+    assert "install -d -o alice -g alice /var/cache/zcode-build/out" in deps.commands[1]
+    assert "pacman -Sy --needed" in deps.commands[-1]
+    assert deps.root
     timer = next(s for s in steps if s.id == "zcode-update")
     assert "enable --now zcode-update.timer" in timer.commands[-1]
     # console installs: no ruby build dep, no zcode-desktop package
     console_steps = post_boot_steps("alice", "hst", "TZ", False, None,
                                     True, "tok", zcode_desktop=False)
     console_deps = next(s for s in console_steps
-                        if s.title == "Installing the zcode build dependencies")
-    assert "ruby" not in console_deps.commands[0]
+                        if "Preparing the zcode repository location" in s.title)
+    assert "ruby" not in console_deps.commands[-1]
     console_repo = next(s for s in console_steps
                         if "Registering the local zcode repository" in s.title)
     assert console_repo.commands[1].endswith("noconfirm zcode")
+
+
+def test_run_installation_zcode_smoke(monkeypatch, capsys):
+    """Regression: the provisioned --zcode path used to die with NameError
+    (undefined zcode_token) at the InstallConfig construction — this exact
+    combination had never been exercised. The install script itself stays
+    zcode-free (everything zcode lives in stage two now)."""
+    uploaded = {}
+
+    class FakeConn:
+        client = None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (0, ""))
+    monkeypatch.setattr(cli, "upload_text",
+                        lambda client, text, path: uploaded.update(text=text))
+    monkeypatch.setattr(cli, "run_streaming", lambda client, cmd, **kw: 0)
+    monkeypatch.setattr(cli, "connect_target", lambda *a, **kw: FakeConn())
+    args = make_args(virt="kvm", discard=True, zcode=True)
+    cli._run_installation(args, "testhost", None, "rootpw", "userpw", None,
+                          "key", jump=None, guest_reboot=False, local_mirror=None)
+    assert "Uploading installation script" in capsys.readouterr().out
+    assert "[zcode]" not in uploaded["text"]
+    assert "zcode-repo" not in uploaded["text"]
+
+
+def test_run_step_fails_fast_on_nonzero_exit(monkeypatch):
+    """A failed stage-two command must abort the run (the zcode build once
+    failed silently and the flow 'finished' without zcode installed)."""
+    from archinstaller.steps import Step
+
+    monkeypatch.setattr(cli, "run_streaming", lambda client, cmd, **kw: 1)
+    conn = SimpleNamespace(client=None)
+    step = Step("Building zcode", ("cd ~/zcode-build && ./build.sh",),
+                context="post-boot", id="zcode-build", timeout=60)
+    try:
+        cli._run_step(conn, step, "pw")
+    except SystemExit as exc:
+        assert "Building zcode" in str(exc)
+        assert "code 1" in str(exc)
+    else:
+        raise AssertionError("nonzero exit did not abort the run")
+
+
+def test_run_step_fails_fast_on_nonzero_exit_root(monkeypatch):
+    from archinstaller.steps import Step
+
+    seen = {}
+    monkeypatch.setattr(cli, "run_streaming",
+                        lambda client, cmd, **kw: seen.update(cmd=cmd) or 0)
+    conn = SimpleNamespace(client=None)
+    step = Step("Root step", ("pacman -Sy zcode",), context="post-boot", root=True)
+    cli._run_step(conn, step, "pw")
+    assert seen["cmd"].startswith("sudo -S -p '' ")
 
 
 def test_target_gateway_parsed_from_default_route(monkeypatch):
@@ -593,8 +689,8 @@ def test_run_workbook_zcode_build_steps_and_token_rendering(tmp_path, monkeypatc
                      zcode=True)
     cli._run_workbook(args)
     text = out.read_text()
-    assert "ZCODE_DESKTOP=0 ./build.sh" in text
-    assert "Server = file:///home/nameless/zcode-build/out" in text
+    assert "ZCODE_OUT=/var/cache/zcode-build/out ZCODE_DESKTOP=0 ./build.sh" in text
+    assert "Server = file:///var/cache/zcode-build/out" in text
     assert "--token {{ZCODE_TOKEN}}" in text
     assert "zcode-update.timer" in text
 
