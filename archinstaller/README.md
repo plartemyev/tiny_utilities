@@ -356,7 +356,9 @@ What the flag does on the target (stage two, over SSH):
   other package;
 - enables `zcode-update.timer` (systemd user unit, nightly 03:17,
   `Persistent=true`): rebuilds the latest upstream `main` into the same
-  local repository; logs in `journalctl --user -u zcode-update`;
+  local repository — and early-exits after the fetch when upstream and
+  the build scripts are unchanged, so quiet nights cost nothing; logs in
+  `journalctl --user -u zcode-update`;
 - deploys `~/.config/systemd/user/zcode-web.service` running
   `zcode --web --host 0.0.0.0 --port 8290 --no-open --token <token>`
   with a token equivalent to `openssl rand -base64 24 | tr '/+' '_-'`

@@ -204,6 +204,7 @@ def test_payload_carries_the_strip_scripts():
     assert modes["strip-telemetry.sh"] == 0o755
     assert modes["strip_telemetry.py"] == 0o644
     assert "README.md" not in names          # repo docs stay out of the payload
+    assert not any(n.startswith("tmp/") for n in names)  # dev tests too
     assert "packaging/zcode/PKGBUILD" in modes
 
 
@@ -225,3 +226,12 @@ def test_build_script_syntax():
         result = subprocess.run(["bash", "-n", str(BUILD_DIR / name)],
                                 capture_output=True, text=True)
         assert result.returncode == 0, f"{name}: {result.stderr}"
+
+
+def test_git_and_early_exit_mechanics():
+    """The persistent-shallow-checkout + up-to-date-exit regression tests
+    (synthetic upstream, never touches the real repository)."""
+    for script in ("git-mechanics.sh", "build-early-exit.sh"):
+        result = subprocess.run(["bash", str(BUILD_DIR / "tmp" / script)],
+                                capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, f"{script}: {result.stdout}\n{result.stderr}"

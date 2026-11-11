@@ -271,19 +271,23 @@ def zcode_build_payload() -> str:
     Uploaded as one text file to the target (SSH upload_text) and extracted
     by the stage-two step into ~/zcode-build. Shell scripts carry the
     execute bit; everything else lands 0644. The README is documentation
-    for humans reading the repo and stays out of the payload.
+    for humans reading the repo, tmp/ holds dev regression tests — neither
+    belongs in the payload.
     """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for path in sorted(_ZCODE_BUILD_DIR.rglob("*")):
-            if path.is_file() and path.name != "README.md":
-                rel = path.relative_to(_ZCODE_BUILD_DIR)
-                info = tarfile.TarInfo(str(rel))
-                info.size = path.stat().st_size
-                info.mode = 0o755 if path.name.endswith(".sh") else 0o644
-                info.mtime = 0
-                with path.open("rb") as fh:
-                    tar.addfile(info, fh)
+            if not path.is_file():
+                continue
+            rel = path.relative_to(_ZCODE_BUILD_DIR)
+            if rel.parts[0] in ("README.md", "tmp"):
+                continue
+            info = tarfile.TarInfo(str(rel))
+            info.size = path.stat().st_size
+            info.mode = 0o755 if path.name.endswith(".sh") else 0o644
+            info.mtime = 0
+            with path.open("rb") as fh:
+                tar.addfile(info, fh)
     return base64.b64encode(buf.getvalue()).decode()
 
 

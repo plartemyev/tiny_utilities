@@ -8,14 +8,15 @@
 #
 # Runs as a regular user (makepkg refuses root); everything it needs is
 # fetched into the persistent cache/ next to this script, so re-runs are
-# incremental. Invoked three ways:
+# incremental and a nightly run with unchanged upstream exits after the
+# fetch (see the up-to-date check below). Invoked three ways:
 #   - by archinstaller over SSH right after the first boot (initial build);
 #   - nightly by the zcode-update.timer user unit;
 #   - manually: cd ~/zcode-build && ./build.sh
 #
 # Layout: out/ is the served pacman repository (packages + zcode.db);
-# cache/ is the persistent state (upstream git mirror, pinned Node, pnpm
-# store, electron cache, gem home); tmp/ is per-run scratch, wiped upfront.
+# cache/ is the persistent state (upstream shallow checkout, pinned Node,
+# pnpm store, electron cache, gem home); tmp/ is per-run scratch, wiped upfront.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,6 +24,7 @@ CACHE="${ZCODE_CACHE:-$DIR/cache}"
 WORK="${ZCODE_WORK:-$DIR/tmp}"
 OUT="${ZCODE_OUT:-$DIR/out}"
 REF="${ZCODE_REF:-origin/main}"
+UPSTREAM_URL="${ZCODE_UPSTREAM_URL:-https://github.com/zai-org/ZCode.git}"
 BUILD_DESKTOP="${ZCODE_DESKTOP:-0}"
 ELECTRON_MIRROR="${ZCODE_ELECTRON_MIRROR:-}"   # default: upstream's npmmirror
 
@@ -72,24 +74,51 @@ export ZCODE_DIST_BASE_URL=""
 [ -n "$ELECTRON_MIRROR" ] && export ELECTRON_MIRROR
 
 # ---------------------------------------------------------------------------
-# 1. Fresh checkout of upstream main via the persistent bare mirror
+# 1. Persistent shallow checkout of upstream (cache/src). A fetch + forced
+#    detach + clean keeps the tree byte-identical to the ref (our strip edits
+#    never survive a failed/retried run) while --depth 1 keeps the transfer
+#    at one tree instead of the whole history. ZCODE_SHALLOW=0 drops the
+#    depth for exotic refs (old commit SHAs).
 # ---------------------------------------------------------------------------
-MIRROR=$CACHE/upstream.git
-if [ ! -d "$MIRROR" ]; then
-    git clone --bare https://github.com/zai-org/ZCode.git "$MIRROR"
+SRC=$CACHE/src
+DEPTH="--depth 1"
+[ "${ZCODE_SHALLOW:-1}" = 1 ] || DEPTH=""
+if [ ! -d "$SRC/.git" ]; then
+    git clone $DEPTH "$UPSTREAM_URL" "$SRC"
 fi
 for attempt in 1 2 3; do
-    if git -C "$MIRROR" fetch --prune origin; then break; fi
+    if git -C "$SRC" fetch $DEPTH --prune origin; then break; fi
     [ "$attempt" = 3 ] && die "git fetch of upstream failed 3 times"
     sleep $((attempt * 20))
 done
-rm -rf "$WORK/src"
-SRC=$WORK/src
-git clone --quiet "$MIRROR" "$SRC"
-git -C "$SRC" checkout --quiet --detach "$REF"
+if [ "$REF" != "origin/main" ]; then
+    git -C "$SRC" fetch $DEPTH --prune origin "$REF"
+    REF_AT=FETCH_HEAD
+else
+    REF_AT=$REF
+fi
+git -C "$SRC" checkout --force --detach "$REF_AT"
+git -C "$SRC" clean -fdxq
 COMMIT=$(git -C "$SRC" rev-parse --short=12 HEAD)
-# a pristine tree: our edits must not survive a failed/retried run
 log "checkout $REF @ $COMMIT"
+
+# ---------------------------------------------------------------------------
+# 1b. Skip the build entirely when upstream and our scripts are unchanged:
+#     the nightly timer then costs a fetch and nothing else. ZCODE_FORCE=1
+#     overrides (e.g. after wiping the cache or pinning a different ref).
+# ---------------------------------------------------------------------------
+TOOLS_SHA=$(cat "$DIR/build.sh" "$DIR/strip-telemetry.sh" "$DIR/strip_telemetry.py" \
+    "$DIR/verify-stripped.sh" "$DIR/packaging/zcode/PKGBUILD" "$DIR/packaging/zcode-wrapper" \
+    "$DIR/packaging/zcode-desktop/PKGBUILD" \
+    "$DIR/packaging/zcode-desktop/zcode-desktop.install" | sha256sum | cut -d' ' -f1)
+if [ -z "${ZCODE_FORCE:-}" ] && [ -f "$OUT/build-stamp.txt" ]; then
+    read -r _ _ STAMP_COMMIT _ STAMP_TOOLS STAMP_DESKTOP < "$OUT/build-stamp.txt" || true
+    if [ "$COMMIT" = "${STAMP_COMMIT:-}" ] && [ "$TOOLS_SHA" = "${STAMP_TOOLS:-}" ] \
+        && [ "$BUILD_DESKTOP" = "${STAMP_DESKTOP:-}" ]; then
+        log "up to date ($COMMIT, tools $TOOLS_SHA); nothing to build (ZCODE_FORCE=1 overrides)"
+        exit 0
+    fi
+fi
 
 # hygiene: the private build-defaults file and any stray env files would
 # re-enable telemetry at build time
@@ -146,7 +175,7 @@ log "toolchain: node $NODE_VERSION, pnpm $PNPM_VERSION"
 # ---------------------------------------------------------------------------
 cd "$SRC"
 export ELECTRON_CACHE=$CACHE/electron
-pnpm install --no-frozen-lockfile --store-dir "$CACHE/pnpm-store"
+pnpm install --no-frozen-lockfile --prefer-offline --store-dir "$CACHE/pnpm-store"
 pnpm build:zcode
 VERSION=$(node -p "require('./package.json').version")
 TARBALL=$SRC/dist/zcode/releases/$VERSION/zcode-$VERSION.tar.gz
@@ -260,6 +289,7 @@ for prefix in "zcode-[0-9]" "zcode-desktop-[0-9]"; do
         log "pruned old package $old"
     done
 done
-printf '%s %s %s %s\n' "$VERSION" "$PKGREL" "$COMMIT" "$(date -u +%FT%TZ)" > "$OUT/build-stamp.txt"
+printf '%s %s %s %s %s %s\n' "$VERSION" "$PKGREL" "$COMMIT" "$(date -u +%FT%TZ)" \
+    "$TOOLS_SHA" "$BUILD_DESKTOP" > "$OUT/build-stamp.txt"
 chmod 644 "$OUT/build-stamp.txt" "$OUT"/zcode.db* "$OUT"/*.pkg.tar.zst
 log "local repository updated: $OUT ($VERSION-$PKGREL, commit $COMMIT)"

@@ -26,7 +26,7 @@ Everything lives under `~/zcode-build/`:
 | `verify-stripped.sh` | post-build artifact gate; any hit fails the run |
 | `packaging/` | PKGBUILDs, the `/usr/bin/zcode` wrapper, the desktop `.install` |
 | `out/` | the published pacman repo: packages + `zcode.db` + `build-stamp.txt` |
-| `cache/` | persistent state: upstream git mirror, pinned Node, pnpm/electron caches, gem home |
+| `cache/` | persistent state: upstream shallow checkout (`src/`), pinned Node, pnpm/electron caches, gem home |
 | `tmp/` | per-run scratch, wiped upfront |
 
 ## Packages
@@ -57,7 +57,24 @@ ZCODE_DESKTOP=1 ~/zcode-build/build.sh     # desktop too (default: baked
 ```
 
 Environment knobs: `ZCODE_REF`, `ZCODE_DESKTOP`, `ZCODE_ELECTRON_MIRROR`,
-`ZCODE_CACHE`/`ZCODE_WORK`/`ZCODE_OUT` (paths, default alongside `build.sh`).
+`ZCODE_CACHE`/`ZCODE_WORK`/`ZCODE_OUT` (paths, default alongside `build.sh`),
+`ZCODE_FORCE=1` (rebuild even when the up-to-date check passes),
+`ZCODE_SHALLOW=0` (full history fetch, for exotic refs like old commit
+SHAs), `ZCODE_UPSTREAM_URL` (alternate upstream/mirror).
+
+## Speed profile
+
+The first run pays everything: shallow upstream clone (one tree, not the
+history), the multi-GB pnpm dependency download, the Electron binary and
+the full TS/bundler build — expect the better part of an hour or two on a
+typical VM, dominated by network. Everything below `cache/` persists
+across builds and reboots, so re-runs skip all downloads and pay only the
+CPU cost of the rebuild (minutes). On top of that, `build.sh` early-exits
+after the fetch when the upstream commit, the strip scripts and the
+desktop flag are all unchanged since the last build (recorded in
+`out/build-stamp.txt`) — quiet weeks make the nightly a no-op that costs
+one `git fetch`. `ZCODE_FORCE=1` overrides. `pnpm install` runs with
+`--prefer-offline`, so a warm store also skips the registry round-trips.
 
 ## Build dependencies (installed by archinstaller)
 
