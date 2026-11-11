@@ -42,6 +42,7 @@ from archinstaller.steps import (
     OPENCODE_PORT,
     ZCODE_WEB_PORT,
     post_boot_steps,
+    zcode_build_payload,
 )
 from archinstaller.workbook import build_workbook
 
@@ -50,7 +51,6 @@ DEFAULT_LOGIN_PASSWORD = "local0instaLl"
 GENERATED_PASSWORD_LENGTH = 10
 OPENCODE_WEB_USER = "opencode"  # server-side basic-auth username, fixed by opencode v2
 LOCAL_MIRROR_PORT = 8282  # arch-cache-mirror sibling project, host-published port
-ZCODE_REPO_PORT = 8283    # zcode-build sibling project, host-published port
 PF_FALLBACK_TIMEOUT_S = 90  # NAT port-forward retry after a host-only miss
 
 
@@ -91,7 +91,6 @@ def _run_install(args: argparse.Namespace) -> None:
     if args.vbox_vm is not None and not vbox.vm_exists(args.vbox_vm):
         sys.exit(f"VirtualBox VM {args.vbox_vm!r} not found via vboxmanage showvminfo")
     local_mirror = _local_mirror_url(args)
-    zcode_repo = _zcode_repo_url(args)
     public_key = _resolve_public_key(args.ssh_pubkey)
     hostname = args.hostname or default_hostname()
     login_password, root_password, user_password, opencode_password, zcode_token, \
@@ -102,8 +101,7 @@ def _run_install(args: argparse.Namespace) -> None:
     clear_stale_host_key(args.target, args.target_port)
     _run_installation(args, hostname, login_password, root_password, user_password,
                       opencode_password, public_key, jump,
-                      guest_reboot=args.vbox_vm is None, local_mirror=local_mirror,
-                      zcode_repo=zcode_repo)
+                      guest_reboot=args.vbox_vm is None, local_mirror=local_mirror)
 
     state_path = _state_path(hostname)
     _save_state(state_path, _state_object(args, hostname, root_password, user_password,
@@ -163,11 +161,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="also deploy the opencode web server as a systemd user service on "
                              f"port {OPENCODE_PORT} (opens the port in firewalld)")
     common.add_argument("--zcode", action="store_true",
-                        help="also install the zcode CLI (plus the desktop app with "
-                             "--graphical) from the private zcode-build repository on "
-                             "this host and deploy its web service as a systemd user "
-                             f"service on port {ZCODE_WEB_PORT}; the repository must "
-                             "answer from the target or the install aborts")
+                        help="also build zcode on the target itself (telemetry-stripped"
+                             " upstream build into a local pacman repository; the"
+                             " desktop app additionally with --graphical) and start its"
+                             f" web service on port {ZCODE_WEB_PORT}; a nightly timer"
+                             " rebuilds, so pacman -Syu keeps zcode current")
     common.add_argument("--local-mirror", "--local_mirror", action="store_true",
                         help="point pacman at the local arch-cache-mirror on this host "
                              f"(http://<host-ip>:{LOCAL_MIRROR_PORT}/$repo/os/$arch) for both "
@@ -350,12 +348,6 @@ def _run_provisioned(args: argparse.Namespace) -> None:
         args.target = guest_addresses[0]
         args.target_port = ssh_port
     lan_mirror = _local_mirror_url(args)
-    zcode_repo = _zcode_repo_url(args)
-    zcode_repo_override = None
-    if hostonly is not None and zcode_repo is not None:
-        # same reasoning as the mirror: the host-only gateway is the host
-        # itself at a forever-static address, immune to host LAN roams
-        zcode_repo_override = f"http://{hostonly.gateway}:{ZCODE_REPO_PORT}"
     if hostonly is not None and lan_mirror is not None:
         # NIC2's gateway is the host itself at a forever-static address;
         # the LAN-IP URL stays as the (slower, NAT-hairpin) fallback for
@@ -365,8 +357,7 @@ def _run_provisioned(args: argparse.Namespace) -> None:
     _run_installation(args, hostname, login_password, root_password, user_password,
                       opencode_password, public_key, jump=None, guest_reboot=False,
                       local_mirror=lan_mirror, mirror_override=mirror_override,
-                      mirror_hint=mirror_hint, hostonly=hostonly,
-                      zcode_repo=zcode_repo, zcode_repo_override=zcode_repo_override)
+                      mirror_hint=mirror_hint, hostonly=hostonly)
     if args.provision == "vbox":
         # Stage two waits at the pinned address: the installed system's
         # static NM profile owns it, while the live environment's host-only
@@ -494,7 +485,6 @@ def _run_workbook(args: argparse.Namespace) -> None:
         opencode_password=opencode_password,
         zcode=args.zcode,
         zcode_token=zcode_token,
-        zcode_repo=_zcode_repo_url(args),
         # provisioned vbox: the MAC exists only after createvm, so the
         # rendered profile carries a placeholder like the passwords do
         hostonly_mac="{{HOSTONLY_MAC}}" if args.provision == "vbox" else "",
@@ -610,16 +600,6 @@ def _local_mirror_url(args: argparse.Namespace) -> str | None:
     iface, ip = _primary_lan_address()
     url = f"http://{ip}:{LOCAL_MIRROR_PORT}"
     print(f"Local mirror: {url} (primary interface {iface})")
-    return url
-
-
-def _zcode_repo_url(args: argparse.Namespace) -> str | None:
-    """Base URL of the host's zcode-build repository when --zcode is set."""
-    if not args.zcode:
-        return None
-    iface, ip = _primary_lan_address()
-    url = f"http://{ip}:{ZCODE_REPO_PORT}"
-    print(f"zcode repository: {url} (primary interface {iface})")
     return url
 
 
@@ -814,7 +794,8 @@ def _finish_install(args: argparse.Namespace, hostname: str, user_password: str,
                           key_filename=private_key)
     try:
         _post_boot(conn, user_password, args.username, hostname, args.timezone,
-                   opencode_password, zcode_token)
+                   opencode_password, zcode_token,
+                   zcode_desktop=args.graphical)
         _print_summary(conn, args, hostname, generated_notes, opencode_password,
                        zcode_token)
     finally:
@@ -853,8 +834,6 @@ def _run_installation(
     mirror_override: str | None = None,
     mirror_hint: str | None = None,
     hostonly: "provision_vbox.HostonlyConfig | None" = None,
-    zcode_repo: str | None = None,
-    zcode_repo_override: str | None = None,
 ) -> None:
     print(f"Connecting to live environment {args.target}:{args.target_port} ...")
     conn = connect_target(args.target, args.target_port, args.login_user, login_password, jump)
@@ -909,34 +888,11 @@ def _run_installation(
             else:
                 print("VM target: no default gateway in the live environment; "
                       "keeping the host LAN IP mirror address")
-        zcode_lan_repo = None
-        if zcode_repo is not None:
-            # same address-selection policy as the local mirror: for VM
-            # targets the guest gateway (or the provisioned host-only
-            # gateway) is the static hypervisor-host address, with the LAN
-            # IP kept as the fallback URL
-            zcode_lan_repo = zcode_repo
-            if zcode_repo_override is not None:
-                print(f"VM target: advertising the zcode repository via the "
-                      f"host-only gateway {zcode_repo_override}")
-                zcode_repo = zcode_repo_override
-            elif virt != "none":
-                gateway = _target_gateway(conn)
-                if gateway is not None:
-                    zcode_repo = f"http://{gateway}:{ZCODE_REPO_PORT}"
-                    print(f"VM target: advertising the zcode repository via the "
-                          f"guest gateway {gateway}")
-                else:
-                    print("VM target: no default gateway in the live environment; "
-                          "keeping the host LAN IP zcode repository address")
         _ensure_live_dns(conn.client)
         if local_mirror is not None:
             local_mirror = _ensure_local_mirror(conn.client, local_mirror,
                                                 fallback_url=lan_mirror,
                                                 hint=mirror_hint)
-        if zcode_repo is not None:
-            zcode_repo = _ensure_zcode_repo(conn.client, zcode_repo,
-                                            fallback_url=zcode_lan_repo)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -956,7 +912,6 @@ def _run_installation(
             opencode_password=opencode_password,
             zcode=args.zcode,
             zcode_token=zcode_token,
-            zcode_repo=zcode_repo,
             hostonly_mac=hostonly.mac if hostonly else "",
             hostonly_address=hostonly.guest_cidr if hostonly else "",
         )
@@ -1075,42 +1030,6 @@ def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
     sys.exit(message + "; rerun with a working mirror or without --local-mirror")
 
 
-def _zcode_repo_hint() -> str:
-    """One-time host firewall command for LAN targets of --zcode."""
-    return ("guest→host on the LAN ingresses the host firewall too; run once on "
-            "the host: firewall-cmd --permanent "
-            f"--add-port={ZCODE_REPO_PORT}/tcp && firewall-cmd --reload")
-
-
-def _ensure_zcode_repo(client: paramiko.SSHClient, base_url: str,
-                       fallback_url: str | None = None) -> str:
-    """Verify the target can reach the zcode-build repository.
-
-    The repository database is the single artifact everything else keys off,
-    so probing it (a plain GET of a small file) covers both reachability
-    and "the nightly build has run at least once". Like the mirror
-    preflight, a VM-target gateway URL falls back to the host LAN IP.
-    """
-    if run_capture(client, f"curl -fsS --max-time 8 {base_url}/zcode.db >/dev/null",
-                   timeout=30)[0] == 0:
-        return base_url
-    if fallback_url is not None and fallback_url != base_url:
-        print(f"zcode repository {base_url} is not reachable from the target; "
-              f"trying the host LAN IP repository {fallback_url} ...")
-        if run_capture(client,
-                       f"curl -fsS --max-time 8 {fallback_url}/zcode.db >/dev/null",
-                       timeout=30)[0] == 0:
-            print(f"WARNING: continuing over the slower NAT-hairpin path."
-                  f" {_zcode_repo_hint()}")
-            return fallback_url
-    sys.exit(f"the zcode repository {base_url} is not usable from the target "
-             "(no zcode.db: is the zcode-build repo server running and has the "
-             "nightly build produced packages yet? on the build host run "
-             "zcode-build/nightly.sh, then check "
-             f"'docker compose ps' and the firewall for port {ZCODE_REPO_PORT}); "
-             "rerun with a working repository or without --zcode")
-
-
 def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> None:
     """Post-boot DNS health check.
 
@@ -1138,16 +1057,24 @@ def _ensure_installed_dns(client: paramiko.SSHClient, user_password: str) -> Non
 
 def _post_boot(conn: SshConnection, user_password: str, username: str, hostname: str,
                timezone: str, opencode_password: str | None,
-               zcode_token: str | None = None) -> None:
+               zcode_token: str | None = None,
+               zcode_desktop: bool = False) -> None:
     """Stage two: run post_boot_steps() on the installed system, in order.
 
     The DNS probe/kick stays cli-side (it is conditional at runtime) and
     keeps its position between the resolv.conf stub and the timezone;
     the opencode/zcode services are polled right after their start steps.
     """
+    if zcode_token is not None:
+        # the build scripts travel as one base64 tarball ahead of the steps
+        # (steps render them into workbooks, so the blob itself stays out)
+        print("Uploading the zcode-build scripts ...")
+        upload_text(conn.client, zcode_build_payload(),
+                    f"/home/{username}/zcode-build.tar.b64")
     steps = post_boot_steps(username, hostname, timezone,
                             opencode_password is not None, opencode_password,
                             zcode_token is not None, zcode_token,
+                            zcode_desktop=zcode_desktop,
                             include_dns=False)
     _run_step(conn, steps[0], user_password)  # the resolv.conf stub
     _ensure_installed_dns(conn.client, user_password)
@@ -1160,12 +1087,13 @@ def _post_boot(conn: SshConnection, user_password: str, username: str, hostname:
 
 
 def _run_step(conn: SshConnection, step, user_password: str) -> None:
+    timeout = step.timeout if step.timeout is not None else 60
     for command in step.commands:
         if step.root:
             run_streaming(conn.client, f"sudo -S -p '' {command}",
-                          stdin_text=user_password + "\n", timeout=60)
+                          stdin_text=user_password + "\n", timeout=timeout)
         else:
-            run_streaming(conn.client, command, timeout=60)
+            run_streaming(conn.client, command, timeout=timeout)
 
 
 def _wait_user_service_active(client: paramiko.SSHClient, unit: str,

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from archinstaller import cli
+from archinstaller.steps import (ZCODE_BUILD_TIMEOUT, post_boot_steps,
+                                 zcode_build_payload)
 
 
 LIVE_CONN = SimpleNamespace(client=None)  # probe target: only .client is used
@@ -408,47 +410,47 @@ def test_local_mirror_preflight_aborts_when_both_urls_fail(monkeypatch):
                                  fallback_url="http://192.168.1.10:8282")
 
 
-def test_zcode_repo_url_off_by_default(capsys):
-    assert cli._zcode_repo_url(make_args()) is None
-    assert capsys.readouterr().out == ""
+def test_zcode_post_boot_uploads_payload_and_builds(monkeypatch):
+    """--zcode stage two: payload upload + the on-target build steps."""
+    uploaded = {}
+    monkeypatch.setattr(cli, "upload_text",
+                        lambda client, text, path: uploaded.update(path=path, text=text))
 
+    class FakeConn:
+        client = None
 
-def test_zcode_repo_url_uses_primary_interface_and_repo_port(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_primary_lan_address", lambda: ("eth0", "192.168.1.10"))
-    url = cli._zcode_repo_url(make_args(zcode=True))
-    assert url == f"http://192.168.1.10:{cli.ZCODE_REPO_PORT}"
-    assert f"zcode repository: {url}" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "_ensure_installed_dns", lambda client, pw: None)
+    monkeypatch.setattr(cli, "_run_step", lambda conn, step, pw: None)
+    monkeypatch.setattr(cli, "_wait_user_service_active",
+                        lambda client, unit, **kw: None)
+    cli._post_boot(FakeConn(), "up", "alice", "hst", "TZ", None,
+                   zcode_token="tok", zcode_desktop=True)
+    assert uploaded["path"] == "/home/alice/zcode-build.tar.b64"
+    assert uploaded["text"] == zcode_build_payload()
 
-
-def test_zcode_repo_preflight_probes_the_db(monkeypatch):
-    captured = []
-    monkeypatch.setattr(cli, "run_capture",
-                        lambda client, cmd, **kw: captured.append(cmd) or (0, ""))
-    url = cli._ensure_zcode_repo(None, "http://192.168.1.10:8283")
-    assert url == "http://192.168.1.10:8283"
-    assert captured == ["curl -fsS --max-time 8 http://192.168.1.10:8283/zcode.db >/dev/null"]
-
-
-def test_zcode_repo_preflight_aborts_with_remedy(monkeypatch):
-    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (7, ""))
-    with pytest.raises(SystemExit) as excinfo:
-        cli._ensure_zcode_repo(None, "http://192.168.1.10:8283")
-    assert "nightly.sh" in str(excinfo.value)
-
-
-def test_zcode_repo_preflight_falls_back_to_lan_url(monkeypatch, capsys):
-    seen = []
-
-    def fake_run(client, cmd, **kw):
-        seen.append(cmd)
-        return (7 if "10.0.2.2" in cmd else 0, "")
-
-    monkeypatch.setattr(cli, "run_capture", fake_run)
-    url = cli._ensure_zcode_repo(None, "http://10.0.2.2:8283",
-                                 fallback_url="http://192.168.1.10:8283")
-    assert url == "http://192.168.1.10:8283"
-    assert len(seen) == 2
-    assert "trying the host LAN IP repository" in capsys.readouterr().out
+    steps = post_boot_steps("alice", "hst", "TZ", False, None,
+                            True, "tok", zcode_desktop=True)
+    titles = [s.title for s in steps]
+    assert "Installing the zcode build dependencies" in titles
+    build = next(s for s in steps if s.id == "zcode-build")
+    assert build.timeout == ZCODE_BUILD_TIMEOUT
+    assert "ZCODE_DESKTOP=1" in build.commands[0]
+    assert not build.root
+    repo = next(s for s in steps if "Registering the local zcode repository" in s.title)
+    assert "file:///home/alice/zcode-build/out" in repo.commands[0]
+    assert "zcode zcode-desktop" in repo.commands[1]
+    assert repo.root
+    timer = next(s for s in steps if s.id == "zcode-update")
+    assert "enable --now zcode-update.timer" in timer.commands[-1]
+    # console installs: no ruby build dep, no zcode-desktop package
+    console_steps = post_boot_steps("alice", "hst", "TZ", False, None,
+                                    True, "tok", zcode_desktop=False)
+    console_deps = next(s for s in console_steps
+                        if s.title == "Installing the zcode build dependencies")
+    assert "ruby" not in console_deps.commands[0]
+    console_repo = next(s for s in console_steps
+                        if "Registering the local zcode repository" in s.title)
+    assert console_repo.commands[1].endswith("noconfirm zcode")
 
 
 def test_target_gateway_parsed_from_default_route(monkeypatch):
@@ -585,16 +587,16 @@ def test_run_workbook_opencode_password_embedded_only_with_flag(tmp_path):
     assert "{{OPENCODE_PASSWORD}}" not in text
 
 
-def test_run_workbook_zcode_repo_and_token_rendering(tmp_path, monkeypatch, capsys):
+def test_run_workbook_zcode_build_steps_and_token_rendering(tmp_path, monkeypatch, capsys):
     out = tmp_path / "w.md"
-    monkeypatch.setattr(cli, "_primary_lan_address", lambda: ("eth0", "192.168.1.10"))
     args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out),
                      zcode=True)
     cli._run_workbook(args)
     text = out.read_text()
-    assert f"Server = http://192.168.1.10:{cli.ZCODE_REPO_PORT}" in text
+    assert "ZCODE_DESKTOP=0 ./build.sh" in text
+    assert "Server = file:///home/nameless/zcode-build/out" in text
     assert "--token {{ZCODE_TOKEN}}" in text
-    assert "zcode repo: ok" in text
+    assert "zcode-update.timer" in text
 
     embedded = tmp_path / "w2.md"
     args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(embedded),

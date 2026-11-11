@@ -88,12 +88,16 @@ _EXACT: dict[str, str] = {
         "Установка хука очистки кэша пакетов",
     "Fetching and signing third-party repository keys":
         "Получение и локальная подпись ключей сторонних репозиториев",
-    "Adding the zcode repository":
-        "Добавление репозитория zcode",
-    "Fetching and signing the zcode repository key":
-        "Получение и подпись ключа репозитория zcode",
-    "Installing zcode (long step)":
-        "Установка zcode (длительный шаг)",
+    "Installing the zcode build dependencies":
+        "Установка зависимостей сборки zcode",
+    "Unpacking the zcode-build scripts":
+        "Распаковка скриптов сборки zcode",
+    "Building zcode from upstream (long step, first run ~1-2 h)":
+        "Сборка zcode из upstream (длительный шаг, первый запуск ~1-2 ч)",
+    "Registering the local zcode repository and installing zcode":
+        "Регистрация локального репозитория zcode и установка zcode",
+    "Installing the nightly zcode rebuild timer":
+        "Установка ночного таймера пересборки zcode",
     "Installing the zcode-web user service":
         "Установка пользовательской службы zcode-web",
     "Granting wheel group sudo rights":
@@ -518,31 +522,52 @@ _EXACT: dict[str, str] = {
         " удерживать канал SSH открытым; проверка выполняется командой"
         " `systemctl --user is-active opencode.service`.",
 
-    "The private zcode-build repository (nightly telemetry-stripped"
-    " builds of zai-org/ZCode). pacman requests <Server>/zcode.db, and"
-    " the repository serves its database at the root, so the flat"
-    " server line needs no path.":
-        "Приватный репозиторий zcode-build (ночные сборки zai-org/ZCode с"
-        " вырезанной телеметрией). pacman запрашивает <Server>/zcode.db, а"
-        " репозиторий отдаёт базу из корня, поэтому строке Server не нужен"
-        " путь.",
+    "The zcode packages are built on this machine from upstream"
+    " (telemetry stripped): makepkg/base-devel for packaging, python"
+    " for the strip script, and ruby for fpm (electron-builder's"
+    " pacman target) on graphical installs.":
+        "Пакеты zcode собираются на этой машине из upstream (с вырезанной"
+        " телеметрией): makepkg/base-devel для упаковки, python для скрипта"
+        " вырезания и ruby для fpm (pacman-цель electron-builder) при"
+        " графической установке.",
 
-    "Unlike xlibre/sonicde the repository key is generated on the build"
-    " host at first nightly run, so the fingerprint is read from the"
-    " exported .asc at install time instead of being pinned here.":
-        "В отличие от xlibre/sonicde ключ репозитория генерируется на машине"
-        " сборки при первом ночном запуске, поэтому отпечаток читается из"
-        " экспортированного .asc во время установки, а не зашит здесь.",
+    "The build scripts travel as one tarball uploaded by archinstaller"
+    " (the zcode_build package-data tree). When replaying this"
+    " workbook manually, copy that directory from the archinstaller"
+    " source to ~/zcode-build instead.":
+        "Скрипты сборки передаются одним tar-архивом, загружаемым"
+        " archinstaller (дерево данных пакета zcode_build). При ручном"
+        " повторении этого рабочей книги скопируйте этот каталог из исходников"
+        " archinstaller в ~/zcode-build.",
 
-    "The zcode package carries the CLI, TUI and web distribution with"
-    " its own pinned Node runtime; zcode-desktop (the Electron app, no"
-    " autostart) is added on graphical installs. Later `pacman -Syu`"
-    " runs pick up nightly rebuilds through the repository above.":
-        "Пакет zcode несёт дистрибутив CLI, TUI и веб-интерфейса со своим"
-        " закреплённым временем выполнения Node; zcode-desktop (приложение"
-        " Electron без автозапуска) добавляется при графической установке."
-        " Последующие запуски `pacman -Syu` подтягивают ночные пересборки"
-        " через репозиторий выше.",
+    "Checks out zai-org/ZCode, strips the telemetry surface"
+    " (assert-anchored; a drifted upstream fails the run instead of"
+    " shipping telemetry), builds the packages and publishes them"
+    " into the local pacman repository at ~/zcode-build/out. The"
+    " persistent cache/ next to it keeps re-runs incremental.":
+        "Получает исходники zai-org/ZCode, вырезает телеметрию (привязано к"
+        " якорям; разошедшийся upstream валит запуск вместо доставки"
+        " телеметрии), собирает пакеты и публикует их в локальный pacman-"
+        "репозиторий ~/zcode-build/out. Расположенный рядом постоянный cache/"
+        " делает повторные запуски инкрементальными.",
+
+    "The repository the previous step published is local-only"
+    " (file:// server), so no signature checking applies — the"
+    " packages never leave this machine. From here on, plain"
+    " `pacman -Syu` upgrades zcode like any other package.":
+        "Репозиторий, опубликованный предыдущим шагом, локальный (file://"
+        " сервер), поэтому проверка подписей не нужна — пакеты не покидают"
+        " эту машину. Дальше обычный `pacman -Syu` обновляет zcode как любой"
+        " другой пакет.",
+
+    "Rebuilds zcode nightly (03:17, catch-up after powered-off"
+    " nights) into the same local repository, so upstream updates"
+    " arrive through regular pacman -Syu runs. Logs: journalctl"
+    " --user -u zcode-update.service.":
+        "Пересобирает zcode каждую ночь (03:17, с догоном после выключенных"
+        " ночей) в тот же локальный репозиторий, так что обновления upstream"
+        " приходят обычными запусками pacman -Syu. Журнал: journalctl --user"
+        " -u zcode-update.service.",
 
     "zcode --web serves the browser workspace from the installed"
     " package; listening on 0.0.0.0 requires a token (the runner"

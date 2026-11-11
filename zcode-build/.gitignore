@@ -1,5 +1,0 @@
-cache/
-gnupg/
-repo/*
-!repo/.gitignore
-tmp/

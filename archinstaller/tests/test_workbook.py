@@ -1,4 +1,5 @@
 from archinstaller.script import InstallConfig
+from archinstaller.steps import zcode_build_payload
 from archinstaller.workbook import build_workbook
 
 KEY = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDU0ZDDGMlGKUYbFQtKyODXXUequNtcQz+2UVe5Vr9A0"
@@ -23,7 +24,6 @@ def make_cfg(**overrides):
         "opencode_password": None,
         "zcode": False,
         "zcode_token": None,
-        "zcode_repo": None,
     }
     defaults.update(overrides)
     return InstallConfig(**defaults)
@@ -54,11 +54,10 @@ def test_facts_line_reports_mirror_and_opencode():
     assert "opencode=yes" in md
 
 
-def test_facts_line_reports_zcode_repo():
-    md = render(make_cfg(zcode=True, zcode_token="{{ZCODE_TOKEN}}",
-                         zcode_repo="http://192.168.1.10:8283"))
-    assert "zcode=yes (repo http://192.168.1.10:8283)" in md
-    assert "curl -fsS --max-time 8 http://192.168.1.10:8283/zcode.db" in md
+def test_facts_line_reports_zcode_build():
+    md = render(make_cfg(zcode=True, zcode_token="{{ZCODE_TOKEN}}"))
+    assert "zcode=yes (built on the target, nightly rebuild timer)" in md
+    assert zcode_build_payload() not in md  # the blob stays out of renderings
 
 
 def test_placeholders_reach_the_commands_and_no_caution():

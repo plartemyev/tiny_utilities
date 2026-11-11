@@ -16,7 +16,6 @@ README.
 | `PHP-REDIS-SESSIONS-aws_elastic_beanstalk/` | PHP Redis sessions on Elastic Beanstalk |
 | `sony-as300-xavc-recovery/` | Sony AS300 XAVC recovery |
 | `zabbix-reporter/` | Zabbix reporting |
-| `zcode-build/` | Nightly telemetry-stripped pacman builds of zai-org/ZCode served from a private repo (consumed by archinstaller `--zcode`) |
 
 Host-specific tooling notes live in `AGENTS.md` and
 `~/.config/opencode/AGENTS.md` (global).

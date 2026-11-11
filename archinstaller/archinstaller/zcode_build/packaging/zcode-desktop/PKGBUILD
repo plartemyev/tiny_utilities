@@ -1,5 +1,6 @@
 # Rendered by zcode-build/build.sh (@*@ substituted from the electron-builder
-# artifact's own manifest: opt dir, inner binary, chrome-sandbox path).
+# artifact's own manifest: inner binary, chrome-sandbox path — both tar-root
+# relative paths like opt/<dir>/<bin>).
 # The source is the pacman target artifact electron-builder produced for the
 # telemetry-stripped checkout — it already carries Electron, the .desktop
 # entry, hicolor icons and the dependency closure computed from the Electron
@@ -26,5 +27,5 @@ package() {
         --exclude=.PKGINFO --exclude=.INSTALL --exclude=.MTREE --exclude=.BUILDINFO \
         @EXTRA_EXCLUDES@
     install -d "$pkgdir/usr/bin"
-    ln -sf "/@OPT_DIR@/@INNER_BIN@" "$pkgdir/usr/bin/zcode-desktop"
+    ln -sf "/@INNER_BIN@" "$pkgdir/usr/bin/zcode-desktop"
 }

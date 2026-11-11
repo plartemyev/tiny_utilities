@@ -36,7 +36,6 @@ def make_cfg(**overrides):
         "opencode_password": None,
         "zcode": False,
         "zcode_token": None,
-        "zcode_repo": None,
     }
     defaults.update(overrides)
     return InstallConfig(**defaults)
@@ -50,8 +49,7 @@ def all_step_prose() -> list[str]:
                  local_mirror="http://192.168.1.10:8282",
                  opencode=True, opencode_password="{{OPENCODE_PASSWORD}}"),
         make_cfg(virt="qemu", graphical=True, zcode=True,
-                 zcode_token="{{ZCODE_TOKEN}}",
-                 zcode_repo="http://192.168.1.10:8283"),
+                 zcode_token="{{ZCODE_TOKEN}}"),
         make_cfg(virt="vmware", graphical=True),
         make_cfg(virt="microsoft"),
     ]

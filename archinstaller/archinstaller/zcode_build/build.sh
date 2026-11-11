@@ -1,29 +1,63 @@
 #!/usr/bin/env bash
-# In-container build orchestrator. Invoked by nightly.sh (host cron) as:
-#   docker run --rm -u <uid>:<gid> -v ./cache:/cache -v ./repo:/repo \
-#       [-e ZCODE_REF=<git-ref>] zcode-builder /build.sh
-# Produces/updates the pacman repo at /repo: zcode.db{,.sig},
-# zcode-<ver>...pkg.tar.zst, zcode-desktop-...pkg.tar.zst, zcode-repo.asc,
-# healthz.
+# On-target build orchestrator: checks out the latest zai-org/ZCode, strips
+# the telemetry surface, builds the zcode (CLI/TUI/web) and — with
+# ZCODE_DESKTOP=1 — zcode-desktop packages, and publishes them into a local
+# pacman repository at <script-dir>/out. The [zcode] repository registered
+# in /etc/pacman.conf points there (Server = file:///home/<user>/zcode-build/out),
+# so a plain `pacman -Syu` picks up whatever this script last published.
 #
-# Layout: /cache is the persistent volume (upstream git mirror, pinned Node
-# runtime, pnpm store, electron cache, GPG home); /repo is the served pacman
-# repository; /work is container-local scratch.
+# Runs as a regular user (makepkg refuses root); everything it needs is
+# fetched into the persistent cache/ next to this script, so re-runs are
+# incremental. Invoked three ways:
+#   - by archinstaller over SSH right after the first boot (initial build);
+#   - nightly by the zcode-update.timer user unit;
+#   - manually: cd ~/zcode-build && ./build.sh
+#
+# Layout: out/ is the served pacman repository (packages + zcode.db);
+# cache/ is the persistent state (upstream git mirror, pinned Node, pnpm
+# store, electron cache, gem home); tmp/ is per-run scratch, wiped upfront.
 set -euo pipefail
 
-REPO=/repo
-CACHE=/cache
-WORK=/work
-SRC=$WORK/src
+DIR="$(cd "$(dirname "$0")" && pwd)"
+CACHE="${ZCODE_CACHE:-$DIR/cache}"
+WORK="${ZCODE_WORK:-$DIR/tmp}"
+OUT="${ZCODE_OUT:-$DIR/out}"
 REF="${ZCODE_REF:-origin/main}"
+BUILD_DESKTOP="${ZCODE_DESKTOP:-0}"
 ELECTRON_MIRROR="${ZCODE_ELECTRON_MIRROR:-}"   # default: upstream's npmmirror
 
 log() { echo "[build] $(date -u +%H:%M:%S) $*"; }
 die() { echo "[build] FAIL: $*" >&2; exit 1; }
 
-mkdir -p "$CACHE" "$WORK" "$REPO" "$CACHE/home"
+[ "$(id -u)" -ne 0 ] || die "run as a regular user, not root (makepkg refuses root)"
+
+# one build at a time: the nightly timer, manual runs and an archinstaller
+# rerun must not race each other on the same cache
+exec 9>"$DIR/.build.lock"
+if ! flock -n 9; then
+    die "another build is already running (holds $DIR/.build.lock)"
+fi
+
+mkdir -p "$CACHE" "$OUT" "$WORK" "$CACHE/home"
 export HOME=$CACHE/home
-export GNUPGHOME=$CACHE/gnupg
+
+for tool in git curl python3 makepkg repo-add tar xz zstd; do
+    command -v "$tool" >/dev/null || die "missing required tool: $tool (pacman -S base-devel git)"
+done
+if [ "$BUILD_DESKTOP" = 1 ]; then
+    for tool in ruby gem; do
+        command -v "$tool" >/dev/null || die "ZCODE_DESKTOP=1 needs $tool (pacman -S ruby ruby-rubygems)"
+    done
+    # fpm (electron-builder's pacman target) is a ruby gem; keep it inside
+    # the cache so the target's gem home stays untouched
+    export GEM_HOME=$CACHE/gems
+    export GEM_PATH=$GEM_HOME
+    export PATH="$GEM_HOME/bin:$PATH"
+    if ! command -v fpm >/dev/null; then
+        gem install fpm --no-document
+        log "installed fpm into $GEM_HOME"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Telemetry build-env hygiene: these are compile-time capability injections
@@ -34,7 +68,7 @@ export ZCODE_ARMS_RUM_ENDPOINT=""
 export ZCODE_TELEMETRY_REPORT_ENDPOINT=""
 export ZCODE_AUTO_UPDATE=""
 export COREPACK_ENABLE_PROJECT_SPEC=0
-export ZCODE_DIST_BASE_URL="http://127.0.0.1:8283/"  # unused: we consume the tarball directly
+export ZCODE_DIST_BASE_URL=""
 [ -n "$ELECTRON_MIRROR" ] && export ELECTRON_MIRROR
 
 # ---------------------------------------------------------------------------
@@ -49,7 +83,8 @@ for attempt in 1 2 3; do
     [ "$attempt" = 3 ] && die "git fetch of upstream failed 3 times"
     sleep $((attempt * 20))
 done
-rm -rf "$SRC"
+rm -rf "$WORK/src"
+SRC=$WORK/src
 git clone --quiet "$MIRROR" "$SRC"
 git -C "$SRC" checkout --quiet --detach "$REF"
 COMMIT=$(git -C "$SRC" rev-parse --short=12 HEAD)
@@ -65,7 +100,7 @@ log "checkout $REF @ $COMMIT"
 # ---------------------------------------------------------------------------
 # 2. Apply our customizations (telemetry strip)
 # ---------------------------------------------------------------------------
-/build-files/strip-telemetry.sh "$SRC"
+bash "$DIR/strip-telemetry.sh" "$SRC"
 
 # Build only the pacman target on Linux: AppImage/deb/rpm would need extra
 # tooling (appimage tools, rpmbuild) and download more artifacts for targets
@@ -118,23 +153,26 @@ TARBALL=$SRC/dist/zcode/releases/$VERSION/zcode-$VERSION.tar.gz
 [ -f "$TARBALL" ] || die "build:zcode produced no tarball"
 log "zcode dist $VERSION built"
 
-/build-files/verify-stripped.sh "$SRC" cli
+bash "$DIR/verify-stripped.sh" "$SRC" cli
 
 # ---------------------------------------------------------------------------
 # 5. Build the desktop package (electron-builder, pacman target)
 # ---------------------------------------------------------------------------
-pnpm bundle:desktop -- --os linux --arch x64
-DESKTOP_ARTIFACT=$(ls "$SRC"/packages/desktop/dist/*linux*x64*.pkg.tar.zst 2>/dev/null | head -1)
-[ -n "$DESKTOP_ARTIFACT" ] || die "desktop bundle produced no pacman artifact"
-log "desktop artifact: $(basename "$DESKTOP_ARTIFACT")"
+DESKTOP_ARTIFACT=""
+if [ "$BUILD_DESKTOP" = 1 ]; then
+    pnpm bundle:desktop -- --os linux --arch x64
+    DESKTOP_ARTIFACT=$(ls "$SRC"/packages/desktop/dist/*linux*x64*.pkg.tar.zst 2>/dev/null | head -1)
+    [ -n "$DESKTOP_ARTIFACT" ] || die "desktop bundle produced no pacman artifact"
+    log "desktop artifact: $(basename "$DESKTOP_ARTIFACT")"
 
-/build-files/verify-stripped.sh "$SRC" desktop "$DESKTOP_ARTIFACT"
+    bash "$DIR/verify-stripped.sh" "$SRC" desktop "$DESKTOP_ARTIFACT"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Version policy: pkgrel 1 for a new upstream version, date-based for
-#    same-version rebuilds (pacman must see the package as newer)
+#    same-version rebuilds (nightly runs must always compare as newer)
 # ---------------------------------------------------------------------------
-if ls "$REPO"/zcode-"$VERSION"-*.pkg.tar.zst >/dev/null 2>&1; then
+if ls "$OUT"/zcode-"$VERSION"-*.pkg.tar.zst >/dev/null 2>&1; then
     PKGREL=$(date -u +%Y%m%d)
 else
     PKGREL=1
@@ -151,11 +189,11 @@ tar -xzf "$TARBALL" -C "$PKGDIR/src/opt"   # contains the zcode/ directory
 [ -x "$PKGDIR/src/opt/zcode/bin/zcode.mjs" ] || die "dist tarball layout unexpected"
 tar -xJf "$NODE_TARBALL" -C "$PKGDIR/src/opt/zcode/node" --strip-components=1
 [ -x "$PKGDIR/src/opt/zcode/node/bin/node" ] || die "vendored node extraction failed"
-install -m 755 /build-files/packaging/zcode-wrapper "$PKGDIR/src/usr/bin/zcode"
+install -m 755 "$DIR/packaging/zcode-wrapper" "$PKGDIR/src/usr/bin/zcode"
 tar -C "$PKGDIR/src" -cf "$PKGDIR/zcode-tree.tar" opt usr
 
 sed -e "s/@VERSION@/$VERSION/" -e "s/@PKGREL@/$PKGREL/" \
-    /build-files/packaging/zcode/PKGBUILD > "$PKGDIR/PKGBUILD"
+    "$DIR/packaging/zcode/PKGBUILD" > "$PKGDIR/PKGBUILD"
 cd "$PKGDIR"
 makepkg --force --nodeps --noconfirm
 ZCODE_PKG=$(ls zcode-"$VERSION"-"$PKGREL"-*.pkg.tar.zst)
@@ -165,72 +203,63 @@ log "packaged $ZCODE_PKG"
 # ---------------------------------------------------------------------------
 # 8. Package: zcode-desktop (re-packed electron-builder pacman artifact)
 # ----------------------------------------------------------------------------
-PKGDIR=$WORK/pkg-desktop
-rm -rf "$PKGDIR"
-mkdir -p "$PKGDIR"
-cp "$DESKTOP_ARTIFACT" "$PKGDIR/upstream.pkg.tar.zst"
-# discover the /opt layout + inner binary for the launcher symlink and the
-# chrome-sandbox path for the .install hook
-tar -tf "$PKGDIR/upstream.pkg.tar.zst" > "$PKGDIR/listing.txt"
-OPT_DIR=$(awk -F/ '/^opt\// && !/^opt\/$/ {print $2; exit}' "$PKGDIR/listing.txt")
-[ -n "$OPT_DIR" ] || die "cannot find the opt/ directory in the desktop artifact"
-SANDBOX=$(awk -v d="opt/$OPT_DIR" '$0 ~ "^" d "/.*chrome-sandbox$" {print; exit}' "$PKGDIR/listing.txt")
-[ -n "$SANDBOX" ] || die "cannot find chrome-sandbox in the desktop artifact"
-INNER_BIN=$(awk -v d="opt/$OPT_DIR" '$0 ~ "^" d "/[^/]+$" && $0 ~ /(zcode|ZCode)$/ {print; exit}' "$PKGDIR/listing.txt")
-[ -n "$INNER_BIN" ] || die "cannot find the app binary in the desktop artifact"
-# the artifact's own usr/bin entry (if any) would collide with the CLI's
-# /usr/bin/zcode: drop it, we ship our own zcode-desktop symlink instead
-EXTRA_EXCLUDES=""
-if grep -q '^usr/bin/' "$PKGDIR/listing.txt"; then
-    EXTRA_EXCLUDES="--exclude=usr/bin"
-    log "dropping the artifact's own usr/bin (collides with the zcode CLI)"
+if [ "$BUILD_DESKTOP" = 1 ]; then
+    PKGDIR=$WORK/pkg-desktop
+    rm -rf "$PKGDIR"
+    mkdir -p "$PKGDIR"
+    cp "$DESKTOP_ARTIFACT" "$PKGDIR/upstream.pkg.tar.zst"
+    # discover the /opt layout + inner binary for the launcher symlink and the
+    # chrome-sandbox path for the .install hook
+    tar -tf "$PKGDIR/upstream.pkg.tar.zst" > "$PKGDIR/listing.txt"
+    OPT_DIR=$(awk -F/ '/^opt\// && !/^opt\/$/ {print $2; exit}' "$PKGDIR/listing.txt")
+    [ -n "$OPT_DIR" ] || die "cannot find the opt/ directory in the desktop artifact"
+    SANDBOX=$(awk -v d="opt/$OPT_DIR" '$0 ~ "^" d "/.*chrome-sandbox$" {print; exit}' "$PKGDIR/listing.txt")
+    [ -n "$SANDBOX" ] || die "cannot find chrome-sandbox in the desktop artifact"
+    INNER_BIN=$(awk -v d="opt/$OPT_DIR" '$0 ~ "^" d "/[^/]+$" && $0 ~ /(zcode|ZCode)$/ {print; exit}' "$PKGDIR/listing.txt")
+    [ -n "$INNER_BIN" ] || die "cannot find the app binary in the desktop artifact"
+    # the artifact's own usr/bin entry (if any) would collide with the CLI's
+    # /usr/bin/zcode: drop it, we ship our own zcode-desktop symlink instead
+    EXTRA_EXCLUDES=""
+    if grep -q '^usr/bin/' "$PKGDIR/listing.txt"; then
+        EXTRA_EXCLUDES="--exclude=usr/bin"
+        log "dropping the artifact's own usr/bin (collides with the zcode CLI)"
+    fi
+    sed -e "s/@VERSION@/$VERSION/" -e "s/@PKGREL@/$PKGREL/" \
+        -e "s|@INNER_BIN@|$INNER_BIN|" \
+        -e "s|@SANDBOX@|$SANDBOX|" -e "s|@EXTRA_EXCLUDES@|$EXTRA_EXCLUDES|" \
+        "$DIR/packaging/zcode-desktop/PKGBUILD" > "$PKGDIR/PKGBUILD"
+    sed -e "s|@SANDBOX@|$SANDBOX|" \
+        "$DIR/packaging/zcode-desktop/zcode-desktop.install" > "$PKGDIR/zcode-desktop.install"
+    cd "$PKGDIR"
+    makepkg --force --nodeps --noconfirm
+    DESKTOP_PKG=$(ls zcode-desktop-"$VERSION"-"$PKGREL"-*.pkg.tar.zst)
+    [ -n "$DESKTOP_PKG" ] || die "makepkg produced no zcode-desktop package"
+    log "packaged $DESKTOP_PKG"
 fi
-sed -e "s/@VERSION@/$VERSION/" -e "s/@PKGREL@/$PKGREL/" \
-    -e "s|@OPT_DIR@|$OPT_DIR|" -e "s|@INNER_BIN@|$INNER_BIN|" \
-    -e "s|@SANDBOX@|$SANDBOX|" -e "s|@EXTRA_EXCLUDES@/$EXTRA_EXCLUDES/" \
-    /build-files/packaging/zcode-desktop/PKGBUILD > "$PKGDIR/PKGBUILD"
-cp /build-files/packaging/zcode-desktop/zcode-desktop.install "$PKGDIR/"
-cd "$PKGDIR"
-makepkg --force --nodeps --noconfirm
-DESKTOP_PKG=$(ls zcode-desktop-"$VERSION"-"$PKGREL"-*.pkg.tar.zst)
-[ -n "$DESKTOP_PKG" ] || die "makepkg produced no zcode-desktop package"
-log "packaged $DESKTOP_PKG"
 
 # ---------------------------------------------------------------------------
-# 9. Update the pacman repo (signed)
+# 9. Publish into the local pacman repository. The repo database is only
+#    touched after a fully successful build + verify, so a failing nightly
+#    keeps pacman -Syu serving the last good packages.
 # ---------------------------------------------------------------------------
-if [ ! -f "$GNUPGHOME/pubring.kbx" ] && [ ! -f "$GNUPGHOME/secring.gpg" ]; then
-    mkdir -p "$GNUPGHOME"
-    chmod 700 "$GNUPGHOME"
-    gpg --batch --passphrase '' --quick-generate-key \
-        "zcode-build local repository <zcode-build@localhost>" default default never
-    log "generated the repository signing key"
+install -m 644 "$WORK/pkg-zcode/$ZCODE_PKG" "$OUT/$ZCODE_PKG"
+if [ "$BUILD_DESKTOP" = 1 ]; then
+    install -m 644 "$WORK/pkg-desktop/$DESKTOP_PKG" "$OUT/$DESKTOP_PKG"
 fi
-chmod 700 "$GNUPGHOME"
-gpg --batch --yes --export --armor > "$REPO/zcode-repo.asc"
-KEY=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
-[ -n "$KEY" ] || die "cannot resolve the signing key"
-
-install -m 644 "$WORK/pkg-zcode/$ZCODE_PKG" "$REPO/$ZCODE_PKG"
-install -m 644 "$WORK/pkg-desktop/$DESKTOP_PKG" "$REPO/$DESKTOP_PKG"
-repo-add --sign --key "$KEY" "$REPO/zcode.db.tar.gz" \
-    "$REPO/$ZCODE_PKG" "$REPO/$DESKTOP_PKG"
+repo-add "$OUT/zcode.db.tar.gz" "$OUT"/zcode-*.pkg.tar.zst
 # pacman accepts both spellings; serve the canonical short name
-rm -f "$REPO/zcode.db" "$REPO/zcode.db.sig"
-ln -s zcode.db.tar.gz "$REPO/zcode.db"
-[ -f "$REPO/zcode.db.tar.gz.sig" ] && ln -sf zcode.db.tar.gz.sig "$REPO/zcode.db.sig"
-chmod 644 "$REPO"/zcode.db* "$REPO"/*.pkg.tar.zst "$REPO"/zcode-repo.asc 2>/dev/null || true
+rm -f "$OUT/zcode.db"
+ln -s zcode.db.tar.gz "$OUT/zcode.db"
 
 # keep only the newest package file per package name (the db above is the
 # index; stale files would otherwise accumulate forever). The [0-9] boundary
 # keeps "zcode-*" from also matching the zcode-desktop files.
 for prefix in "zcode-[0-9]" "zcode-desktop-[0-9]"; do
-    ls "$REPO/$prefix"*.pkg.tar.zst 2>/dev/null | sort -V | head -n -1 | while read -r old; do
-        rm -f "$old" "$old.sig"
+    ls "$OUT/$prefix"*.pkg.tar.zst 2>/dev/null | sort -V | head -n -1 | while read -r old; do
+        rm -f "$old"
         log "pruned old package $old"
     done
 done
-printf 'ok\n' > "$REPO/healthz"
-printf '%s %s %s %s\n' "$VERSION" "$PKGREL" "$COMMIT" "$(date -u +%FT%TZ)" > "$REPO/build-stamp.txt"
-chmod 644 "$REPO/healthz" "$REPO/build-stamp.txt"
-log "repository updated: $REPO ($VERSION-$PKGREL, commit $COMMIT)"
+printf '%s %s %s %s\n' "$VERSION" "$PKGREL" "$COMMIT" "$(date -u +%FT%TZ)" > "$OUT/build-stamp.txt"
+chmod 644 "$OUT/build-stamp.txt" "$OUT"/zcode.db* "$OUT"/*.pkg.tar.zst
+log "local repository updated: $OUT ($VERSION-$PKGREL, commit $COMMIT)"

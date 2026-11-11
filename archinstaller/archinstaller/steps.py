@@ -7,8 +7,11 @@ here and nowhere else.
 """
 from __future__ import annotations
 
+import base64
 import dataclasses
+import io
 import re
+import tarfile
 from pathlib import Path
 
 _SHELL_DIR = Path(__file__).parent / "shell"
@@ -82,6 +85,13 @@ OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
 # busy 3xxx block).
 ZCODE_WEB_PORT = 8290
 ZCODE_UNIT_PATH = ".config/systemd/user/zcode-web.service"
+# On-target zcode build (archinstaller/zcode_build package data). The build
+# tree lands in the created user's home; out/ inside it is registered as a
+# local file:// pacman repository, so pacman -Syu picks up the nightly
+# rebuilds of the zcode-update timer.
+ZCODE_BUILD_HOME = "zcode-build"
+ZCODE_BUILD_TIMEOUT = 3 * 60 * 60  # first build: checkout + pnpm + electron
+ZCODE_UPDATE_TIMER = "03:17"       # off the busy hour marks, like the old nightly
 
 # Stage-two DNS repair, as executed by the dispatcher hook itself (cli kicks
 # the hook with sudo): probes the connection's lease DNS servers on every
@@ -144,6 +154,9 @@ class Step:
     rationale: workbook prose (distilled from the installer's comments).
     commands: shell commands; a single command may span lines (heredocs).
     root: post-boot only — run through passwordless sudo.
+    timeout: post-boot only — per-command SSH timeout in seconds (None =
+        the cli default of 60); long steps like the on-target zcode build
+        override it.
     id: optional hook for cli-side orchestration (e.g. polling after the
         opencode unit is started); renderers ignore it.
     """
@@ -154,6 +167,7 @@ class Step:
     context: str = LIVE
     root: bool = False
     id: str | None = None
+    timeout: int | None = None
     # Renderers emit a blank line before the step (section separator); False
     # glues it to the previous block (continuations, and the partitioning
     # step whose leftover-release commands precede its log marker).
@@ -192,12 +206,12 @@ class InstallConfig:
     timezone: str = ""
     opencode: bool = False
     opencode_password: str | None = None
-    # --zcode: install the zcode/zcode-desktop packages from the private
-    # zcode-build repository (base URL, e.g. http://192.168.1.10:8283) and
-    # deploy the zcode web service as a systemd user unit in stage two.
+    # --zcode: build zcode on the target itself (archinstaller/zcode_build
+    # payload: upstream checkout, telemetry strip, pacman packages published
+    # into a local file:// repository) and deploy the zcode web service as a
+    # systemd user unit in stage two.
     zcode: bool = False
     zcode_token: str | None = None
-    zcode_repo: str | None = None
     # VirtualBox dual-NIC: the host-only NIC's MAC and the static address
     # (CIDR) pinned for it. Empty on every other target: no profile is
     # written. The static profile (not a DHCP lease) is what keeps the
@@ -246,6 +260,62 @@ def zcode_web_unit(zcode_token: str) -> str:
         "[Install]",
         "WantedBy=default.target",
     ]) + "\n"
+
+
+_ZCODE_BUILD_DIR = Path(__file__).parent / "zcode_build"
+
+
+def zcode_build_payload() -> str:
+    """base64(gzip tar) of the zcode_build package-data tree.
+
+    Uploaded as one text file to the target (SSH upload_text) and extracted
+    by the stage-two step into ~/zcode-build. Shell scripts carry the
+    execute bit; everything else lands 0644. The README is documentation
+    for humans reading the repo and stays out of the payload.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for path in sorted(_ZCODE_BUILD_DIR.rglob("*")):
+            if path.is_file() and path.name != "README.md":
+                rel = path.relative_to(_ZCODE_BUILD_DIR)
+                info = tarfile.TarInfo(str(rel))
+                info.size = path.stat().st_size
+                info.mode = 0o755 if path.name.endswith(".sh") else 0o644
+                info.mtime = 0
+                with path.open("rb") as fh:
+                    tar.addfile(info, fh)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def zcode_update_units(desktop: bool) -> tuple[str, str]:
+    """The nightly rebuild oneshot service + timer (user units, as a pair).
+
+    Re-runs build.sh nightly so the local [zcode] repository tracks
+    upstream main; pacman -Syu then upgrades zcode like any other package.
+    Persistent=true catches up on nights the machine was powered off.
+    """
+    desktop_env = "Environment=ZCODE_DESKTOP=1\n" if desktop else ""
+    service = (
+        "[Unit]\n"
+        "Description=Nightly zcode rebuild (telemetry-stripped upstream build)\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"{desktop_env}"
+        f"ExecStart=/bin/bash %h/{ZCODE_BUILD_HOME}/build.sh\n"
+    )
+    timer = (
+        "[Unit]\n"
+        "Description=Nightly zcode rebuild schedule\n"
+        "\n"
+        "[Timer]\n"
+        f"OnCalendar=*-*-* {ZCODE_UPDATE_TIMER}:00\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    return service, timer
 
 
 def install_steps(cfg: InstallConfig) -> list[Step]:
@@ -439,39 +509,6 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             "The signing keys are fetched from their upstream homes (the cache mirror"
             " proxies repository files only, not key .asc files) and locally signed."
         )),
-        *([
-            Step("Adding the zcode repository", (
-                _heredoc("cat >> /etc/pacman.conf <<'ZCODE'\n"
-                         "\n"
-                         "[zcode]\n"
-                         f"Server = {cfg.zcode_repo}",
-                         "ZCODE"),
-            ), rationale=(
-                "The private zcode-build repository (nightly telemetry-stripped"
-                " builds of zai-org/ZCode). pacman requests <Server>/zcode.db, and"
-                " the repository serves its database at the root, so the flat"
-                " server line needs no path."
-            )),
-            Step("Fetching and signing the zcode repository key", (
-                f"retry curl -O {cfg.zcode_repo}/zcode-repo.asc",
-                "pacman-key --add zcode-repo.asc",
-                ("pacman-key --lsign-key \"$(gpg --show-keys --with-colons"
-                 " zcode-repo.asc | awk -F: '/^fpr/ {print $10; exit}')\""),
-            ), rationale=(
-                "Unlike xlibre/sonicde the repository key is generated on the build"
-                " host at first nightly run, so the fingerprint is read from the"
-                " exported .asc at install time instead of being pinned here."
-            )),
-            Step("Installing zcode (long step)", (
-                ("retry pacman -Sy --needed --noconfirm \\\n"
-                 f"    zcode{' zcode-desktop' if cfg.graphical else ''}"),
-            ), rationale=(
-                "The zcode package carries the CLI, TUI and web distribution with"
-                " its own pinned Node runtime; zcode-desktop (the Electron app, no"
-                " autostart) is added on graphical installs. Later `pacman -Syu`"
-                " runs pick up nightly rebuilds through the repository above."
-            )),
-        ] if cfg.zcode else []),
         Step("Granting wheel group sudo rights", (
             "printf '%s\\n' '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel",
             "chmod 440 /etc/sudoers.d/10-wheel",
@@ -773,10 +810,13 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
 def post_boot_steps(username: str, hostname: str, timezone: str,
                     opencode: bool, opencode_password: str | None,
                     zcode: bool = False, zcode_token: str | None = None,
+                    zcode_desktop: bool = False,
                     include_dns: bool = True) -> list[Step]:
     """Stage two: applied to the installed system over SSH after first boot.
 
     Steps run as the created user; `root` steps go through passwordless sudo.
+    zcode_desktop mirrors --graphical: it builds/installs zcode-desktop and
+    pulls in ruby/fpm for electron-builder's pacman target.
     include_dns=False drops the manual DNS-repair step (the cli probes and
     kicks the dispatcher hook itself at the right position).
     """
@@ -839,7 +879,71 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
         ])
     if zcode:
         assert zcode_token is not None
+        update_service, update_timer = zcode_update_units(zcode_desktop)
+        desktop_pkgs = "zcode zcode-desktop" if zcode_desktop else "zcode"
+        build_deps = ("base-devel git python"
+                      + (" ruby ruby-rubygems" if zcode_desktop else ""))
         steps.extend([
+            Step("Installing the zcode build dependencies", (
+                f"pacman -Sy --needed --noconfirm {build_deps}",
+            ), rationale=(
+                "The zcode packages are built on this machine from upstream"
+                " (telemetry stripped): makepkg/base-devel for packaging, python"
+                " for the strip script, and ruby for fpm (electron-builder's"
+                " pacman target) on graphical installs."
+            ), context=POST_BOOT, root=True),
+            Step("Unpacking the zcode-build scripts", (
+                f"mkdir -p ~/{ZCODE_BUILD_HOME}",
+                (f"base64 -d /home/{username}/zcode-build.tar.b64"
+                 f" | tar -xzf - -C ~/{ZCODE_BUILD_HOME}"),
+                f"rm /home/{username}/zcode-build.tar.b64",
+            ), rationale=(
+                "The build scripts travel as one tarball uploaded by archinstaller"
+                " (the zcode_build package-data tree). When replaying this"
+                " workbook manually, copy that directory from the archinstaller"
+                " source to ~/zcode-build instead."
+            ), context=POST_BOOT),
+            Step("Building zcode from upstream (long step, first run ~1-2 h)", (
+                f"cd ~/{ZCODE_BUILD_HOME} && ZCODE_DESKTOP={int(zcode_desktop)} ./build.sh",
+            ), rationale=(
+                "Checks out zai-org/ZCode, strips the telemetry surface"
+                " (assert-anchored; a drifted upstream fails the run instead of"
+                " shipping telemetry), builds the packages and publishes them"
+                " into the local pacman repository at ~/zcode-build/out. The"
+                " persistent cache/ next to it keeps re-runs incremental."
+            ), context=POST_BOOT, id="zcode-build",
+                timeout=ZCODE_BUILD_TIMEOUT),
+            Step("Registering the local zcode repository and installing zcode", (
+                # sh -c: the whole guard+append must run elevated — a bare
+                # `grep || cat` after the sudo prefix would append as the user
+                _heredoc("sh -c \"grep -q '^\\[zcode\\]' /etc/pacman.conf ||"
+                         " cat >> /etc/pacman.conf\" <<'ZCODE'\n"
+                         "\n"
+                         "[zcode]\n"
+                         "SigLevel = Never\n"
+                         f"Server = file:///home/{username}/{ZCODE_BUILD_HOME}/out",
+                         "ZCODE"),
+                f"pacman -Sy --needed --noconfirm {desktop_pkgs}",
+            ), rationale=(
+                "The repository the previous step published is local-only"
+                " (file:// server), so no signature checking applies — the"
+                " packages never leave this machine. From here on, plain"
+                " `pacman -Syu` upgrades zcode like any other package."
+            ), context=POST_BOOT, root=True),
+            Step("Installing the nightly zcode rebuild timer", (
+                "mkdir -p ~/.config/systemd/user",
+                _heredoc("cat > ~/.config/systemd/user/zcode-update.service <<'UNIT'",
+                         *update_service.splitlines(), "UNIT"),
+                _heredoc("cat > ~/.config/systemd/user/zcode-update.timer <<'UNIT'",
+                         *update_timer.splitlines(), "UNIT"),
+                "systemctl --user daemon-reload",
+                "systemctl --user enable --now zcode-update.timer",
+            ), rationale=(
+                "Rebuilds zcode nightly (03:17, catch-up after powered-off"
+                " nights) into the same local repository, so upstream updates"
+                " arrive through regular pacman -Syu runs. Logs: journalctl"
+                " --user -u zcode-update.service."
+            ), context=POST_BOOT, id="zcode-update"),
             Step("Installing the zcode-web user service", (
                 "mkdir -p ~/.config/systemd/user",
                 _heredoc(f"cat > {ZCODE_UNIT_PATH} <<'UNIT'",
