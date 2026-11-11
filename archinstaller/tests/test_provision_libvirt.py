@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 from archinstaller import provision_libvirt
 
@@ -172,6 +173,83 @@ def test_select_network_fails_without_any_network(monkeypatch):
     except provision_libvirt.LibvirtError:
         return
     raise AssertionError("expected LibvirtError without a usable network")
+
+
+def test_zone_interfaces_parses_active_zones_output():
+    text = ("docker\n"
+            "  interfaces: br-x docker0\n"
+            "libvirt\n"
+            "  interfaces: virbr0\n"
+            "libvirt-routed\n"
+            "  interfaces: virbr2\n"
+            "public (default)\n"
+            "  interfaces: wlan0\n"
+            "  sources: 172.29.152.0/24\n")
+    assert provision_libvirt.zone_interfaces(text) == {
+        "br-x", "docker0", "virbr0", "virbr2", "wlan0"}
+    assert provision_libvirt.zone_interfaces("") == set()
+
+
+def test_net_bridge_parses_the_network_xml(monkeypatch):
+    monkeypatch.setattr(provision_libvirt, "_run", lambda uri, *args:
+                        "<network><bridge name='virbr2' stp='off' delay='0'/></network>")
+    assert provision_libvirt._net_bridge("lan-routed", "qemu:///system") == "virbr2"
+    monkeypatch.setattr(provision_libvirt, "_run", lambda uri, *args: "<network/>")
+    assert provision_libvirt._net_bridge("lan-routed", "qemu:///system") is None
+
+
+def test_dhcp_check_passes_when_the_bridge_is_zoned(monkeypatch):
+    monkeypatch.setattr(provision_libvirt.shutil, "which",
+                        lambda name: "/usr/bin/firewall-cmd" if name == "firewall-cmd" else None)
+    monkeypatch.setattr(provision_libvirt.subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(
+                            a[0], 0,
+                            stdout="libvirt-routed\n  interfaces: virbr2\n"))
+    monkeypatch.setattr(provision_libvirt, "_net_bridge", lambda name, uri: "virbr2")
+    provision_libvirt.assert_dhcp_reaches_host(("network", "lan-routed"))
+
+
+def test_dhcp_check_raises_with_a_remedy_when_the_bridge_is_unzoned(monkeypatch):
+    monkeypatch.setattr(provision_libvirt.shutil, "which",
+                        lambda name: "/usr/bin/firewall-cmd" if name == "firewall-cmd" else None)
+    monkeypatch.setattr(provision_libvirt.subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(
+                            a[0], 0,
+                            stdout="libvirt\n  interfaces: virbr0\npublic\n  interfaces: wlan0\n"))
+    monkeypatch.setattr(provision_libvirt, "_net_bridge", lambda name, uri: "virbr2")
+    try:
+        provision_libvirt.assert_dhcp_reaches_host(("network", "lan-routed"))
+    except provision_libvirt.LibvirtError as error:
+        message = str(error)
+        assert "virbr2" in message and "firewall-cmd" in message
+        assert "--zone=libvirt-routed --add-service=dhcp" in message
+        return
+    raise AssertionError("expected LibvirtError for an unzoned libvirt bridge")
+
+
+def test_dhcp_check_skips_without_firewall_cmd(monkeypatch):
+    monkeypatch.setattr(provision_libvirt.shutil, "which", lambda name: None)
+    called = []
+    monkeypatch.setattr(provision_libvirt.subprocess, "run",
+                        lambda *a, **k: called.append(a))
+    monkeypatch.setattr(provision_libvirt, "_net_bridge", lambda name, uri: "virbr2")
+    provision_libvirt.assert_dhcp_reaches_host(("network", "lan-routed"))
+    assert called == []
+
+
+def test_dhcp_check_skips_for_physical_bridges_and_denied_queries(monkeypatch):
+    called = []
+    monkeypatch.setattr(provision_libvirt.subprocess, "run",
+                        lambda *a, **k: called.append(a))
+    provision_libvirt.assert_dhcp_reaches_host(("bridge", "lan0"))
+    assert called == []
+    monkeypatch.setattr(provision_libvirt.shutil, "which",
+                        lambda name: "/usr/bin/firewall-cmd" if name == "firewall-cmd" else None)
+    monkeypatch.setattr(provision_libvirt.subprocess, "run", lambda *a, **k:
+                        called.append(a) or subprocess.CompletedProcess(
+                            a[0], 254, stderr="Authorization failed"))
+    provision_libvirt.assert_dhcp_reaches_host(("network", "lan-routed"))
+    assert len(called) == 1
 
 
 def test_strip_cdrom_removes_device_and_boot_entry():

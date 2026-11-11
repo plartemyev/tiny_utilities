@@ -482,12 +482,63 @@ topology, then live from a guest):
     sudo firewall-cmd --policy=libvirt-to-host --add-port=8282/tcp
     sudo firewall-cmd --permanent --policy=libvirt-to-host --add-port=8282/tcp
 
+### Guest→host firewall: keep the bridge zone-bound (DHCP!)
+
+Guest→host traffic (DHCP, DNS, SSH, the mirror port) takes the host
+INPUT path, which libvirt's own nftables firewall (`table ip
+libvirt_network`, forward-hook only) never covers.  While the network's
+bridge (`virbr2`) is bound to no firewalld zone, those packets fall
+through to the default zone's to-HOST policy — no udp/67 in its
+allow-list, terminal `reject with icmpx admin-prohibited` — so dnsmasq
+never sees the DHCPDISCOVERs and a live ISO sits without an IPv4
+address (archinstaller fails with "no global IPv4 on the guest" after
+three serial-poll boot attempts; guest *egress* keeps working, which is
+what makes the failure look mysterious).  The `libvirt-routed` zone
+ships with the libvirt package but carries no services, so binding
+alone is not enough either — `dhcp` must be allowed to the host.
+One-time setup, fully expressible as firewall-cmd commands (idempotent,
+query-guarded; no XML hand-editing — the `/etc/firewalld` files are
+just firewalld's serialization of these commands):
+
+    sudo firewall-cmd --permanent --get-zones | grep -qw libvirt-routed || \
+        sudo firewall-cmd --permanent --new-zone=libvirt-routed
+    sudo firewall-cmd --permanent --zone=libvirt-routed --add-interface=virbr2
+    sudo firewall-cmd --permanent --zone=libvirt-routed --add-service=dhcp
+    sudo firewall-cmd --permanent --get-policies | grep -qw libvirt-to-host || \
+        sudo firewall-cmd --permanent --new-policy=libvirt-to-host
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --set-target=REJECT
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --add-ingress-zone=libvirt-routed
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --add-egress-zone=HOST
+    for s in dhcp dhcpv6 dns ssh tftp; do
+      sudo firewall-cmd --permanent --policy=libvirt-to-host --add-service=$s
+    done
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --add-protocol=icmp
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --add-protocol=ipv6-icmp
+    sudo firewall-cmd --permanent --policy=libvirt-to-host --add-port=8282/tcp
+    sudo firewall-cmd --reload
+    sudo firewall-cmd --zone=libvirt-routed --add-interface=virbr2
+    sudo firewall-cmd --zone=libvirt-routed --add-service=dhcp
+
+(The last two lines are the runtime half of the binding and also heal a
+currently-stuck guest without restarting it — NetworkManager retries
+DHCP on its own; repeating an already-applied pair only warns.)
+
+After a host reboot, check `firewall-cmd --get-active-zones` still
+lists `virbr2` under `libvirt-routed`: firewalld starts before libvirtd
+creates the bridge, and whether it applies permanent interface bindings
+to late-appearing interfaces is version-dependent.  If a fresh boot
+shows the bridge unzoned again, run the two runtime lines from a boot
+unit — an `ExecStartPost` on `lan-routed-bypass.service` fits (its
+timing is empirically after the libvirt network start).
+
 To expose another host-published docker port to the guests, add one more
 `dnat` line to the nft file and the matching firewall-cmd pair.  The
 table is owned by this unit alone: docker, libvirt and firewalld
 regenerate only their own tables, so it survives all of their restarts
 (including `firewall-cmd --reload`, which libvirt answers by re-applying
-its zone bindings).  Guests should address the mirror via the static
+its own `libvirt_network` nft rules — firewalld zone bindings are *not*
+libvirt's business with the nftables backend, they are the admin's job,
+see the zone section above).  Guests should address the mirror via the static
 `lan-routed` gateway (`http://172.29.152.225:8282`, this network's own
 address) instead of the host's roaming LAN IP; archinstaller does this
 automatically for VM targets by using the guest's default gateway.

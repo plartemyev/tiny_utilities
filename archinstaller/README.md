@@ -204,7 +204,13 @@ Hardware provisioned per backend:
   ICH9 HD audio via the spice backend, spice with GL under `--graphical`
   (local GL-less spice otherwise), a `com.redhat.spice.0` spicevmc agent
   channel (the guest's spice-vdagent transport: clipboard sharing and
-  console-resize resolution following), TCP serial.
+  console-resize resolution following), TCP serial. Before any VM state is
+  created, the guest→host DHCP path is preflighted: when firewalld is
+  running and the chosen network's bridge is bound to no zone, the guest's
+  DHCP DISCOVERs are rejected on the host INPUT path (libvirt's own nft
+  rules are forward-hook only) and the live ISO never gets an IPv4
+  address — the run fails fast with the `firewall-cmd` binding remedy
+  instead of burning three serial-poll boot attempts.
 
 Boot and install flow: at the ISO's systemd-boot menu the tool blindly types
 `e`, appends `console=ttyS0,115200` and boots (hypervisor keystrokes ~10 s

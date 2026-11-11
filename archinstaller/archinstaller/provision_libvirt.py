@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import time
 
@@ -62,6 +63,7 @@ def provision(name: str, *, disk_size_gib: int, ram_gib: int, cores: int,
                            f"{VOLUME_POOL!r} pool")
     serial_port = pick_free_ports(1)[0]
     network = select_network(uri)
+    assert_dhcp_reaches_host(network, uri)
     xml = domain_xml(name, disk_size_gib=disk_size_gib, ram_gib=ram_gib,
                      cores=cores, graphical=graphical, serial_port=serial_port,
                      iso_path=iso_path, network=network,
@@ -115,6 +117,58 @@ def select_network(uri: str = DEFAULT_URI) -> tuple[str, str]:
     if needs_start:
         _run(uri, "net-start", network[1])
     return network
+
+
+def zone_interfaces(active_zones: str) -> set[str]:
+    """Interfaces bound to any zone, from `firewall-cmd --get-active-zones`."""
+    bound: set[str] = set()
+    for line in active_zones.splitlines():
+        text = line.strip()
+        if text.startswith("interfaces:"):
+            bound.update(text.split(":", 1)[1].split())
+    return bound
+
+
+def _net_bridge(network: str, uri: str) -> str | None:
+    """The bridge device of a libvirt virtual network, from net-dumpxml."""
+    found = re.search(r"<bridge name='([^']+)'", _run(uri, "net-dumpxml", network))
+    return found.group(1) if found else None
+
+
+def assert_dhcp_reaches_host(network: tuple[str, str],
+                             uri: str = DEFAULT_URI) -> None:
+    """Fail fast when firewalld would swallow the guest's DHCP DISCOVERs.
+
+    Guest→host traffic rides the INPUT path, which libvirt's own nftables
+    rules (forward-hook only) never cover: a network bridge bound to no
+    firewalld zone falls through to the default zone's to-HOST policy,
+    whose allow-list has no udp/67 and ends in reject — dnsmasq never
+    sees the DISCOVER and the live ISO sits without an IPv4 address
+    through every serial poll.  Best-effort by design: silently skipped
+    for physical bridges (their DHCP is forwarded, not host-local),
+    without firewall-cmd, or when the query is denied (polkit) — the
+    boot poll remains the last resort in those cases.
+    """
+    if network[0] != "network" or shutil.which("firewall-cmd") is None:
+        return
+    probe = subprocess.run(["firewall-cmd", "--get-active-zones"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        return
+    bridge = _net_bridge(network[1], uri)
+    if bridge is None or bridge in zone_interfaces(probe.stdout):
+        return
+    raise LibvirtError(
+        f"libvirt network {network[1]!r} bridge {bridge!r} is in no firewalld "
+        "zone: guest DHCP (udp/67) is rejected on the host INPUT path and the "
+        "live ISO never gets an IPv4 address. Bind it once on the host (root): "
+        f"firewall-cmd --permanent --zone=libvirt-routed --add-interface={bridge}"
+        " && firewall-cmd --permanent --zone=libvirt-routed --add-service=dhcp"
+        f" && firewall-cmd --zone=libvirt-routed --add-interface={bridge}"
+        " && firewall-cmd --zone=libvirt-routed --add-service=dhcp"
+        " (the libvirt-routed zone ships with libvirt but carries no services;"
+        " the hardened allow-list variant is documented in the arch-cache-mirror"
+        " README)")
 
 
 def plan_network(uri: str = DEFAULT_URI) -> tuple[tuple[str, str], bool]:
