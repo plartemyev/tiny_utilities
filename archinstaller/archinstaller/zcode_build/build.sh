@@ -144,12 +144,15 @@ fi
 bash "$DIR/strip-telemetry.sh" "$SRC"
 
 # Build only the pacman target on Linux: AppImage/deb/rpm would need extra
-# tooling (appimage tools, rpmbuild) and download more artifacts for targets
-# we never ship.
+# tooling (appimage tools, rpmbuild) and download artifacts for targets we
+# never ship. The config's linux target list is the single mechanism:
+# electron-builder (current version) rejects target names as positional
+# arguments ("Unknown argument: pacman"), so no bundle.mjs arg hack.
 BUNDLE_MJS=$SRC/packages/desktop/scripts/bundle.mjs
-anchor='archBuilderFlagMap[arch],'
-grep -qF "$anchor" "$BUNDLE_MJS" || die "bundle.mjs buildArgs anchor missing"
-sed -i "s|$anchor|$anchor \"pacman\",|" "$BUNDLE_MJS"
+CONFIG_JS=$SRC/packages/desktop/electron-builder.config.js
+config_anchor='target: ["AppImage", "deb", "rpm", "pacman"],'
+grep -qF "$config_anchor" "$CONFIG_JS" || die "electron-builder linux target anchor missing"
+sed -i 's|target: \["AppImage", "deb", "rpm", "pacman"\],|target: ["pacman"],|' "$CONFIG_JS"
 log "desktop bundle limited to the pacman target"
 
 # ---------------------------------------------------------------------------
@@ -259,7 +262,14 @@ if [ "$BUILD_DESKTOP" = 1 ]; then
     [ -n "$OPT_DIR" ] || die "cannot find the opt/ directory in the desktop artifact"
     SANDBOX=$(awk -v d="opt/$OPT_DIR" '$0 ~ "^" d "/.*chrome-sandbox$" {print; exit}' "$PKGDIR/listing.txt")
     [ -n "$SANDBOX" ] || die "cannot find chrome-sandbox in the desktop artifact"
-    INNER_BIN=$(awk -v d="opt/$OPT_DIR" '$0 ~ "^" d "/[^/]+$" && $0 ~ /(zcode|ZCode)$/ {print; exit}' "$PKGDIR/listing.txt")
+    # the app binary: a top-level file under opt/<dir>/ whose name carries
+    # "zcode" (upstream variants differ: ".../zcode", ".../ZCode",
+    # ".../zcode-preview")
+    INNER_BIN=$(awk -v d="opt/$OPT_DIR" '
+        index($0, d "/") == 1 {
+            rest = substr($0, length(d) + 2)
+            if (index(rest, "/") == 0 && tolower(rest) ~ /zcode/) { print; exit }
+        }' "$PKGDIR/listing.txt")
     [ -n "$INNER_BIN" ] || die "cannot find the app binary in the desktop artifact"
     # the artifact's own usr/bin entry (if any) would collide with the CLI's
     # /usr/bin/zcode: drop it, we ship our own zcode-desktop symlink instead

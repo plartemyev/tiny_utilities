@@ -4,6 +4,7 @@ import base64
 import binascii
 import dataclasses
 import ipaddress
+import os
 import socket
 import subprocess
 import sys
@@ -81,16 +82,23 @@ def connect_target(
         sock = jump_client.get_transport().open_channel(
             "direct-tcpip", (host, port), (jump.host, jump.port),
         )
+    key_for_connect = key_filename
+    look_for_keys = None
     if key_filename is not None and password is None and _key_is_encrypted(key_filename):
         # paramiko raises PasswordRequiredException before ever trying the
         # agent; with password auth there is no fallback, so only drop the
-        # explicit key when agent/default keys can take over
+        # explicit key when agent/default keys can take over. Without an
+        # agent socket, default-key discovery would ALSO die on encrypted
+        # ~/.ssh keys — disable it for a clean auth failure instead.
         print(f"private key {key_filename} is passphrase-protected; "
               "authenticating via the ssh agent instead")
-        key_filename = None
+        key_for_connect = None
+        if not os.environ.get("SSH_AUTH_SOCK"):
+            look_for_keys = False
     try:
         client = _connect_single(host, port, username, password, sock=sock,
-                                 key_filename=key_filename, timeout=timeout)
+                                 key_filename=key_for_connect, timeout=timeout,
+                                 look_for_keys=look_for_keys)
     except (OSError, paramiko.SSHException, EOFError):
         if jump_client is not None:
             jump_client.close()
@@ -258,6 +266,7 @@ def _connect_single(
     sock: paramiko.Channel | None = None,
     key_filename: str | None = None,
     timeout: float = CONNECT_TIMEOUT,
+    look_for_keys: bool | None = None,
 ) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -268,7 +277,7 @@ def _connect_single(
         password=password,
         key_filename=key_filename,
         sock=sock,
-        look_for_keys=password is None,
+        look_for_keys=(password is None) if look_for_keys is None else look_for_keys,
         allow_agent=password is None,
         timeout=timeout,
         banner_timeout=timeout,

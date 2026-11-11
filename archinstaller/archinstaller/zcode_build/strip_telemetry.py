@@ -184,6 +184,28 @@ def strip_renderer_exporter(root: pathlib.Path) -> None:
     print("[strip] neutralized rendererActionTraceExporter.ts")
 
 
+def strip_desktop_arms_bootstrap(root: pathlib.Path) -> None:
+    # appARMSBootstrap.ts stays in the tree (its feeders are inert through
+    # the stub), but the init-success log line must not ship: official
+    # builds print "[arms] electron initialized" and the verify gate greps
+    # the shipped asar for exactly that line.
+    relative = "packages/desktop/src/main/appARMSBootstrap.ts"
+    text = read_text(root, relative)
+    log_line = ("    logger.info(`[arms] electron initialized"
+                " env=${armsRumEnv} version=${ZCODE_VERSION}`);")
+    if text.count(log_line) != 1:
+        die(f"ARMS init log line not found (or not unique) in {relative}")
+    text = text.replace(
+        log_line,
+        "    // Telemetry strip: the ARMS init-success log line was removed;\n"
+        "    // see zcode-build/strip-telemetry.sh. The stubbed init() sends\n"
+        "    // nothing, so that line must not ship either.",
+        1,
+    )
+    write_text(root, relative, text)
+    print(f"[strip] removed the ARMS init log line from {relative}")
+
+
 def strip_desktop_deps(root: pathlib.Path) -> None:
     edit_json(root, "packages/desktop/package.json",
               drop_dependencies(DESKTOP_OTEL_DEPS))
@@ -227,6 +249,7 @@ def main() -> None:
     strip_bootstrap(root)
     strip_telemetry_deps(root)
     strip_renderer_exporter(root)
+    strip_desktop_arms_bootstrap(root)
     strip_desktop_deps(root)
     strip_bundle_lists(root)
 

@@ -115,6 +115,17 @@ def fixture_checkout(root: Path) -> None:
         "}\n"
     ))
     write(root, "packages/desktop/src/main/localTtftExporter.ts", "stale stub\n")
+    write(root, "packages/desktop/src/main/appARMSBootstrap.ts", (
+        "export function initArmsBootstrap(logger: Logger): void {\n"
+        "  armsRum\n"
+        "    .init(config)\n"
+        "    .then(() => {\n"
+        "      logger.info(`[arms] electron initialized env=${armsRumEnv}"
+        " version=${ZCODE_VERSION}`);\n"
+        "    })\n"
+        "    .catch((e) => logger.error(\"[arms] electron init failed:\", e));\n"
+        "}\n"
+    ))
     bundle = (
         "const runtimeModules = [\n"
         '  "@opentelemetry/sdk-metrics",\n'
@@ -181,6 +192,11 @@ def test_strip_applies_every_layer(tmp_path):
     assert "validHttpUrl" in exporter               # utilities survive
     ttft = (checkout / "packages/desktop/src/main/localTtftExporter.ts").read_text()
     assert "createLocalTtftExporter" in ttft
+    # the ARMS init log line must not ship (official builds print it; the
+    # verify gate greps the shipped asar for it)
+    arms_bootstrap = (checkout / "packages/desktop/src/main/appARMSBootstrap.ts").read_text()
+    assert "electron initialized" not in arms_bootstrap
+    assert "catch" in arms_bootstrap  # the surrounding call site survives
 
     for relative in ("packages/desktop/scripts/bundle.mjs",
                      "packages/desktop/electron-builder.config.js"):

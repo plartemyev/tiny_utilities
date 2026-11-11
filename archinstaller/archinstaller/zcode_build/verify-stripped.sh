@@ -81,7 +81,11 @@ if [ "$MODE" = desktop ]; then
     [ -f "$ARTIFACT" ] || { echo "[verify] FAIL: missing artifact $ARTIFACT" >&2; exit 1; }
     TMP=$(mktemp -d "$SRC/../desktop-verify.XXXXXX")
     trap 'rm -rf "$TMP"' EXIT
+    # app.asar.unpacked comes with it: upstream unpacks native modules
+    # (@napi-rs/keyring et al.), and asar extract reads those entries from
+    # the sibling directory — without it the extract dies with ENOENT
     tar -xf "$ARTIFACT" -C "$TMP" --wildcards '*/resources/app.asar' \
+        '*/resources/app.asar.unpacked/*' \
         || { echo "[verify] FAIL: no app.asar inside $ARTIFACT" >&2; exit 1; }
     ASAR=$(find "$TMP" -name app.asar | head -1)
     ASAR_CLI=$(dirname "$(find node_modules -path '*@electron/asar/package.json' -print -quit 2>/dev/null)")/bin/asar.js

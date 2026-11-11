@@ -569,7 +569,17 @@ def _private_key_path(pubkey_arg: str) -> str | None:
         candidate = path[:-4]
     else:
         candidate = path
-    return candidate if os.path.isfile(candidate) else None
+    if not os.path.isfile(candidate):
+        return None
+    from archinstaller.ssh import _key_is_encrypted
+    if _key_is_encrypted(candidate) and not os.environ.get("SSH_AUTH_SOCK"):
+        # fail before provisioning: stage two would die at the reconnect,
+        # after the whole install has already run
+        sys.exit(f"private key {candidate} is passphrase-protected and no ssh"
+                 " agent is available (SSH_AUTH_SOCK is unset); load the key"
+                 " into an agent and export SSH_AUTH_SOCK, or pass an"
+                 " unencrypted key via --ssh-pubkey")
+    return candidate
 
 
 def _primary_lan_address() -> tuple[str, str]:

@@ -488,6 +488,7 @@ def test_zcode_post_boot_uploads_payload_and_builds(monkeypatch):
     console_deps = next(s for s in console_steps
                         if "Preparing the zcode repository location" in s.title)
     assert "ruby" not in console_deps.commands[-1]
+    assert "libxcrypt-compat" not in console_deps.commands[-1]
     console_repo = next(s for s in console_steps
                         if "Registering the local zcode repository" in s.title)
     assert console_repo.commands[1].endswith("noconfirm zcode")
