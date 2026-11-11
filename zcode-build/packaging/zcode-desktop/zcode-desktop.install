@@ -1,0 +1,11 @@
+# Rendered by zcode-build/build.sh (@SANDBOX@ substituted from the artifact
+# manifest). electron's sandbox helper needs the setuid bit, which package
+# normalization strips — applied here at install time instead (mirrors the
+# upstream .deb postinst).
+post_install() {
+    chmod 4755 "/@SANDBOX@"
+}
+
+post_upgrade() {
+    post_install
+}

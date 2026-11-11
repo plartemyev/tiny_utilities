@@ -21,6 +21,9 @@ def make_cfg(**overrides):
         "timezone": "Asia/Bangkok",
         "opencode": False,
         "opencode_password": None,
+        "zcode": False,
+        "zcode_token": None,
+        "zcode_repo": None,
     }
     defaults.update(overrides)
     return InstallConfig(**defaults)
@@ -51,6 +54,13 @@ def test_facts_line_reports_mirror_and_opencode():
     assert "opencode=yes" in md
 
 
+def test_facts_line_reports_zcode_repo():
+    md = render(make_cfg(zcode=True, zcode_token="{{ZCODE_TOKEN}}",
+                         zcode_repo="http://192.168.1.10:8283"))
+    assert "zcode=yes (repo http://192.168.1.10:8283)" in md
+    assert "curl -fsS --max-time 8 http://192.168.1.10:8283/zcode.db" in md
+
+
 def test_placeholders_reach_the_commands_and_no_caution():
     md = render(make_cfg())
     assert "printf 'root:%s\\n' '{{ROOT_PASSWORD}}' | chpasswd" in md
@@ -73,6 +83,22 @@ def test_caution_lists_opencode_only_when_enabled():
     assert "(root, user, opencode)" in with_oc
     without_oc = render(make_cfg(), passwords_embedded=True)
     assert "(root, user)" in without_oc
+
+
+def test_caution_lists_zcode_token_when_enabled():
+    with_zc = render(make_cfg(zcode=True, zcode_token="zctok"),
+                     passwords_embedded=True)
+    assert "(root, user, zcode token)" in with_zc
+
+
+def test_zcode_unit_renders_with_token():
+    from archinstaller.steps import ZCODE_WEB_PORT
+    md = render(make_cfg(zcode=True, zcode_token="zctok32chars________________"))
+    assert "Installing the zcode-web user service" in md
+    assert (f"ExecStart=/usr/bin/zcode --web --host 0.0.0.0"
+            f" --port {ZCODE_WEB_PORT} --no-open --token zctok32chars________________") in md
+    assert f"firewall-cmd --permanent --add-port={ZCODE_WEB_PORT}/tcp" in md
+    assert "loginctl enable-linger" in md
 
 
 def test_virt_conditionals():

@@ -76,6 +76,12 @@ SONICDE_KEY_ID = "3B87898C73F11DF5"
 USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games"
 OPENCODE_PORT = 49374
 OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
+# zcode-web listens on the target; 8290 is unassigned by IANA, unprivileged,
+# below the Linux ephemeral range (32768-60999) and not claimed by popular
+# services (zcode's own default 3030 is a web-dev favorite and sits in the
+# busy 3xxx block).
+ZCODE_WEB_PORT = 8290
+ZCODE_UNIT_PATH = ".config/systemd/user/zcode-web.service"
 
 # Stage-two DNS repair, as executed by the dispatcher hook itself (cli kicks
 # the hook with sudo): probes the connection's lease DNS servers on every
@@ -186,6 +192,12 @@ class InstallConfig:
     timezone: str = ""
     opencode: bool = False
     opencode_password: str | None = None
+    # --zcode: install the zcode/zcode-desktop packages from the private
+    # zcode-build repository (base URL, e.g. http://192.168.1.10:8283) and
+    # deploy the zcode web service as a systemd user unit in stage two.
+    zcode: bool = False
+    zcode_token: str | None = None
+    zcode_repo: str | None = None
     # VirtualBox dual-NIC: the host-only NIC's MAC and the static address
     # (CIDR) pinned for it. Empty on every other target: no profile is
     # written. The static profile (not a DHCP lease) is what keeps the
@@ -206,6 +218,29 @@ def opencode_unit(opencode_password: str) -> str:
         "[Service]",
         f"Environment=OPENCODE_SERVER_PASSWORD={opencode_password}",
         f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {OPENCODE_PORT}",
+        "Restart=on-failure",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+    ]) + "\n"
+
+
+def zcode_web_unit(zcode_token: str) -> str:
+    """The zcode web service unit (user's draft, token + port filled in).
+
+    The zcode runner spawns its HTTP/WebSocket backend with
+    ZCODE_SERVER_AUTH_TOKEN from --token; a non-loopback --host without a
+    token refuses to start, and --no-open keeps it from trying to launch a
+    browser on a headless system.
+    """
+    return "\n".join([
+        "[Unit]",
+        "Description=ZCode web (LAN, token auth)",
+        "After=network-online.target",
+        "",
+        "[Service]",
+        f"ExecStart=/usr/bin/zcode --web --host 0.0.0.0 --port {ZCODE_WEB_PORT}"
+        f" --no-open --token {zcode_token}",
         "Restart=on-failure",
         "",
         "[Install]",
@@ -404,6 +439,39 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             "The signing keys are fetched from their upstream homes (the cache mirror"
             " proxies repository files only, not key .asc files) and locally signed."
         )),
+        *([
+            Step("Adding the zcode repository", (
+                _heredoc("cat >> /etc/pacman.conf <<'ZCODE'\n"
+                         "\n"
+                         "[zcode]\n"
+                         f"Server = {cfg.zcode_repo}",
+                         "ZCODE"),
+            ), rationale=(
+                "The private zcode-build repository (nightly telemetry-stripped"
+                " builds of zai-org/ZCode). pacman requests <Server>/zcode.db, and"
+                " the repository serves its database at the root, so the flat"
+                " server line needs no path."
+            )),
+            Step("Fetching and signing the zcode repository key", (
+                f"retry curl -O {cfg.zcode_repo}/zcode-repo.asc",
+                "pacman-key --add zcode-repo.asc",
+                ("pacman-key --lsign-key \"$(gpg --show-keys --with-colons"
+                 " zcode-repo.asc | awk -F: '/^fpr/ {print $10; exit}')\""),
+            ), rationale=(
+                "Unlike xlibre/sonicde the repository key is generated on the build"
+                " host at first nightly run, so the fingerprint is read from the"
+                " exported .asc at install time instead of being pinned here."
+            )),
+            Step("Installing zcode (long step)", (
+                ("retry pacman -Sy --needed --noconfirm \\\n"
+                 f"    zcode{' zcode-desktop' if cfg.graphical else ''}"),
+            ), rationale=(
+                "The zcode package carries the CLI, TUI and web distribution with"
+                " its own pinned Node runtime; zcode-desktop (the Electron app, no"
+                " autostart) is added on graphical installs. Later `pacman -Syu`"
+                " runs pick up nightly rebuilds through the repository above."
+            )),
+        ] if cfg.zcode else []),
         Step("Granting wheel group sudo rights", (
             "printf '%s\\n' '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel",
             "chmod 440 /etc/sudoers.d/10-wheel",
@@ -704,6 +772,7 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
 
 def post_boot_steps(username: str, hostname: str, timezone: str,
                     opencode: bool, opencode_password: str | None,
+                    zcode: bool = False, zcode_token: str | None = None,
                     include_dns: bool = True) -> list[Step]:
     """Stage two: applied to the installed system over SSH after first boot.
 
@@ -735,15 +804,18 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
             " passed to the installer was only for initial access."
         ), context=POST_BOOT),
     ]
-    if opencode:
-        assert opencode_password is not None
-        steps.extend([
+    if opencode or zcode:
+        steps.append(
             Step(f"Letting {username}'s services run without a login session", (
                 f"loginctl enable-linger {_sh(username)}",
             ), rationale=(
-                "The user manager — and with it the opencode unit — runs from boot,"
-                " without an active login session."
+                "The user manager — and with it the opencode/zcode units — runs"
+                " from boot, without an active login session."
             ), context=POST_BOOT, root=True),
+        )
+    if opencode:
+        assert opencode_password is not None
+        steps.extend([
             Step("Installing the opencode user service", (
                 "mkdir -p ~/.config/systemd/user",
                 _heredoc(f"cat > {OPENCODE_UNIT_PATH} <<'UNIT'",
@@ -762,6 +834,31 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
             ), context=POST_BOOT, id="opencode-service"),
             Step(f"Opening port {OPENCODE_PORT} in firewalld", (
                 f"firewall-cmd --permanent --add-port={OPENCODE_PORT}/tcp",
+                "firewall-cmd --reload",
+            ), context=POST_BOOT, root=True),
+        ])
+    if zcode:
+        assert zcode_token is not None
+        steps.extend([
+            Step("Installing the zcode-web user service", (
+                "mkdir -p ~/.config/systemd/user",
+                _heredoc(f"cat > {ZCODE_UNIT_PATH} <<'UNIT'",
+                         *zcode_web_unit(zcode_token).splitlines(), "UNIT"),
+                f"chmod 644 $HOME/{ZCODE_UNIT_PATH}",
+                "systemctl --user daemon-reload",
+                "systemctl --user enable zcode-web.service",
+                "systemctl --user start --no-block zcode-web.service",
+            ), rationale=(
+                "zcode --web serves the browser workspace from the installed"
+                " package; listening on 0.0.0.0 requires a token (the runner"
+                " refuses to start otherwise), passed via --token and equivalent"
+                " to agent-level access, so the unit file is the secret here."
+                " The start is queued with --no-block because a blocking start"
+                " can hold the SSH channel open; verify with `systemctl --user"
+                " is-active zcode-web.service`."
+            ), context=POST_BOOT, id="zcode-service"),
+            Step(f"Opening port {ZCODE_WEB_PORT} in firewalld", (
+                f"firewall-cmd --permanent --add-port={ZCODE_WEB_PORT}/tcp",
                 "firewall-cmd --reload",
             ), context=POST_BOOT, root=True),
         ])

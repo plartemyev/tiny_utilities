@@ -56,7 +56,8 @@ def build_workbook(cfg: InstallConfig, *, passwords_embedded: bool = False,
                    provision: str | None = None, language: str = "en") -> str:
     steps = install_steps(cfg)
     steps += post_boot_steps(cfg.username, cfg.hostname, cfg.timezone,
-                             cfg.opencode, cfg.opencode_password)
+                             cfg.opencode, cfg.opencode_password,
+                             cfg.zcode, cfg.zcode_token)
     steps = [_translated(step, language) for step in steps]
     blocks: list[str] = [
         tr(language, f"# archinstaller workbook — {cfg.hostname}"),
@@ -175,6 +176,8 @@ def _facts_line(cfg: InstallConfig) -> str:
         facts.append(f"local mirror={cfg.local_mirror}")
     if cfg.opencode:
         facts.append("opencode=yes")
+    if cfg.zcode:
+        facts.append(f"zcode=yes (repo {cfg.zcode_repo})")
     date = datetime.now().astimezone().date().isoformat()
     return f"Rendered {date} with: {', '.join(facts)}."
 
@@ -183,6 +186,8 @@ def _caution(cfg: InstallConfig) -> str:
     which = "root, user"
     if cfg.opencode:
         which += ", opencode"
+    if cfg.zcode:
+        which += ", zcode token"
     return _CAUTION.format(which=which)
 
 
@@ -197,6 +202,9 @@ def _target_facts_section(cfg: InstallConfig, language: str = "en") -> list[str]
     if cfg.local_mirror is not None:
         probes.append(f"curl -fsS --max-time 8 {cfg.local_mirror}/healthz"
                       " && echo 'mirror: ok'")
+    if cfg.zcode_repo is not None:
+        probes.append(f"curl -fsS --max-time 8 {cfg.zcode_repo}/zcode.db >/dev/null"
+                      " && echo 'zcode repo: ok'")
     return [
         tr(language, "## 0. Target facts"),
         "",

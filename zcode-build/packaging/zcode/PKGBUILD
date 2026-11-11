@@ -1,0 +1,19 @@
+# Rendered by zcode-build/build.sh (@VERSION@/@PKGREL@ substituted there).
+# Source tree: the telemetry-stripped zai-org/ZCode checkout, built with
+# `pnpm build:zcode`; the pinned Node runtime is vendored under /opt/zcode/node.
+pkgname=zcode
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc="Z.ai ZCode coding agent: CLI, TUI and web server (local telemetry-stripped build)"
+arch=(x86_64)
+url="https://github.com/zai-org/ZCode"
+license=(Apache-2.0)
+# Self-contained: the dist bundles its node_modules and its own Node runtime.
+depends=()
+options=(!strip)
+source=("zcode-tree.tar")
+sha256sums=(SKIP)
+
+package() {
+    tar -xf zcode-tree.tar -C "$pkgdir"
+}

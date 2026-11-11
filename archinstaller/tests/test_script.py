@@ -298,6 +298,29 @@ def test_opencode_flag_installs_the_binary_without_devel():
     assert "opencode" in devel  # CONSOLE_DEVEL_PACKAGES carries the binary
 
 
+def test_zcode_flag_adds_repo_key_and_packages():
+    script = build_install_script(make_cfg(
+        zcode=True, zcode_token="tok", zcode_repo="http://192.168.1.10:8283"))
+    assert "[zcode]" in script
+    assert "Server = http://192.168.1.10:8283" in script
+    assert "pacman-key --add zcode-repo.asc" in script
+    assert "gpg --show-keys --with-colons zcode-repo.asc" in script
+    assert "noconfirm \\\n    zcode\n" in script
+    assert "zcode-desktop" not in script
+
+    graphical = build_install_script(make_cfg(
+        graphical=True, zcode=True, zcode_token="tok",
+        zcode_repo="http://192.168.1.10:8283"))
+    assert "noconfirm \\\n    zcode zcode-desktop" in graphical
+
+
+def test_zcode_repo_absent_without_flag():
+    script = build_install_script(make_cfg())
+    assert "[zcode]" not in script
+    assert "zcode-repo.asc" not in script
+    assert "noconfirm \\\n    zcode" not in script
+
+
 def test_install_script_releases_target_mounts_before_exit():
     # the script must exit with /mnt/new-root unmounted so the host-side
     # poweroff (clean or forced) never races a pending write

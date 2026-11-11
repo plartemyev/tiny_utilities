@@ -1,4 +1,5 @@
 import argparse
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,7 +19,8 @@ def make_args(**overrides):
         "disk": "/dev/vda", "hostname": None, "username": "nameless",
         "ssh_pubkey": "key", "locale": "en_US.UTF-8", "swap_size": "16G",
         "root_password": None, "user_password": None, "timezone": "Asia/Bangkok",
-        "graphical": False, "devel": False, "opencode": False, "local_mirror": False,
+        "graphical": False, "devel": False, "opencode": False, "zcode": False,
+        "local_mirror": False,
         "virt": None, "discard": False,
         "provision": "none", "disk_size_gib": 45, "ram_gib": 4, "cores": 4,
         "iso_path": "~/Downloads/archlinux.iso",
@@ -32,11 +34,12 @@ def make_args(**overrides):
 
 def test_generated_passwords_are_deferred_to_summary_and_short(capsys):
     args = make_args()
-    login, root, user, opencode, generated_notes = cli._resolve_passwords(args)
+    login, root, user, opencode, zcode_token, generated_notes = cli._resolve_passwords(args)
     assert login == cli.DEFAULT_LOGIN_PASSWORD
     assert len(root) == 10 and root.isalnum()
     assert len(user) == 10 and user.isalnum()
     assert opencode is None
+    assert zcode_token is None
     assert capsys.readouterr().out == ""
     assert f"Root password:  {root}" in generated_notes
     assert f"nameless password:{user}" in generated_notes
@@ -44,17 +47,26 @@ def test_generated_passwords_are_deferred_to_summary_and_short(capsys):
 
 def test_explicit_passwords_are_kept():
     args = make_args(root_password="rp", user_password="up")
-    _login, root, user, opencode, generated_notes = cli._resolve_passwords(args)
-    assert (root, user, opencode) == ("rp", "up", None)
+    _login, root, user, opencode, zcode_token, generated_notes = cli._resolve_passwords(args)
+    assert (root, user, opencode, zcode_token) == ("rp", "up", None, None)
     assert generated_notes == []
 
 
 def test_opencode_flag_generates_separate_password():
     args = make_args(opencode=True, user_password="up")
-    _login, _root, _user, opencode, _notes = cli._resolve_passwords(args)
+    _login, _root, _user, opencode, _zcode, _notes = cli._resolve_passwords(args)
     assert opencode is not None
     assert len(opencode) == 10 and opencode.isalnum()
     assert opencode != "up"
+
+
+def test_zcode_flag_generates_urlsafe_token():
+    args = make_args(zcode=True, user_password="up")
+    _login, _root, _user, _opencode, zcode_token, _notes = cli._resolve_passwords(args)
+    # matches `openssl rand -base64 24 | tr '/+' '_-'`: 24 bytes base64 into
+    # exactly 32 unpadded URL-safe characters
+    assert zcode_token is not None
+    assert re.fullmatch(r"[A-Za-z0-9_-]{32}", zcode_token)
 
 
 def test_opencode_unit_contents():
@@ -64,6 +76,24 @@ def test_opencode_unit_contents():
     assert "Environment=OPENCODE_SERVER_PASSWORD=secret01" in unit
     assert f"ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port {OPENCODE_PORT}" in unit
     assert "WantedBy=default.target" in unit
+
+
+def test_zcode_unit_contents():
+    from archinstaller.steps import ZCODE_WEB_PORT, zcode_web_unit
+    unit = zcode_web_unit("tok_abc123-_")
+    assert "[Unit]" in unit and "Description=ZCode web (LAN, token auth)" in unit
+    assert "After=network-online.target" in unit
+    assert (f"ExecStart=/usr/bin/zcode --web --host 0.0.0.0 --port {ZCODE_WEB_PORT}"
+            " --no-open --token tok_abc123-_" in unit)
+    assert "Restart=on-failure" in unit
+    assert "WantedBy=default.target" in unit
+
+
+def test_zcode_flag_parsing():
+    argv = ["install", "--target", "192.168.56.113", "--ssh-pubkey", "k"]
+    assert cli._parse_args(argv).zcode is False
+    assert cli._parse_args(argv + ["--zcode"]).zcode is True
+    assert cli._parse_args(["workbook", "--ssh-pubkey", "k", "--zcode"]).zcode is True
 
 
 def test_private_key_path_from_pubkey_file(tmp_path: Path):
@@ -242,7 +272,7 @@ def test_state_roundtrip(tmp_path: Path):
     args = make_args()
     args.target = "192.168.56.113"
     state = cli._state_object(
-        args, "testhost", "rootpw", "userpw", "opencodepw",
+        args, "testhost", "rootpw", "userpw", "opencodepw", "zcodetoken",
         ["Root password:  rootpw"], "/home/user/.ssh/id_ed25519",
         cli.JumpConfig("10.0.0.1", 2222, "root", "jpw"),
     )
@@ -378,6 +408,49 @@ def test_local_mirror_preflight_aborts_when_both_urls_fail(monkeypatch):
                                  fallback_url="http://192.168.1.10:8282")
 
 
+def test_zcode_repo_url_off_by_default(capsys):
+    assert cli._zcode_repo_url(make_args()) is None
+    assert capsys.readouterr().out == ""
+
+
+def test_zcode_repo_url_uses_primary_interface_and_repo_port(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_primary_lan_address", lambda: ("eth0", "192.168.1.10"))
+    url = cli._zcode_repo_url(make_args(zcode=True))
+    assert url == f"http://192.168.1.10:{cli.ZCODE_REPO_PORT}"
+    assert f"zcode repository: {url}" in capsys.readouterr().out
+
+
+def test_zcode_repo_preflight_probes_the_db(monkeypatch):
+    captured = []
+    monkeypatch.setattr(cli, "run_capture",
+                        lambda client, cmd, **kw: captured.append(cmd) or (0, ""))
+    url = cli._ensure_zcode_repo(None, "http://192.168.1.10:8283")
+    assert url == "http://192.168.1.10:8283"
+    assert captured == ["curl -fsS --max-time 8 http://192.168.1.10:8283/zcode.db >/dev/null"]
+
+
+def test_zcode_repo_preflight_aborts_with_remedy(monkeypatch):
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (7, ""))
+    with pytest.raises(SystemExit) as excinfo:
+        cli._ensure_zcode_repo(None, "http://192.168.1.10:8283")
+    assert "nightly.sh" in str(excinfo.value)
+
+
+def test_zcode_repo_preflight_falls_back_to_lan_url(monkeypatch, capsys):
+    seen = []
+
+    def fake_run(client, cmd, **kw):
+        seen.append(cmd)
+        return (7 if "10.0.2.2" in cmd else 0, "")
+
+    monkeypatch.setattr(cli, "run_capture", fake_run)
+    url = cli._ensure_zcode_repo(None, "http://10.0.2.2:8283",
+                                 fallback_url="http://192.168.1.10:8283")
+    assert url == "http://192.168.1.10:8283"
+    assert len(seen) == 2
+    assert "trying the host LAN IP repository" in capsys.readouterr().out
+
+
 def test_target_gateway_parsed_from_default_route(monkeypatch):
     monkeypatch.setattr(
         cli, "run_capture",
@@ -510,6 +583,28 @@ def test_run_workbook_opencode_password_embedded_only_with_flag(tmp_path):
     text = out.read_text()
     assert "OPENCODE_SERVER_PASSWORD=" in text
     assert "{{OPENCODE_PASSWORD}}" not in text
+
+
+def test_run_workbook_zcode_repo_and_token_rendering(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "w.md"
+    monkeypatch.setattr(cli, "_primary_lan_address", lambda: ("eth0", "192.168.1.10"))
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(out),
+                     zcode=True)
+    cli._run_workbook(args)
+    text = out.read_text()
+    assert f"Server = http://192.168.1.10:{cli.ZCODE_REPO_PORT}" in text
+    assert "--token {{ZCODE_TOKEN}}" in text
+    assert "zcode repo: ok" in text
+
+    embedded = tmp_path / "w2.md"
+    args = make_args(command="workbook", ssh_pubkey=WORKBOOK_KEY, out=str(embedded),
+                     with_passwords=True, zcode=True)
+    cli._run_workbook(args)
+    text = embedded.read_text()
+    assert "{{ZCODE_TOKEN}}" not in text
+    assert re.search(r"--token [A-Za-z0-9_-]{32}", text)
+    captured = capsys.readouterr().out
+    assert "zcode token:" in captured
 
 
 def test_run_workbook_language_ru_renders_russian_prose(tmp_path, capsys):

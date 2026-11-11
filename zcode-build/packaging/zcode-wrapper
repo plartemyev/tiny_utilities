@@ -1,0 +1,7 @@
+#!/bin/sh
+# /usr/bin/zcode — launcher for the packaged ZCode CLI/TUI/web distribution.
+# The pinned Node runtime is vendored under /opt/zcode/node (upstream builds
+# against the exact version in its mise.toml; native prebuilds make the
+# runtime ABI a real constraint), so the package does not depend on the
+# distro's nodejs.
+exec /opt/zcode/node/bin/node /opt/zcode/bin/zcode.mjs "$@"

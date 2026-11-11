@@ -1,0 +1,30 @@
+# Rendered by zcode-build/build.sh (@*@ substituted from the electron-builder
+# artifact's own manifest: opt dir, inner binary, chrome-sandbox path).
+# The source is the pacman target artifact electron-builder produced for the
+# telemetry-stripped checkout — it already carries Electron, the .desktop
+# entry, hicolor icons and the dependency closure computed from the Electron
+# runtime. We re-pack it to own the package name/versioning, drop the
+# artifact's usr/bin entry (it would collide with the zcode CLI package's
+# /usr/bin/zcode) and install the chrome-sandbox setuid bit that packaging
+# cannot carry (makepkg-style normalization strips setuid; it must be applied
+# at install time, same as the .deb postinst upstream ships).
+pkgname=zcode-desktop
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc="Z.ai ZCode desktop app (local telemetry-stripped build)"
+arch=(x86_64)
+url="https://github.com/zai-org/ZCode"
+license=(Apache-2.0)
+depends=(gtk3 nss libxss libxtst libnotify alsa-lib mesa xdg-utils)
+options=(!strip)
+install=zcode-desktop.install
+source=("upstream.pkg.tar.zst")
+sha256sums=(SKIP)
+
+package() {
+    tar -xf upstream.pkg.tar.zst -C "$pkgdir" \
+        --exclude=.PKGINFO --exclude=.INSTALL --exclude=.MTREE --exclude=.BUILDINFO \
+        @EXTRA_EXCLUDES@
+    install -d "$pkgdir/usr/bin"
+    ln -sf "/@OPT_DIR@/@INNER_BIN@" "$pkgdir/usr/bin/zcode-desktop"
+}

@@ -36,6 +36,10 @@ the same run as a copy-paste markdown runbook. Both render from one step model
   shutdown, screen locking off on VM desktops (physical machines keep it).
 - **Optional opencode web server** as a systemd user service with its own
   generated password and firewalled port.
+- **Optional ZCode** (`--zcode`): the telemetry-stripped local build of
+  zai-org/ZCode from the private `zcode-build` repository — CLI/TUI plus the
+  web service as a systemd user unit (token auth), and the desktop app on
+  graphical installs; nightly rebuilds arrive through plain `pacman -Syu`.
 
 ## Scenarios
 
@@ -137,6 +141,7 @@ System configuration — shared by `install` and `workbook`:
 | `--graphical` | off | Xlibre + Sonic DE desktop; see *Graphical installs* below |
 | `--devel` | off | append the development package lists (console always; graphical too with `--graphical`) |
 | `--opencode` | off | deploy the opencode web service; see *opencode service* below |
+| `--zcode` | off | install ZCode from the private zcode-build repo + its web service; see *ZCode* below |
 | `--local-mirror` | off | pacman via the LAN cache mirror; see *local mirror* below |
 | `--virt` | probe | pin `none\|kvm\|qemu\|oracle\|vmware\|microsoft` instead of probing |
 | `--discard` | probe (off in workbook mode) | force TRIM/discard enablement |
@@ -322,6 +327,39 @@ installs `~/.config/systemd/user/opencode.service` running
 opens the port in firewalld. opencode v2 protects the server with HTTP basic
 auth and hardcodes the username to `opencode`; the summary prints the web
 address, username and password.
+
+## ZCode (`--zcode`)
+
+Installs [ZCode](https://github.com/zai-org/ZCode) (Z.ai's coding agent
+workspace) from the **private zcode-build repository** maintained by the
+sibling `zcode-build/` project (see its README): a nightly job checks out
+upstream `main`, strips the telemetry surface, builds and signs
+`zcode`/`zcode-desktop` packages and serves them on the build host's port
+**8283**. No AUR packages or third-party fork code is involved at any point.
+
+What the flag does on the target:
+
+- chroot: appends the `[zcode]` pacman repository, fetches + locally signs
+  its key (the fingerprint is generated on the build host, so it is read
+  from the exported `.asc` at install time) and installs `zcode` — the
+  CLI/TUI/web distribution with its own vendored pinned Node runtime —
+  plus `zcode-desktop` (Electron app, no autostart) when `--graphical` is
+  set. Later `pacman -Syu` runs pick up the nightly rebuilds.
+- stage two: `loginctl enable-linger`, then
+  `~/.config/systemd/user/zcode-web.service` running
+  `zcode --web --host 0.0.0.0 --port 8290 --no-open --token <token>`
+  with a token equivalent to `openssl rand -base64 24 | tr '/+' '_-'`
+  (32 URL-safe chars; generated host-side, stored in the state file,
+  printed in the summary), started with `--no-block` + `is-active`
+  polling, and port 8290 opened in firewalld. The token equals agent-level
+  access — the URL in the summary already carries it as `?token=...`.
+
+Preflights mirror `--local-mirror`: the repository URL defaults to the
+build host's primary LAN address (`http://<host>:8283`), VM targets prefer
+the guest gateway (the hypervisor host, static per backend) with the LAN IP
+as fallback, and the install aborts early when `/zcode.db` is not served
+(run `zcode-build/nightly.sh` on the build host first). The LAN path needs
+the one-time host firewall opening for port 8283, same as the mirror's 8282.
 
 ## Workbook (`workbook`)
 

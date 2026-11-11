@@ -88,6 +88,14 @@ _EXACT: dict[str, str] = {
         "Установка хука очистки кэша пакетов",
     "Fetching and signing third-party repository keys":
         "Получение и локальная подпись ключей сторонних репозиториев",
+    "Adding the zcode repository":
+        "Добавление репозитория zcode",
+    "Fetching and signing the zcode repository key":
+        "Получение и подпись ключа репозитория zcode",
+    "Installing zcode (long step)":
+        "Установка zcode (длительный шаг)",
+    "Installing the zcode-web user service":
+        "Установка пользовательской службы zcode-web",
     "Granting wheel group sudo rights":
         "Предоставление группе wheel прав sudo",
     "Installing console packages (long step)":
@@ -491,10 +499,10 @@ _EXACT: dict[str, str] = {
         " фраза); ключ, переданный установщику, служил только для"
         " первоначального доступа.",
 
-    "The user manager — and with it the opencode unit — runs from boot,"
+    "The user manager — and with it the opencode/zcode units — runs from boot,"
     " without an active login session.":
-        "Пользовательский менеджер — а вместе с ним и юнит opencode — работает"
-        " с момента загрузки, без активного сеанса входа.",
+        "Пользовательский менеджер — а вместе с ним и юниты opencode/zcode —"
+        " работает с момента загрузки, без активного сеанса входа.",
 
     "opencode v2 protects the server with HTTP basic auth; without"
     " OPENCODE_SERVER_PASSWORD it would generate a random password into the"
@@ -509,6 +517,47 @@ _EXACT: dict[str, str] = {
         " ставится в очередь с --no-block, поскольку блокирующий запуск способен"
         " удерживать канал SSH открытым; проверка выполняется командой"
         " `systemctl --user is-active opencode.service`.",
+
+    "The private zcode-build repository (nightly telemetry-stripped"
+    " builds of zai-org/ZCode). pacman requests <Server>/zcode.db, and"
+    " the repository serves its database at the root, so the flat"
+    " server line needs no path.":
+        "Приватный репозиторий zcode-build (ночные сборки zai-org/ZCode с"
+        " вырезанной телеметрией). pacman запрашивает <Server>/zcode.db, а"
+        " репозиторий отдаёт базу из корня, поэтому строке Server не нужен"
+        " путь.",
+
+    "Unlike xlibre/sonicde the repository key is generated on the build"
+    " host at first nightly run, so the fingerprint is read from the"
+    " exported .asc at install time instead of being pinned here.":
+        "В отличие от xlibre/sonicde ключ репозитория генерируется на машине"
+        " сборки при первом ночном запуске, поэтому отпечаток читается из"
+        " экспортированного .asc во время установки, а не зашит здесь.",
+
+    "The zcode package carries the CLI, TUI and web distribution with"
+    " its own pinned Node runtime; zcode-desktop (the Electron app, no"
+    " autostart) is added on graphical installs. Later `pacman -Syu`"
+    " runs pick up nightly rebuilds through the repository above.":
+        "Пакет zcode несёт дистрибутив CLI, TUI и веб-интерфейса со своим"
+        " закреплённым временем выполнения Node; zcode-desktop (приложение"
+        " Electron без автозапуска) добавляется при графической установке."
+        " Последующие запуски `pacman -Syu` подтягивают ночные пересборки"
+        " через репозиторий выше.",
+
+    "zcode --web serves the browser workspace from the installed"
+    " package; listening on 0.0.0.0 requires a token (the runner"
+    " refuses to start otherwise), passed via --token and equivalent"
+    " to agent-level access, so the unit file is the secret here."
+    " The start is queued with --no-block because a blocking start"
+    " can hold the SSH channel open; verify with `systemctl --user"
+    " is-active zcode-web.service`.":
+        "zcode --web отдаёт браузерную рабочую среду из установленного пакета;"
+        " прослушивание 0.0.0.0 требует токен (иначе запуск невозможен),"
+        " передаваемый через --token и эквивалентный доступу уровня агента,"
+        " поэтому файл юнита здесь и есть секрет. Запуск ставится в очередь"
+        " с --no-block, поскольку блокирующий запуск способен удерживать канал"
+        " SSH открытым; проверка выполняется командой `systemctl --user"
+        " is-active zcode-web.service`.",
 
     # -- provision workbook prose --------------------------------------------
     "Boot the VM. At the systemd-boot menu press `e`, append"

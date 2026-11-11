@@ -34,6 +34,9 @@ def make_cfg(**overrides):
         "timezone": "Asia/Bangkok",
         "opencode": False,
         "opencode_password": None,
+        "zcode": False,
+        "zcode_token": None,
+        "zcode_repo": None,
     }
     defaults.update(overrides)
     return InstallConfig(**defaults)
@@ -46,7 +49,9 @@ def all_step_prose() -> list[str]:
         make_cfg(virt="kvm", graphical=True, devel=True,
                  local_mirror="http://192.168.1.10:8282",
                  opencode=True, opencode_password="{{OPENCODE_PASSWORD}}"),
-        make_cfg(virt="qemu", graphical=True),
+        make_cfg(virt="qemu", graphical=True, zcode=True,
+                 zcode_token="{{ZCODE_TOKEN}}",
+                 zcode_repo="http://192.168.1.10:8283"),
         make_cfg(virt="vmware", graphical=True),
         make_cfg(virt="microsoft"),
     ]
@@ -54,7 +59,8 @@ def all_step_prose() -> list[str]:
     for cfg in configs:
         steps = install_steps(cfg) + post_boot_steps(
             cfg.username, cfg.hostname, cfg.timezone,
-            cfg.opencode, cfg.opencode_password)
+            cfg.opencode, cfg.opencode_password,
+            cfg.zcode, cfg.zcode_token)
         for step in steps:
             if step.title:
                 strings.append(step.title)
