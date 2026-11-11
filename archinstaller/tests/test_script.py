@@ -1,3 +1,5 @@
+import re
+
 from archinstaller.script import InstallConfig, build_install_script
 
 KEY = ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDU0ZDDGMlGKUYbFQtKyODXXUequNtcQz+2UVe5Vr9A0"
@@ -394,3 +396,18 @@ def test_firewalld_installed_and_enabled_by_default():
     assert "retry pacman -S --needed --noconfirm firewalld" in script
     assert "systemctl enable firewalld" in script
     assert script.index("pacman -S --needed --noconfirm firewalld") < script.rindex("CHROOT")
+
+
+def test_package_lists_hold_only_clean_package_tokens():
+    # package_list joins raw .txt lines into the generated bash script, so a
+    # stray shell character in any list silently breaks the whole install
+    # (hit 2026-11-11: a trailing backtick after 'vint' aborted the devel
+    # install with "unexpected EOF while looking for matching `'`")
+    from archinstaller.steps import _PACKAGES_DIR
+    for path in sorted(_PACKAGES_DIR.glob("*.txt")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            token = line.strip()
+            if not token or token.startswith("#"):
+                continue
+            assert re.fullmatch(r"[A-Za-z0-9@][A-Za-z0-9@._+-]*", token), (
+                f"{path.name}:{lineno}: not a clean package token: {line!r}")
