@@ -126,6 +126,20 @@ def fixture_checkout(root: Path) -> None:
         "    .catch((e) => logger.error(\"[arms] electron init failed:\", e));\n"
         "}\n"
     ))
+    write(root, "packages/desktop/src/main/remoteCdn.ts", (
+        "const REMOTE_CDN_RELEASE_ROOTS = {\n"
+        "  domestic: \"https://cdn.codegeex.cn/zcode/electron/releases\",\n"
+        "  overseas: \"https://cdn-zcode.z.ai/zcode/electron/releases\",\n"
+        "} as const;\n"
+    ))
+    write(root, "packages/desktop/src/main/index.ts", (
+        'import armsRum from "@arms/rum-electron";\n'
+        'import armsRumBrowser from "@arms/rum-electron/browser";\n'
+        "import { app } from \"electron\";\n"
+        "import \"./desktopEarlyDataBaseDirBootstrap.js\";\n"
+        "import \"./desktopEarlyChromiumHardwareAccelerationBootstrap.js\";\n"
+        "app.whenReady().then(() => console.log(\"ready\"));\n"
+    ))
     bundle = (
         "const runtimeModules = [\n"
         '  "@opentelemetry/sdk-metrics",\n'
@@ -197,6 +211,17 @@ def test_strip_applies_every_layer(tmp_path):
     arms_bootstrap = (checkout / "packages/desktop/src/main/appARMSBootstrap.ts").read_text()
     assert "electron initialized" not in arms_bootstrap
     assert "catch" in arms_bootstrap  # the surrounding call site survives
+    # offline hardening: chromium switches + neutralized release CDN roots
+    switches = (checkout / "packages/desktop/src/main/"
+                "desktopEarlyTelemetryDisableBootstrap.ts").read_text()
+    assert 'appendSwitch("disable-remote-fonts")' in switches
+    assert 'appendSwitch("disable-component-update")' in switches
+    assert "SpellcheckService" in switches
+    index = (checkout / "packages/desktop/src/main/index.ts").read_text()
+    assert "desktopEarlyTelemetryDisableBootstrap.js" in index
+    cdn = (checkout / "packages/desktop/src/main/remoteCdn.ts").read_text()
+    assert "cdn-zcode" not in cdn and "codegeex" not in cdn
+    assert "127.0.0.1:9" in cdn
 
     for relative in ("packages/desktop/scripts/bundle.mjs",
                      "packages/desktop/electron-builder.config.js"):

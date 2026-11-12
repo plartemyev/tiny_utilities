@@ -106,6 +106,10 @@ if [ "$MODE" = desktop ]; then
     assert_zero "app.asar content free of the OTLP exporter chain" "$n"
     n=$({ grep -rl 'electron initialized' "$TMP/asar" 2>/dev/null || true; } | wc -l)
     assert_zero "app.asar content free of the ARMS init log line" "$n"
+    # the release CDN roots must not ship: the pacman package owns updates
+    # (|| true neutralizes grep's rc=1 on no-match; grep -c already prints 0)
+    n=$(grep -ac 'cdn-zcode\.z\.ai\|cdn\.codegeex\.cn' "$TMP/asar" 2>/dev/null || true)
+    assert_zero "app.asar free of the release CDN roots" "$n"
     exit 0
 fi
 

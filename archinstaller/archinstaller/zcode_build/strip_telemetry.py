@@ -206,6 +206,65 @@ def strip_desktop_arms_bootstrap(root: pathlib.Path) -> None:
     print(f"[strip] removed the ARMS init log line from {relative}")
 
 
+def strip_desktop_chromium_switches(root: pathlib.Path) -> None:
+    # The desktop runtime must not fetch anything on its own: pacman owns
+    # updates, fonts come from system packages, and Chromium's component
+    # updater (gvt1) / spellcheck dictionary downloads / remote webfonts
+    # all phone third-party servers. The switches must land before the app
+    # is ready, so they go into an early side-effect bootstrap module next
+    # to the existing hardware-acceleration one.
+    bootstrap_relative = ("packages/desktop/src/main/"
+                          "desktopEarlyTelemetryDisableBootstrap.ts")
+    write_text(root, bootstrap_relative, (
+        "// Telemetry strip: offline hardening for the desktop runtime; see\n"
+        "// zcode-build/strip-telemetry.sh. The pacman-managed package owns\n"
+        "// updates and fonts come from system packages, so the runtime must\n"
+        "// not fetch remote webfonts, component updates (gvt1) or spellcheck\n"
+        "// dictionaries on its own.\n"
+        "import { app } from \"electron\";\n"
+        "\n"
+        "app.commandLine.appendSwitch(\"disable-remote-fonts\");\n"
+        "app.commandLine.appendSwitch(\"disable-component-update\");\n"
+        "app.commandLine.appendSwitch(\"disable-features=SpellcheckService\");\n"
+    ))
+    print(f"[strip] wrote {bootstrap_relative}")
+
+    relative = "packages/desktop/src/main/index.ts"
+    text = read_text(root, relative)
+    anchor = 'import "./desktopEarlyChromiumHardwareAccelerationBootstrap.js";'
+    if text.count(anchor) != 1:
+        die(f"early bootstrap import anchor not unique in {relative}")
+    text = text.replace(
+        anchor,
+        anchor + "\n"
+        'import "./desktopEarlyTelemetryDisableBootstrap.js";',
+        1,
+    )
+    write_text(root, relative, text)
+    print(f"[strip] wired the telemetry-disable bootstrap into {relative}")
+
+
+def strip_desktop_remote_cdn(root: pathlib.Path) -> None:
+    # remoteCdn.ts is the desktop's runtime-components/releases channel:
+    # on a pacman-managed install the package owns updates, so the CDN
+    # roots are redirected to the discard port — fetches fail instantly
+    # and locally instead of contacting cdn-zcode.z.ai / cdn.codegeex.cn.
+    relative = "packages/desktop/src/main/remoteCdn.ts"
+    text = read_text(root, relative)
+    replacements = {
+        'domestic: "https://cdn.codegeex.cn/zcode/electron/releases",':
+            'domestic: "http://127.0.0.1:9/zcode/electron/releases",',
+        'overseas: "https://cdn-zcode.z.ai/zcode/electron/releases",':
+            'overseas: "http://127.0.0.1:9/zcode/electron/releases",',
+    }
+    for anchor, replacement in replacements.items():
+        if text.count(anchor) != 1:
+            die(f"remote CDN anchor not found (or not unique) in {relative}: {anchor!r}")
+        text = text.replace(anchor, replacement, 1)
+    write_text(root, relative, text)
+    print(f"[strip] neutralized the release CDN roots in {relative}")
+
+
 def strip_desktop_deps(root: pathlib.Path) -> None:
     edit_json(root, "packages/desktop/package.json",
               drop_dependencies(DESKTOP_OTEL_DEPS))
@@ -250,6 +309,8 @@ def main() -> None:
     strip_telemetry_deps(root)
     strip_renderer_exporter(root)
     strip_desktop_arms_bootstrap(root)
+    strip_desktop_chromium_switches(root)
+    strip_desktop_remote_cdn(root)
     strip_desktop_deps(root)
     strip_bundle_lists(root)
 

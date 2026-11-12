@@ -893,7 +893,8 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
         update_service, update_timer = zcode_update_units(zcode_desktop)
         desktop_pkgs = "zcode zcode-desktop" if zcode_desktop else "zcode"
         build_deps = ("base-devel git python"
-                      + (" ruby ruby-rubygems libxcrypt-compat" if zcode_desktop else ""))
+                      + (" ruby ruby-rubygems libxcrypt-compat"
+                         " ttf-opensans noto-fonts" if zcode_desktop else ""))
         steps.extend([
             Step("Unpacking the zcode-build scripts", (
                 f"mkdir -p ~/{ZCODE_BUILD_HOME}",
@@ -928,10 +929,13 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
                 " for the strip script, and ruby with libxcrypt-compat for fpm"
                 " (electron-builder's pacman target; its bundled fpm ruby needs"
                 " libcrypt.so.1, which modern Arch only ships in -compat) on"
-                " graphical installs. The packages are published into a"
-                " world-readable local repository — pacman's download sandbox"
-                " (DownloadUser=alpm) fetches file:// repositories as the"
-                " unprivileged alpm user and cannot read inside the 0700 home."
+                " graphical installs. ttf-opensans and noto-fonts cover the"
+                " desktop UI's font families locally, so it renders offline"
+                " (remote font fetching is stripped). The packages are"
+                " published into a world-readable local repository — pacman's"
+                " download sandbox (DownloadUser=alpm) fetches file://"
+                " repositories as the unprivileged alpm user and cannot read"
+                " inside the 0700 home."
             ), context=POST_BOOT, root=True),
                     Step("Building zcode from upstream (long step, first run ~20 min)", (
                 (f"cd ~/{ZCODE_BUILD_HOME} && ZCODE_OUT={ZCODE_REPO_DIR}"
