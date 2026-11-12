@@ -342,7 +342,8 @@ What the flag does on the target (stage two, over SSH):
 
 - installs the build dependencies (`base-devel git python`, plus
   `ruby ruby-rubygems` for electron-builder's fpm on graphical installs);
-- runs the on-target build: fresh upstream checkout, **telemetry strip**
+- runs the on-target build: checkout of the latest upstream **tagged
+  release**, **telemetry strip**
   (assert-anchored — a drifted upstream fails the run instead of shipping
   telemetry back), `pnpm build:zcode` with the pinned Node runtime
   vendored into the package, and — with `--graphical` — the Electron
@@ -356,10 +357,10 @@ What the flag does on the target (stage two, over SSH):
   from it — from here on plain `pacman -Syu` upgrades zcode like any
   other package;
 - enables `zcode-update.timer` (systemd user unit, nightly 03:17,
-  `Persistent=true`): rebuilds the latest upstream `main` into the same
-  local repository — and early-exits after the fetch when upstream and
-  the build scripts are unchanged, so quiet nights cost nothing; logs in
-  `journalctl --user -u zcode-update`;
+  `Persistent=true`): rebuilds the latest upstream **tagged release** into
+  the same local repository — and early-exits after the fetch while that
+  tag is already built and the build scripts are unchanged, so quiet
+  nights cost nothing; logs in `journalctl --user -u zcode-update`;
 - deploys `~/.config/systemd/user/zcode-web.service` running
   `zcode --web --host 0.0.0.0 --port 8290 --no-open --token <token>`
   with a token equivalent to `openssl rand -base64 24 | tr '/+' '_-'`

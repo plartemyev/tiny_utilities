@@ -300,9 +300,10 @@ def zcode_build_payload() -> str:
 def zcode_update_units(desktop: bool) -> tuple[str, str]:
     """The nightly rebuild oneshot service + timer (user units, as a pair).
 
-    Re-runs build.sh nightly so the local [zcode] repository tracks
-    upstream main; pacman -Syu then upgrades zcode like any other package.
-    Persistent=true catches up on nights the machine was powered off.
+    Re-runs build.sh nightly so the local [zcode] repository tracks the
+    latest tagged release; pacman -Syu then upgrades zcode like any other
+    package. Persistent=true catches up on nights the machine was powered
+    off.
     """
     desktop_env = "Environment=ZCODE_DESKTOP=1\n" if desktop else ""
     service = (
@@ -941,12 +942,14 @@ def post_boot_steps(username: str, hostname: str, timezone: str,
                 (f"cd ~/{ZCODE_BUILD_HOME} && ZCODE_OUT={ZCODE_REPO_DIR}"
                  f" ZCODE_DESKTOP={int(zcode_desktop)} ./build.sh"),
             ), rationale=(
-                "Checks out zai-org/ZCode, strips the telemetry surface"
-                " (assert-anchored; a drifted upstream fails the run instead of"
-                " shipping telemetry), builds the packages and publishes them"
-                " into the local pacman repository. The persistent cache/ next"
-                " to the scripts keeps re-runs incremental, and the build"
-                " early-exits when upstream and the scripts are unchanged."
+                "Checks out the latest tagged release of zai-org/ZCode, strips"
+                " the telemetry surface (assert-anchored; a drifted upstream"
+                " fails the run instead of shipping telemetry), builds the"
+                " packages and publishes them into the local pacman"
+                " repository. The persistent cache/ next to the scripts keeps"
+                " re-runs incremental, and the build early-exits while the"
+                " latest tag, the strip scripts and the desktop flag are all"
+                " already built."
             ), context=POST_BOOT, id="zcode-build",
                 timeout=ZCODE_BUILD_TIMEOUT),
             Step("Registering the local zcode repository and installing zcode", (

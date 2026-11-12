@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# On-target build orchestrator: checks out the latest zai-org/ZCode, strips
+# On-target build orchestrator: checks out the latest tagged release of
+# zai-org/ZCode (ZCODE_REF pins an explicit ref), strips
 # the telemetry surface, builds the zcode (CLI/TUI/web) and — with
 # ZCODE_DESKTOP=1 — zcode-desktop packages, and publishes them into a local
 # pacman repository at <script-dir>/out. The [zcode] repository registered
@@ -31,7 +32,7 @@ if [ -z "${ZCODE_OUT:-}" ] && [ -d /var/cache/zcode-build/out ] \
     && [ -w /var/cache/zcode-build/out ]; then
     OUT=/var/cache/zcode-build/out
 fi
-REF="${ZCODE_REF:-origin/main}"
+REF="${ZCODE_REF:-}"   # empty: the latest upstream version tag
 UPSTREAM_URL="${ZCODE_UPSTREAM_URL:-https://github.com/zai-org/ZCode.git}"
 BUILD_DESKTOP="${ZCODE_DESKTOP:-0}"
 ELECTRON_MIRROR="${ZCODE_ELECTRON_MIRROR:-}"   # default: upstream's npmmirror
@@ -86,10 +87,11 @@ export ZCODE_DIST_BASE_URL="http://127.0.0.1:8283/"
 [ -n "$ELECTRON_MIRROR" ] && export ELECTRON_MIRROR
 
 # ---------------------------------------------------------------------------
-# 1. Persistent shallow checkout of upstream (cache/src). A fetch + forced
-#    detach + clean keeps the tree byte-identical to the ref (our strip edits
-#    never survive a failed/retried run) while --depth 1 keeps the transfer
-#    at one tree instead of the whole history. ZCODE_SHALLOW=0 drops the
+# 1. Persistent shallow checkout of upstream (cache/src), pinned to the
+#    latest tagged release by default (ZCODE_REF pins any explicit ref; the
+#    nightly therefore only ever ships tagged releases, never main). A
+#    fetch + forced detach + clean keeps the tree byte-identical to the ref
+#    while --depth 1 keeps the transfer small. ZCODE_SHALLOW=0 drops the
 #    depth for exotic refs (old commit SHAs).
 # ---------------------------------------------------------------------------
 SRC=$CACHE/src
@@ -99,35 +101,43 @@ if [ ! -d "$SRC/.git" ]; then
     git clone $DEPTH "$UPSTREAM_URL" "$SRC"
 fi
 for attempt in 1 2 3; do
-    if git -C "$SRC" fetch $DEPTH --prune origin; then break; fi
+    if git -C "$SRC" fetch $DEPTH --prune --prune-tags --tags origin; then break; fi
     [ "$attempt" = 3 ] && die "git fetch of upstream failed 3 times"
     sleep $((attempt * 20))
 done
-if [ "$REF" != "origin/main" ]; then
+if [ -n "$REF" ]; then
     git -C "$SRC" fetch $DEPTH --prune origin "$REF"
     REF_AT=FETCH_HEAD
+    REF_LABEL=$REF
 else
-    REF_AT=$REF
+    # latest version tag, version-sorted ("v3.18.0" > "v3.9.0"); pruned
+    # upstream tags disappear here too, so re-releases re-trigger builds
+    REF_LABEL=$(git -C "$SRC" tag --sort=-v:refname \
+        | grep -E "^v?[0-9]+([.][0-9]+){1,3}([-+.].*)?$" | head -1)
+    [ -n "$REF_LABEL" ] || die "no upstream version tag found (set ZCODE_REF to pin an explicit ref)"
+    REF_AT="refs/tags/$REF_LABEL"
 fi
 git -C "$SRC" checkout --force --detach "$REF_AT"
 git -C "$SRC" clean -fdxq
 COMMIT=$(git -C "$SRC" rev-parse --short=12 HEAD)
-log "checkout $REF @ $COMMIT"
+log "checkout $REF_LABEL @ $COMMIT"
 
 # ---------------------------------------------------------------------------
-# 1b. Skip the build entirely when upstream and our scripts are unchanged:
-#     the nightly timer then costs a fetch and nothing else. ZCODE_FORCE=1
-#     overrides (e.g. after wiping the cache or pinning a different ref).
+# 1b. Skip the build entirely when the resolved release, our scripts and
+#     the desktop flag are all unchanged since the last successful build:
+#     the nightly then costs one fetch and exits ("already have the latest
+#     tag"). ZCODE_FORCE=1 overrides (e.g. after wiping the cache).
 # ---------------------------------------------------------------------------
 TOOLS_SHA=$(cat "$DIR/build.sh" "$DIR/strip-telemetry.sh" "$DIR/strip_telemetry.py" \
     "$DIR/verify-stripped.sh" "$DIR/packaging/zcode/PKGBUILD" "$DIR/packaging/zcode-wrapper" \
     "$DIR/packaging/zcode-desktop/PKGBUILD" \
     "$DIR/packaging/zcode-desktop/zcode-desktop.install" | sha256sum | cut -d' ' -f1)
 if [ -z "${ZCODE_FORCE:-}" ] && [ -f "$OUT/build-stamp.txt" ]; then
-    read -r _ _ STAMP_COMMIT _ STAMP_TOOLS STAMP_DESKTOP < "$OUT/build-stamp.txt" || true
+    read -r _ _ STAMP_COMMIT _ STAMP_TOOLS STAMP_DESKTOP STAMP_REF < "$OUT/build-stamp.txt" || true
     if [ "$COMMIT" = "${STAMP_COMMIT:-}" ] && [ "$TOOLS_SHA" = "${STAMP_TOOLS:-}" ] \
-        && [ "$BUILD_DESKTOP" = "${STAMP_DESKTOP:-}" ]; then
-        log "up to date ($COMMIT, tools $TOOLS_SHA); nothing to build (ZCODE_FORCE=1 overrides)"
+        && [ "$BUILD_DESKTOP" = "${STAMP_DESKTOP:-}" ] \
+        && [ "$REF_LABEL" = "${STAMP_REF:-}" ]; then
+        log "up to date ($REF_LABEL @ $COMMIT); nothing to build (ZCODE_FORCE=1 overrides)"
         exit 0
     fi
 fi
@@ -191,9 +201,19 @@ log "toolchain: node $NODE_VERSION, pnpm $PNPM_VERSION"
 cd "$SRC"
 export ELECTRON_CACHE=$CACHE/electron
 pnpm install --no-frozen-lockfile --prefer-offline --store-dir "$CACHE/pnpm-store"
-# upstream prerequisite (build-zcode staging errors out without it):
-# tsc -b @zcode/shared + the CLI package chain the SEA/TUI runtime needs
-pnpm build:sea:prepare
+# Build the workspace. Newer upstream has build:sea:prepare (it also
+# type-builds @zcode/shared, which carries no plain build script); older
+# tags only have `pnpm -r build` — desktop is excluded there (its own
+# production bundle runs later via bundle:desktop) and shared needs the
+# explicit project-references type-build.
+if node -e "process.exit(require('./package.json').scripts['build:sea:prepare'] ? 0 : 1)"; then
+    pnpm build:sea:prepare
+else
+    pnpm -r --filter=!@zcode/desktop build
+    if [ -d packages/shared ]; then
+        pnpm exec tsc -b packages/shared --force
+    fi
+fi
 pnpm build:zcode
 VERSION=$(node -p "require('./package.json').version")
 TARBALL=$SRC/dist/zcode/releases/$VERSION/zcode-$VERSION.tar.gz
@@ -300,21 +320,24 @@ install -m 644 "$WORK/pkg-zcode/$ZCODE_PKG" "$OUT/$ZCODE_PKG"
 if [ "$BUILD_DESKTOP" = 1 ]; then
     install -m 644 "$WORK/pkg-desktop/$DESKTOP_PKG" "$OUT/$DESKTOP_PKG"
 fi
+# keep only the newest package file per package name BEFORE the db update,
+# so the database exactly matches the surviving files. The globs must stay
+# UNQUOTED (a quoted "zcode-[0-9]" is a literal string and matches nothing —
+# the prune silently collected every old release forever); `|| true`
+# neutralizes the no-match exit under pipefail.
+for prefix in zcode-[0-9] zcode-desktop-[0-9]; do
+    { ls "$OUT"/$prefix*.pkg.tar.zst 2>/dev/null || true; } | sort -V | head -n -1 \
+        | while read -r old; do
+            rm -f "$old"
+            log "pruned old package $old"
+        done
+done
 repo-add "$OUT/zcode.db.tar.gz" "$OUT"/zcode-*.pkg.tar.zst
 # pacman accepts both spellings; serve the canonical short name
 rm -f "$OUT/zcode.db"
 ln -s zcode.db.tar.gz "$OUT/zcode.db"
 
-# keep only the newest package file per package name (the db above is the
-# index; stale files would otherwise accumulate forever). The [0-9] boundary
-# keeps "zcode-*" from also matching the zcode-desktop files.
-for prefix in "zcode-[0-9]" "zcode-desktop-[0-9]"; do
-    { ls "$OUT/$prefix"*.pkg.tar.zst 2>/dev/null || true; } | sort -V | head -n -1 | while read -r old; do
-        rm -f "$old"
-        log "pruned old package $old"
-    done
-done
-printf '%s %s %s %s %s %s\n' "$VERSION" "$PKGREL" "$COMMIT" "$(date -u +%FT%TZ)" \
-    "$TOOLS_SHA" "$BUILD_DESKTOP" > "$OUT/build-stamp.txt"
+printf '%s %s %s %s %s %s %s\n' "$VERSION" "$PKGREL" "$COMMIT" "$(date -u +%FT%TZ)" \
+    "$TOOLS_SHA" "$BUILD_DESKTOP" "$REF_LABEL" > "$OUT/build-stamp.txt"
 chmod 644 "$OUT/build-stamp.txt" "$OUT"/zcode.db* "$OUT"/*.pkg.tar.zst
 log "local repository updated: $OUT ($VERSION-$PKGREL, commit $COMMIT)"

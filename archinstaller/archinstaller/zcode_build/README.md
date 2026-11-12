@@ -2,7 +2,7 @@
 
 Builds [ZCode](https://github.com/zai-org/ZCode) (Z.ai's open-source coding
 agent workspace) **on the target host itself**: checks out the latest
-upstream `main`, **strips all telemetry** (assert-driven, see
+upstream **tagged release**, **strips all telemetry** (assert-driven, see
 `strip-telemetry.sh`), builds `pacman` packages and publishes them into a
 **local pacman repository** at `~/zcode-build/out`. The `[zcode]` repository
 registered in `/etc/pacman.conf` (`Server = file:///home/<user>/zcode-build/out`)
@@ -51,7 +51,8 @@ upstream stood still.
 ```bash
 ~/zcode-build/build.sh                 # same as the nightly timer
 sudo pacman -Syu                       # picks the fresh packages up
-ZCODE_REF=v3.18.0 ~/zcode-build/build.sh   # pin a tag
+ZCODE_REF=v3.17.1 ~/zcode-build/build.sh   # pin an explicit ref (default:
+                                           # the latest version tag)
 ZCODE_DESKTOP=1 ~/zcode-build/build.sh     # desktop too (default: baked
                                            # into the timer at install time)
 ```
@@ -72,13 +73,14 @@ guesses. Everything below `cache/` persists across builds and reboots
 (pnpm store 2.8 GiB, checkout 1.3 GiB, pinned Node 229 MiB), so re-runs
 download nothing and pay only the CPU cost (~13 min).
 
-On top of that, `build.sh` early-exits after the fetch when the upstream
-commit, the strip scripts and the desktop flag are all unchanged since the
-last build (recorded in `out/build-stamp.txt`) — quiet weeks make the
-nightly a no-op that costs one `git fetch` and a few seconds. Verified
-live: a manual re-run right after an install exits with `up to date`.
-`ZCODE_FORCE=1` overrides. `pnpm install` runs with `--prefer-offline`,
-so a warm store also skips the registry round-trips.
+On top of that, `build.sh` early-exits after the fetch when the latest
+tagged release is the one already built (recorded in
+`out/build-stamp.txt` together with the strip-script hash and the desktop
+flag) — upstream standing still makes the nightly a no-op that costs one
+`git fetch` and a few seconds. Verified live: a manual re-run right after
+an install exits with `up to date`. `ZCODE_FORCE=1` overrides.
+`pnpm install` runs with `--prefer-offline`, so a warm store also skips
+the registry round-trips.
 
 ## Build dependencies (installed by archinstaller)
 

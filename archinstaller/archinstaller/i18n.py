@@ -556,18 +556,21 @@ _EXACT: dict[str, str] = {
         " повторении этого рабочей книги скопируйте этот каталог из исходников"
         " archinstaller в ~/zcode-build.",
 
-    "Checks out zai-org/ZCode, strips the telemetry surface"
-    " (assert-anchored; a drifted upstream fails the run instead of"
-    " shipping telemetry), builds the packages and publishes them"
-    " into the local pacman repository. The persistent cache/ next"
-    " to the scripts keeps re-runs incremental, and the build"
-    " early-exits when upstream and the scripts are unchanged.":
-        "Получает исходники zai-org/ZCode, вырезает телеметрию (привязано к"
-        " якорям; разошедшийся upstream валит запуск вместо доставки"
-        " телеметрии), собирает пакеты и публикует их в локальный pacman-"
-        "репозиторий. Расположенный рядом постоянный cache/ делает повторные"
-        " запуски инкрементальными, а при неизменных upstream и скриптах"
-        " сборка завершается сразу после проверки.",
+    "Checks out the latest tagged release of zai-org/ZCode, strips"
+    " the telemetry surface (assert-anchored; a drifted upstream"
+    " fails the run instead of shipping telemetry), builds the"
+    " packages and publishes them into the local pacman"
+    " repository. The persistent cache/ next to the scripts keeps"
+    " re-runs incremental, and the build early-exits while the"
+    " latest tag, the strip scripts and the desktop flag are all"
+    " already built.":
+        "Получает последний тегированный релиз zai-org/ZCode, вырезает"
+        " телеметрию (привязано к якорям; разошедшийся upstream валит запуск"
+        " вместо доставки телеметрии), собирает пакеты и публикует их в"
+        " локальный pacman-репозиторий. Расположенный рядом постоянный cache/"
+        " делает повторные запуски инкрементальными, а пока последний тег,"
+        " скрипты вырезания и флаг десктопа не менялись, сборка завершается"
+        " сразу после проверки.",
 
     "The repository the previous step published is local-only"
     " (file:// server), so no signature checking applies — the"
