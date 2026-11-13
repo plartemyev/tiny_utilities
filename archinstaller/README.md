@@ -257,6 +257,12 @@ The flag additionally configures:
   a no-op — so logind's `HandlePowerKey=poweroff` fires and host-side
   `acpipowerbutton` works. Physical targets keep normal locking and the
   daemon.
+- **Baloo file indexing disabled** — `Indexing-Enabled=false` seeded into
+  `baloofilerc` (the flag `balooctl6 disable` persists) and
+  `kde-baloo.service` masked with the `/dev/null` symlink
+  `systemctl --user mask` would create, so the indexer never starts from any
+  path (session autostart, dbus activation); a CPU/IO-heavy daemon for search
+  these installs do not use.
 - **VM targets: screen locking disabled** — autolock and lock-on-resume off,
   the Meta+L Lock Session shortcut cleared, so muscle memory aimed at the
   host OS cannot lock the VM.

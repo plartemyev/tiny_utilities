@@ -773,6 +773,21 @@ def _graphical_config_steps(cfg: InstallConfig) -> list[Step]:
             " delivery works (e.g. Wayland); logind's inhibitor would otherwise leave"
             " the button on the logout-dialog default."
         )),
+        Step("Disabling the baloo file indexer", (
+            f"mkdir -p {home}/.config/systemd/user",
+            (f"printf '%s\\n' '[Basic Settings]' 'Indexing-Enabled=false'"
+             f" > {home}/.config/baloofilerc"),
+            # the chroot has no user manager, so `systemctl --user mask` cannot
+            # run; the /dev/null symlink is the exact mask it would create.
+            f"ln -s /dev/null {home}/.config/systemd/user/kde-baloo.service",
+        ), rationale=(
+            "Baloo re-indexes every file churn: a CPU/IO-heavy daemon whose search"
+            " results these installs do not use. The write is the flag `balooctl6"
+            " disable` persists (its daemon-stop half needs a session bus, absent in"
+            " the chroot — nothing runs yet anyway); the /dev/null symlink is the"
+            " mask `systemctl --user mask` creates, so kde-baloo.service can never"
+            " start — not from session autostart, not by dbus activation."
+        )),
         *([
             Step("Handing ACPI power buttons to logind (VM target)", (
                 f"mkdir -p {home}/.config/systemd/user",

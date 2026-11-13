@@ -132,3 +132,24 @@ No third-party AUR packages or fork code are used anywhere — the
   The CLI/web package vendors Node and is immune to distro drift.
 - `zcode` and official ZCode builds share the `~/.zcode/v2` data directory;
   don't run both against the same workspace simultaneously.
+- **`zcode --web` (standalone web mode) cannot start conversations in
+  3.17.x — upstream defect, not a build problem** (verified 2026-11-12 on
+  3.17.2, target code-factory-m): the composer shows "Select project", every
+  send fails with `Failed to send. Try again later.` / `草稿会话创建失败，请重试`,
+  and the server journal shows `sendConversationCommandV4 FAIL
+  Error: project.remote-project-required` (session creation; the standalone
+  server's project storage owner is a remote-style host id, so sessions
+  require a registered project) plus `project.readDirectory FAIL
+  Error: project.host-offline` (the "Create project" folder picker routes to
+  a nonexistent local host). "Work outside a project" is desktop-only and
+  does nothing here; `--workspace <path>` only advertises the default
+  workspace and does not bypass the check. Known upstream:
+  [zai-org/feedback#1161](https://github.com/zai-org/feedback/issues/1161)
+  (open, P2), independently documented by exe.dev's ZCode deploy guide with
+  the identical error pair on 3.17.1; upstream's packaging notes say the web
+  build is smoke-tested without a browser session. The desktop from the same
+  build works (its host is `local`, exempt from the remote-project rules).
+  As of v3.18.0-source (synced to main 2026-11-11, `remote-policy.ts`
+  unchanged) there is still no fix. Once upstream tags a release containing
+  the fix, the nightly `zcode-update.timer` picks it up automatically — no
+  action needed. Until then use the desktop app.

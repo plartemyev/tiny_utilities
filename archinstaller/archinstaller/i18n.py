@@ -118,6 +118,8 @@ _EXACT: dict[str, str] = {
         "Включение экранного менеджера sonic-login-manager",
     "Making the ACPI power button shut down":
         "Настройка кнопки питания ACPI на выключение",
+    "Disabling the baloo file indexer":
+        "Отключение файлового индексатора baloo",
     "Handing ACPI power buttons to logind (VM target)":
         "Передача кнопок питания ACPI под управление logind (ВМ-цель)",
     "Disabling screen locking (VM target)":
@@ -370,6 +372,21 @@ _EXACT: dict[str, str] = {
         "Прописывает действие Shutdown (8) в PowerDevil для стеков, где доставка"
         " нажатий у него работает (например Wayland); иначе ингибитор logind"
         " оставил бы кнопку на значении по умолчанию с диалогом выхода.",
+
+    "Baloo re-indexes every file churn: a CPU/IO-heavy daemon whose search"
+    " results these installs do not use. The write is the flag `balooctl6"
+    " disable` persists (its daemon-stop half needs a session bus, absent in"
+    " the chroot — nothing runs yet anyway); the /dev/null symlink is the"
+    " mask `systemctl --user mask` creates, so kde-baloo.service can never"
+    " start — not from session autostart, not by dbus activation.":
+        "Baloo переиндексирует каждое изменение файлов: прожорливый к CPU/IO"
+        " демон, результатами поиска которого эти установки не пользуются."
+        " Запись в файл — это флаг, сохраняемый `balooctl6 disable` (его"
+        " остановка демона требует шины сеанса, в chroot её нет — там всё"
+        " равно ещё ничего не работает); символическая ссылка на /dev/null —"
+        " та же маска, что создаёт `systemctl --user mask`, вследствие чего"
+        " kde-baloo.service не сможет запуститься ни одним путём — ни"
+        " автозапуском сеанса, ни через dbus.",
 
     "On X11 sessions PowerDevil's button delivery is dead (its"
     " kglobalaccel grabs never fire a configured action) while its logind"

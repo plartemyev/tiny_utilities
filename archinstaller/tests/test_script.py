@@ -91,6 +91,27 @@ def test_graphical_physical_targets_keep_powerdevil():
     assert "mkdir -p /home/nameless/.config" in script  # no VM mkdir step exists
 
 
+def test_graphical_targets_disable_baloo_indexing():
+    for virt in ("oracle", "none"):
+        script = build_install_script(make_cfg(graphical=True, virt=virt))
+        assert ("printf '%s\\n' '[Basic Settings]' 'Indexing-Enabled=false'"
+                " > /home/nameless/.config/baloofilerc") in script, virt
+        assert ("ln -s /dev/null"
+                " /home/nameless/.config/systemd/user/kde-baloo.service") in script, virt
+        # the mask symlink needs the unit dir: on physical targets the VM-only
+        # powerdevil step (its mkdir) does not run
+        assert "mkdir -p /home/nameless/.config/systemd/user" in script, virt
+        # the seeds must land before the .config chown so the user owns them
+        assert script.index("baloofilerc") < script.index(
+            "chown -R 'nameless':'nameless' /home/nameless/.config"), virt
+
+
+def test_console_installs_keep_baloo_alone():
+    script = build_install_script(make_cfg())
+    assert "baloofilerc" not in script
+    assert "kde-baloo" not in script
+
+
 def test_graphical_vm_targets_disable_screen_locking():
     script = build_install_script(make_cfg(graphical=True))
     assert ("printf '%s\\n' '[Daemon]' 'Autolock=false' 'LockOnResume=false'"
