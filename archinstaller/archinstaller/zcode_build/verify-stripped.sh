@@ -111,6 +111,21 @@ if [ "$MODE" = cli ]; then
         n=$(grep -c 'zcode-build coding-plan-auth patch' "$AUTH_PATCHED" || true)
         assert_zero "coding-plan auth patch absent (ZCODE_AUTH_FALLBACK=0)" "$n"
     fi
+
+    # web insecure-context patch (createSession sessionId via uuidv7): same
+    # source-level state check as the patches above.
+    CTX_PATCHED=packages/ui/src/v4/commandFactory.ts
+    if [ "${ZCODE_WEB_SECURE_CONTEXT:-1}" = 1 ]; then
+        n=$(grep -c 'zcode-build web-secure-context patch' "$CTX_PATCHED" || true)
+        if [ "$n" -lt 1 ]; then
+            echo "[verify] FAIL: web secure-context patch missing from $CTX_PATCHED" >&2
+            exit 1
+        fi
+        echo "[verify] ok: web secure-context patch present ($n markers)"
+    else
+        n=$(grep -c 'zcode-build web-secure-context patch' "$CTX_PATCHED" || true)
+        assert_zero "web secure-context patch absent (ZCODE_WEB_SECURE_CONTEXT=0)" "$n"
+    fi
     exit 0
 fi
 

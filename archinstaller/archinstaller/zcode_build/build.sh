@@ -143,6 +143,7 @@ log "checkout $REF_LABEL @ $COMMIT"
 # ---------------------------------------------------------------------------
 TOOLS_SHA=$(cat "$DIR/build.sh" "$DIR/strip-telemetry.sh" "$DIR/strip_telemetry.py" \
     "$DIR/patch_standalone_web.py" "$DIR/patch_coding_plan_auth.py" \
+    "$DIR/patch_web_secure_context.py" \
     "$DIR/verify-stripped.sh" "$DIR/packaging/zcode/PKGBUILD" "$DIR/packaging/zcode-wrapper" \
     "$DIR/packaging/zcode-desktop/PKGBUILD" \
     "$DIR/packaging/zcode-desktop/zcode-desktop.install" | sha256sum | cut -d' ' -f1)
@@ -192,6 +193,20 @@ if [ "${ZCODE_AUTH_FALLBACK:-1}" = 1 ]; then
     python3 "$DIR/patch_coding_plan_auth.py" "$SRC"
 else
     log "coding-plan auth patch skipped (ZCODE_AUTH_FALLBACK=0)"
+fi
+
+# ---------------------------------------------------------------------------
+# 2d. Web insecure-context patch: crypto.randomUUID is undefined on the
+#     plain-HTTP LAN origin `zcode --web` serves, so the v4 command factory
+#     threw on every browser createSession before any RPC (the draft-session
+#     toast; the desktop's context is secure and unaffected). Swap the one
+#     call for the already-imported uuidv7(). Disable with
+#     ZCODE_WEB_SECURE_CONTEXT=0.
+# ---------------------------------------------------------------------------
+if [ "${ZCODE_WEB_SECURE_CONTEXT:-1}" = 1 ]; then
+    python3 "$DIR/patch_web_secure_context.py" "$SRC"
+else
+    log "web secure-context patch skipped (ZCODE_WEB_SECURE_CONTEXT=0)"
 fi
 
 # Build only the pacman target on Linux: AppImage/deb/rpm would need extra

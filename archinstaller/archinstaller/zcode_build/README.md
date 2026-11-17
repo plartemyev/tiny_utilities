@@ -65,6 +65,8 @@ Environment knobs: `ZCODE_REF`, `ZCODE_DESKTOP`, `ZCODE_ELECTRON_MIRROR`,
 `ZCODE_WEB_LOCAL_PROJECTS` (standalone-web project/storage-parity patch,
 default on; a flip also needs `ZCODE_FORCE=1` — the stamp does not record
 it), `ZCODE_AUTH_FALLBACK` (coding-plan business-token reuse, default on),
+`ZCODE_WEB_SECURE_CONTEXT` (web-UI uuidv7 instead of secure-context-only
+crypto.randomUUID in the command factory, default on),
 `ZCODE_SKIP_FETCH=1` (degraded-network escape hatch: resolve REF from
 already-fetched local tags, skip `git fetch` entirely),
 `ZCODE_CACHE`/`ZCODE_WORK`/`ZCODE_OUT` (paths, default alongside `build.sh`),
@@ -203,6 +205,35 @@ Scope and lifecycle, by construction:
   source (the artifacts are minified, the comment markers only exist in the
   source tree): present when enabled, absent when disabled.
 
+## Web insecure-context patch
+
+The last layer of the standalone-web send failure (2026-11-18): every
+browser composer dispatch died client-side with
+`TypeError: crypto.randomUUID is not a function` while building the
+createSession envelope — `packages/ui/src/v4/commandFactory.ts` called the
+**secure-context-only** `crypto.randomUUID`, and `zcode --web` serves the
+UI from a plain-HTTP LAN origin, which Chromium classifies as an insecure
+context (the desktop's context is secure; CLI/TUI never run this code).
+The throw happens BEFORE any RPC leaves the page, so the server journal
+and the runtime child see nothing at all — which is exactly why the
+earlier deep-dive (below) mistook it for a server-side v4-gateway drop.
+
+`patch_web_secure_context.py` (runs after the auth patch; disable with
+`ZCODE_WEB_SECURE_CONTEXT=0`) swaps the one call for the
+already-imported, context-independent `uuidv7()`. Only the send-blocking
+site is patched: the other raw `crypto.randomUUID` call sites (voice
+input, image preview, archive, plugin-ui, ttft clock) are off the send
+path and individually visible if their features ever matter. Asserts its
+anchors like the other patches; `verify-stripped.sh` re-checks the
+marker.
+
+Debug recipe that pinned it (production UI logger is a no-op, so the
+client fails silently): patch the SERVED bundle's prewarm catch
+(`[v4-draft-prewarm] createSession 失败` → `console.error` with the
+stack) in `/opt/zcode/web/assets/index-*.js`, replay the send under
+playwright, read the console. The error panel's "Show details" also
+carries the surfaced message (草稿会话创建失败，请重试).
+
 ## Coding-plan auth fallback patch
 
 Separate upstream gap, same "standalone CLI/web vs desktop" family
@@ -235,35 +266,36 @@ UI shows the desktop's projects and task history (parity) — with ZERO
 `project.remote-project-required` / `project.host-offline` /
 `remote-project.host-removed` / `project.host-immutable` journal entries.
 CLI turns produce real model replies (`zcode -p` → `E2E-OK` via the auth
-fallback) and the desktop works throughout.
+fallback) and the desktop works throughout. The browser composer send was
+the last broken layer — root-caused 2026-11-18 to the client-side
+secure-context bug (see the insecure-context patch section) and fixed the
+same day; the full-send E2E evidence lives there.
 
 ## Web send chain: findings and debug playbook (2026-11-17/18 deep-dive)
 
-The send path, layer by layer (each layer's status after tonight):
+The send path, layer by layer (each layer's status after the deep-dive):
 
 ```
 browser composer → dispatchCommand("createSession")   [SessionPane]
   → gate: rpcReady (workspace services resolution)     FIXED by identity patch
   → gate: remoteAvailable / draftProjectReady          OK with a selected project
-  → sendConversationCommandV4 RPC → server admission   OK (runtime resident)
-  → v4 gateway → runtime child (app-server --stdio)    child spawns + boots fine
-  → CommandInbox admission → createSession ACK         ← STILL FAILING HERE
+  → createCommandEnvelope (commandFactory.ts)          ← WAS THE DROP: crypto.randomUUID
+                                                         undefined on http:// LAN
+                                                         (FIXED by the secure-context patch)
+  → sendConversationCommandV4 RPC → server admission   (never reached before the fix)
+  → v4 gateway → runtime child (app-server --stdio)
+  → CommandInbox admission → createSession ACK
 ```
 
 The draft prewarm (`useDraftSessionPrewarm.waitForSession`) treats a
 non-accepted/absent createSession ACK as `binding=null` and the composer
-shows the 草稿会话创建失败 toast. The remaining failure is upstream
-territory: the frame never reaches the agent child (strace-proven — the
-child only receives sessions-index subscribes and preference updates, while
-`initializeConversationV4` / `helloConversationV4` / prepareSession all
-return OK), so the drop is in the server-side v4 gateway routing between
-the client ws and the runtime stdio. `v4-gateway.ts` was substantially
-rewritten in the v3.18.x syncs; the last version with a known-working
-source-build CLI/TUI turn is 3.16.2-era. Unaffected: CLI and desktop turns,
-and "Work outside a project" fails the same way, so it is not
-project-binding-specific. Next debugging step: instrument the runtime
-executor host-side (a debug build logging the createSession ACK content) or
-file upstream with the evidence below.
+shows the 草稿会话创建失败 toast. For three nights the evidence pointed
+PAST the browser: `prepareSession` OK, hello/initialize OK, zero
+`sendConversationCommandV4` entries in the server journal, and strace
+proving the child never received the frame — all consistent with a
+server-side v4-gateway drop, but actually the signature of a command that
+never left the page. The decisive instrument was console-enabling the
+prewarm catch in the served bundle (see the insecure-context section).
 
 Debug playbook (every step verified live tonight):
 
@@ -361,8 +393,10 @@ Local-repo install gotchas (both hit 2026-11-18):
   projects and tasks) and the coding-plan auth fallback (the standalone
   runtime re-exchanged the stored business token at an OAuth-only endpoint;
   the patch falls through to the stored token, so CLI turns reach real
-  model replies). The web composer send has one remaining upstream layer —
-  the v4 createSession ACK — documented with the full debug trail in the
-  send-chain section above. When upstream ships their own fixes, the patch
+  model replies). The web composer send had one final layer —
+  every dispatch died client-side on `crypto.randomUUID`, undefined on
+  the plain-HTTP LAN origin (insecure context); the secure-context patch
+  swaps it for `uuidv7` (see the insecure-context patch section and the
+  send-chain trail). When upstream ships their own fixes, the patch
   scripts' anchors are expected to fail the build (or go inert), at which
   point the patches get retired.
