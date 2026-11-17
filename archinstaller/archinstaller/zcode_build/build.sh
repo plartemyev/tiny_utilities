@@ -142,7 +142,7 @@ log "checkout $REF_LABEL @ $COMMIT"
 #     tag"). ZCODE_FORCE=1 overrides (e.g. after wiping the cache).
 # ---------------------------------------------------------------------------
 TOOLS_SHA=$(cat "$DIR/build.sh" "$DIR/strip-telemetry.sh" "$DIR/strip_telemetry.py" \
-    "$DIR/patch_standalone_web.py" \
+    "$DIR/patch_standalone_web.py" "$DIR/patch_coding_plan_auth.py" \
     "$DIR/verify-stripped.sh" "$DIR/packaging/zcode/PKGBUILD" "$DIR/packaging/zcode-wrapper" \
     "$DIR/packaging/zcode-desktop/PKGBUILD" \
     "$DIR/packaging/zcode-desktop/zcode-desktop.install" | sha256sum | cut -d' ' -f1)
@@ -179,6 +179,19 @@ if [ "${ZCODE_WEB_LOCAL_PROJECTS:-1}" = 1 ]; then
     python3 "$DIR/patch_standalone_web.py" "$SRC"
 else
     log "standalone-web patch skipped (ZCODE_WEB_LOCAL_PROJECTS=0)"
+fi
+
+# ---------------------------------------------------------------------------
+# 2c. Coding-plan auth fallback patch: the standalone CLI/web runtime
+#     re-exchanges the stored BUSINESS token at /api/auth/z/login, which
+#     only accepts raw OAuth tokens -> project_token_login_failed on every
+#     turn (the desktop is unaffected; see patch_coding_plan_auth.py for
+#     the live-verified analysis). Disable with ZCODE_AUTH_FALLBACK=0.
+# ---------------------------------------------------------------------------
+if [ "${ZCODE_AUTH_FALLBACK:-1}" = 1 ]; then
+    python3 "$DIR/patch_coding_plan_auth.py" "$SRC"
+else
+    log "coding-plan auth patch skipped (ZCODE_AUTH_FALLBACK=0)"
 fi
 
 # Build only the pacman target on Linux: AppImage/deb/rpm would need extra

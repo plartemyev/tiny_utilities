@@ -86,10 +86,30 @@ if [ "$MODE" = cli ]; then
             echo "[verify] FAIL: standalone-web patch missing from $PATCHED (found $n markers, need >= 3)" >&2
             exit 1
         fi
-        echo "[verify] ok: standalone-web patch present in the project service ($n markers)"
+        n2=$(grep -c 'zcode-build standalone-web patch' packages/services/src/node.ts || true)
+        if [ "$n2" -lt 1 ]; then
+            echo "[verify] FAIL: storage parity patch missing from packages/services/src/node.ts" >&2
+            exit 1
+        fi
+        echo "[verify] ok: standalone-web patch present (project service: $n, storage parity: $n2 markers)"
     else
         n=$(grep -c 'zcode-build standalone-web patch' "$PATCHED" || true)
         assert_zero "standalone-web patch absent (ZCODE_WEB_LOCAL_PROJECTS=0)" "$n"
+    fi
+
+    # coding-plan auth fallback patch (business-token reuse): same source-
+    # level state check as the standalone-web patch above.
+    AUTH_PATCHED=apps/zcode-cli/packages/adapters/src/auth/coding-plan-api-key.ts
+    if [ "${ZCODE_AUTH_FALLBACK:-1}" = 1 ]; then
+        n=$(grep -c 'zcode-build coding-plan-auth patch' "$AUTH_PATCHED" || true)
+        if [ "$n" -lt 1 ]; then
+            echo "[verify] FAIL: coding-plan auth patch missing from $AUTH_PATCHED" >&2
+            exit 1
+        fi
+        echo "[verify] ok: coding-plan auth patch present ($n markers)"
+    else
+        n=$(grep -c 'zcode-build coding-plan-auth patch' "$AUTH_PATCHED" || true)
+        assert_zero "coding-plan auth patch absent (ZCODE_AUTH_FALLBACK=0)" "$n"
     fi
     exit 0
 fi

@@ -61,8 +61,9 @@ ZCODE_DESKTOP=1 ~/zcode-build/build.sh     # desktop too (default: baked
 ```
 
 Environment knobs: `ZCODE_REF`, `ZCODE_DESKTOP`, `ZCODE_ELECTRON_MIRROR`,
-`ZCODE_WEB_LOCAL_PROJECTS` (standalone-web project patch, default on; a
-flip also needs `ZCODE_FORCE=1` — the stamp does not record it),
+`ZCODE_WEB_LOCAL_PROJECTS` (standalone-web project/storage-parity patch,
+default on; a flip also needs `ZCODE_FORCE=1` — the stamp does not record
+it), `ZCODE_AUTH_FALLBACK` (coding-plan business-token reuse, default on),
 `ZCODE_SKIP_FETCH=1` (degraded-network escape hatch: resolve REF from
 already-fetched local tags, skip `git fetch` entirely),
 `ZCODE_CACHE`/`ZCODE_WORK`/`ZCODE_OUT` (paths, default alongside `build.sh`),
@@ -161,7 +162,19 @@ which we cannot do since we compile from source:
    `ProjectCreation.saved()` throws the false
    `remote-project.host-removed` right after a successful save, and
    composer pickers / automation lists filter the rows out as
-   foreign-host entries.
+   foreign-host entries;
+4. **storage partition parity** (`createServerHostServices` in
+   `packages/services/src/node.ts`): the server joins the desktop's
+   `"local"` project/task partition instead of its remote-style identity.
+   This is what actually makes the web and desktop UIs show the SAME
+   projects and tasks out of the shared `~/.zcode/v2` store — before it,
+   desktop-created projects were invisible in the web UI and vice versa
+   (two disjoint partitions of one SQLite store). With parity in place the
+   runtime behaves desktop-local: project-less composer sends work
+   out of the box, and the presentation shims in (1)/(3) go inert.
+   Caveat: desktop→server REMOTE connections (this server addressed as a
+   remote host from another machine's desktop) are not exercised with
+   parity mode; the server's advertised serverId itself is unchanged.
 
 Scope and lifecycle, by construction:
 
@@ -178,6 +191,30 @@ Scope and lifecycle, by construction:
 - `verify-stripped.sh` re-checks the patch state in the compiled-from
   source (the artifacts are minified, the comment markers only exist in the
   source tree): present when enabled, absent when disabled.
+
+## Coding-plan auth fallback patch
+
+Separate upstream gap, same "standalone CLI/web vs desktop" family
+(`patch_coding_plan_auth.py`; disable with `ZCODE_AUTH_FALLBACK=0`): turns
+failed on the standalone CLI and the web server's spawned runtime with
+`project_token_login_failed` while the desktop on the same box with the
+same stored credentials worked. Cause: the login flow persists the
+`/api/auth/z/login` **business** platform JWT as `oauth:zai:access_token`
+(zaiProviderAdapter normalizes at login; the store contract is business
+token), but the standalone runtime's coding-plan resolver re-exchanges that
+stored token at `/api/auth/z/login` — which only accepts raw Z.AI OAuth
+tokens (`200 {code:500, "Z.ai user information is invalid"}`) — and treats
+the rejection as fatal. The desktop is unaffected because its host hands
+tokens to its agent instead of re-exchanging.
+
+Live-verified 2026-11-18: the stored token is rejected by
+`/api/auth/z/login` yet accepted by the business APIs it exists for
+(`GET /api/biz/customer/getCustomerInfo` → `code:200` with the org/project
+list). The patch turns the exchange failure into a fall-through
+(`loginToken = business?.token ?? oauth`, a line upstream already has), so
+the stored business token is used directly; raw-OAuth-token stores still
+refresh through the exchange as before, and expired tokens surface through
+client.resolve's own 401 handling. The desktop path is untouched.
 
 Verified live on 2026-11-17 (v3.18.2, target code-factory-m): with the
 patched build, browser project creation via the folder picker, project

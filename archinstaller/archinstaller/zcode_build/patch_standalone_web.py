@@ -180,6 +180,51 @@ RESTORE_REPLACEMENT = """      const result = repository.saveProject({
     },
 """
 
+STORAGE_IDENTITY_RELPATH = "packages/services/src/node.ts"
+
+STORAGE_IDENTITY_ANCHOR = """  const projectStorageHostId = remoteHostIdFromWorkspaceIdentity(
+    buildServerRemoteWorkspaceIdentity({ serverId: options.sourceServerId, workspacePath: "/" }),
+  );
+  if (!projectStorageHostId) throw new Error("Invalid Source Server storage identity");
+"""
+
+STORAGE_IDENTITY_REPLACEMENT = """  // MARKER (upstream: zai-org/feedback#1161): the standalone server shares
+  // this machine's project store with a desktop running on the same host,
+  // so it must read/write the SAME "local" partition the desktop uses.
+  // Upstream partitions standalone servers under a remote-style identity,
+  // which makes desktop-created projects invisible in the web UI and
+  // web-created projects invisible on the desktop. The server's advertised
+  // remote HOST identity (serverId/workspace identities) is untouched —
+  // only the project/task storage partition joins "local".
+  const projectStorageHostId = "local";
+"""
+
+IDENTITY_PRESENTATION_ANCHOR = """    onResolved: ({ workspacePath, canonicalWorkspaceKey }) => {
+      workspaceIdentityMapper.register({
+        stableIdentity: buildServerRemoteWorkspaceIdentity({
+          serverId: options.sourceServerId,
+          workspacePath,
+        }),
+        canonicalIdentity: canonicalWorkspaceKey,
+      });
+    },
+"""
+
+IDENTITY_PRESENTATION_REPLACEMENT = """    onResolved: ({ workspacePath, canonicalWorkspaceKey }) => {
+      workspaceIdentityMapper.register({
+        // MARKER (upstream: zai-org/feedback#1161): present the browser a
+        // plain-path identity. A remote-style stable identity makes the web
+        // client classify the workspace as a remote target without a remote
+        // session (rpcReady=false), and every composer dispatch then fails
+        // client-side with the draft-creation toast. The identity channel
+        // still maps path -> canonical server-side, so routing is
+        // preserved for registered workspaces.
+        stableIdentity: workspacePath,
+        canonicalIdentity: canonicalWorkspaceKey,
+      });
+    },
+"""
+
 
 def replace_once(text: str, relative: str, anchor: str, replacement: str, what: str) -> str:
     count = text.count(anchor)
@@ -214,6 +259,31 @@ def main() -> None:
     text = replace_once(text, relative, READ_TREE_ANCHOR, READ_TREE_REPLACEMENT, "readTree")
     text = replace_once(text, relative, RESTORE_ANCHOR, RESTORE_REPLACEMENT, "restoreProject")
 
+    # storage partition parity (createServerHostServices): the standalone
+    # server joins the desktop's "local" partition, so both UIs see the same
+    # projects and tasks out of one store
+    storage_relpath = STORAGE_IDENTITY_RELPATH
+    storage_path = root / storage_relpath
+    if not storage_path.is_file():
+        die(f"expected {storage_relpath} missing in the checkout")
+    storage_text = storage_path.read_text(encoding="utf-8")
+    if MARKER in storage_text:
+        die(f"{storage_relpath} is already patched (marker present)")
+    count = storage_text.count(STORAGE_IDENTITY_ANCHOR)
+    if count != 1:
+        die(f"storage identity anchor not unique in {storage_relpath}: found {count} "
+            f"(upstream changed?)")
+    storage_text = storage_text.replace(
+        STORAGE_IDENTITY_ANCHOR, STORAGE_IDENTITY_REPLACEMENT.replace("MARKER", MARKER), 1)
+    count = storage_text.count(IDENTITY_PRESENTATION_ANCHOR)
+    if count != 1:
+        die(f"identity presentation anchor not unique in {storage_relpath}: found {count} "
+            f"(upstream changed?)")
+    storage_text = storage_text.replace(
+        IDENTITY_PRESENTATION_ANCHOR,
+        IDENTITY_PRESENTATION_REPLACEMENT.replace("MARKER", MARKER), 1)
+    storage_path.write_text(storage_text, encoding="utf-8")
+
     # sanity: the upstream gates stay in place (the patch only routes around
     # them for the browser's "local" alias, it does not delete the policy).
     # project.host-immutable lives in project-repository.ts, which this patch
@@ -226,6 +296,7 @@ def main() -> None:
     print(f"[web-patch] patched {relative} "
           f"(standalone local-project alias: route, saveProject in/out, "
           f"readProjects/readTree/restoreProject presentation)")
+    print(f"[web-patch] patched {storage_relpath} (storage partition joins \"local\")")
 
 
 if __name__ == "__main__":
