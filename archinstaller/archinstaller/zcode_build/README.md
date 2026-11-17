@@ -26,6 +26,7 @@ Everything lives under `~/zcode-build/`:
 | `build.sh` | orchestrator: checkout → strip → patch → build → package → publish |
 | `strip-telemetry.sh` + `strip_telemetry.py` | the telemetry removal (shell parts + manifest/source edits) |
 | `patch_standalone_web.py` | the standalone-web local-project patch (source-level, assert-driven) |
+| `patch_coding_plan_auth.py` | the coding-plan business-token reuse patch (source-level, assert-driven) |
 | `verify-stripped.sh` | post-build artifact gate; any hit fails the run |
 | `packaging/` | PKGBUILDs, the `/usr/bin/zcode` wrapper, the desktop `.install` |
 | `out/` | the published pacman repo: packages + `zcode.db` + `build-stamp.txt` |
@@ -174,17 +175,27 @@ which we cannot do since we compile from source:
    out of the box, and the presentation shims in (1)/(3) go inert.
    Caveat: desktop→server REMOTE connections (this server addressed as a
    remote host from another machine's desktop) are not exercised with
-   parity mode; the server's advertised serverId itself is unchanged.
+   parity mode; the server's advertised serverId itself is unchanged;
+5. **identity presentation** (same `createServerHostServices`): workspaces
+   are presented to browsers with a plain-path identity instead of the
+   remote-style `server:<serverId>:<path>` one. A parseable remote identity
+   makes the web client classify the workspace as a remote target without
+   a remote session (`useWorkspaceServicesResolution` → `remote-waiting` →
+   `rpcReady=false`), and `SessionPane.dispatchCommand` then refuses every
+   dispatch client-side (草稿会话创建失败 toast) before any server RPC —
+   this was the invisible half of the send failure. The identity channel
+   still maps plain-path → canonical server-side, so registered workspaces
+   route exactly as before.
 
 Scope and lifecycle, by construction:
 
 - desktop remote hosts have `resolveHost` → `isStandaloneServer` is false
   there and the alias never fires; the alias also goes inert the moment
   upstream supplies a `resolveHost` of its own (their future proper fix);
-- the upstream policy is kept, not deleted: sessions on the standalone
-  server still require a project (`remote-project-required`), so the
-  composer needs a selected project — create/select one for the
-  `--workspace` directory (or any server directory) and send;
+- the upstream policy gates dissolve under parity: `remoteOwner` becomes
+  false, so the composer dispatches project-less (desktop-style) — "Work
+  outside a project" is selectable; the per-project guardrails
+  (single-root, cwd-in-roots) only ever applied to remote owners anyway;
 - every edit asserts its anchor; when upstream fixes or reorganizes this
   code the nightly stops and keeps serving the last good packages — at that
   point delete the patch call (and this section) after confirming their fix;
@@ -216,18 +227,93 @@ the stored business token is used directly; raw-OAuth-token stores still
 refresh through the exchange as before, and expired tokens surface through
 client.resolve's own 401 handling. The desktop path is untouched.
 
-Verified live on 2026-11-17 (v3.18.2, target code-factory-m): with the
-patched build, browser project creation via the folder picker, project
-selection (composer chip and picker after reload) and conversation send all
-pass; the server journal shows `project.readDirectory OK`,
-`project.saveProject OK` and `project.prepareSession OK` with ZERO
+Verified live on 2026-11-17/18 (v3.18.2, target code-factory-m): the
+unpatched build reproduces the defect pair (baseline); the patched build
+passes browser project creation via the folder picker, project selection
+(composer chip and picker after reload) and `prepareSession`, and the web
+UI shows the desktop's projects and task history (parity) — with ZERO
 `project.remote-project-required` / `project.host-offline` /
-`remote-project.host-removed` / `project.host-immutable` occurrences, where
-the unpatched 3.18.2 build reproduced the defect pair first (baseline). The
-remaining send failures on that target are the model layer: its stored z.ai
-OAuth token is stale (api.z.ai answers "Z.ai user information is invalid")
-— a fresh `/login zai` (CLI) or desktop re-login is needed for real model
-turns; that is target auth state, not patch-related.
+`remote-project.host-removed` / `project.host-immutable` journal entries.
+CLI turns produce real model replies (`zcode -p` → `E2E-OK` via the auth
+fallback) and the desktop works throughout.
+
+## Web send chain: findings and debug playbook (2026-11-17/18 deep-dive)
+
+The send path, layer by layer (each layer's status after tonight):
+
+```
+browser composer → dispatchCommand("createSession")   [SessionPane]
+  → gate: rpcReady (workspace services resolution)     FIXED by identity patch
+  → gate: remoteAvailable / draftProjectReady          OK with a selected project
+  → sendConversationCommandV4 RPC → server admission   OK (runtime resident)
+  → v4 gateway → runtime child (app-server --stdio)    child spawns + boots fine
+  → CommandInbox admission → createSession ACK         ← STILL FAILING HERE
+```
+
+The draft prewarm (`useDraftSessionPrewarm.waitForSession`) treats a
+non-accepted/absent createSession ACK as `binding=null` and the composer
+shows the 草稿会话创建失败 toast. The remaining failure is upstream
+territory: the frame never reaches the agent child (strace-proven — the
+child only receives sessions-index subscribes and preference updates, while
+`initializeConversationV4` / `helloConversationV4` / prepareSession all
+return OK), so the drop is in the server-side v4 gateway routing between
+the client ws and the runtime stdio. `v4-gateway.ts` was substantially
+rewritten in the v3.18.x syncs; the last version with a known-working
+source-build CLI/TUI turn is 3.16.2-era. Unaffected: CLI and desktop turns,
+and "Work outside a project" fails the same way, so it is not
+project-binding-specific. Next debugging step: instrument the runtime
+executor host-side (a debug build logging the createSession ACK content) or
+file upstream with the evidence below.
+
+Debug playbook (every step verified live tonight):
+
+- **Server journal** is the first instrument:
+  `journalctl --user -u zcode-web -f`. `prepareSession OK` with NO
+  following `sendConversationCommandV4` = client-side refusal (check
+  `rpcReady`); `subscribeSessionsIndexV4 FAIL "runtime is not running"` =
+  runtime not resident for that workspace; note that the ui logger is a
+  no-op in production builds, so the client fails silently — console
+  capture shows nothing.
+- **Frame capture**: the client speaks over ONE websocket (`/ws`) carrying
+  both text RPC frames and binary VSBuffer frames; decode bytes as
+  latin-1 and regex for command names (`prepareSession`,
+  `subscribeSessionsIndexV4`, `workspaceIdentity` payloads).
+- **strace the runtime child** (after `pacman -S strace`):
+  `sudo strace -p <child-pid> -f -e trace=read,write -s 4000 -o log`.
+  The child's protocol is newline-delimited JSON on fd 0/1: `read(0,...)`
+  lines are forwarded commands, `write(1,...)` lines are responses/events.
+  Tonight's log proved createSession frames never reach the child while
+  sessions-index traffic does.
+- **Manual child boot** (rules out bootstrap damage):
+  `(sleep 20) | timeout 18 env ZCODE_CREDENTIAL_SECRET_FILE=~/zcode-build/
+  ... /opt/zcode/node/bin/node /opt/zcode/agent/zcode.cjs app-server
+  --stdio` in the project cwd — emits `startup/storageState` notifications
+  with `phase:"ready"` in ~9 ms. Boot is healthy; production builds
+  suppress the child's logs (they pipe to the parent, which relays them at
+  debug level only).
+- **markReady semantics** (`zcodeAgentProcessManager.ts`): the runtime
+  becomes "running" for RPC purposes only after the agent passes the
+  provider/model gate (the coding-plan token mint) — spawn-time
+  "process started" ≠ registered. A fresh server boot needs one send
+  attempt to spawn + boot the runtime (~3 s); the first send can race the
+  boot and fail with the same toast — retry once the subscribe returns OK.
+- **Watch the identity source**: the web bootstrap takes
+  `serverInfo.workspaces[0].workspaceIdentity` from `/api/server-info` —
+  that payload (plus the identity channel's mapOutgoing) is what decides
+  the client's remote/local classification.
+
+Local-repo install gotchas (both hit 2026-11-18):
+
+- After a rebuild overwrites a same-named package file in the file:// repo,
+  `pacman -S pkg` (without `-y`) uses the STALE sync-db copy whose %CSIZE%
+  is the old size — libalpm's max-file-size guard aborts with
+  "Exceeded the maximum allowed file size" (the arch-cache-mirror curl-63
+  lesson, hit from the pacman side). Always `pacman -Sy pkg` for local
+  repos, and `sudo rm /var/cache/pacman/pkg/<pkg>*.part` — an interrupted
+  download's resume file Frankenstein-merges old+new bytes.
+- Each failed composer send spawns another runtime child for the same
+  workspace (the old one lingers); `pkill -x zcode-cli` plus a service
+  restart resets to a clean slate before a clean test.
 
 ## Caveats
 
@@ -269,7 +355,14 @@ turns; that is target auth state, not patch-related.
   `hostId: "local"`) — project creation and directory browsing work after
   it. No maintainer response on the issue yet. Since 2026-11-17 the build
   carries our own source-level patch for exactly these gates — see the
-  standalone-web section above; the desktop from the same build was never
-  affected. When upstream ships their own fix, the patch script's anchors
-  are expected to fail the build (or go inert), at which point the patch
-  gets retired.
+  standalone-web section above. Since then two more patches joined: storage
+  parity + identity presentation (web and desktop share the local partition
+  and present plain-path identities — the web UI shows the desktop's
+  projects and tasks) and the coding-plan auth fallback (the standalone
+  runtime re-exchanged the stored business token at an OAuth-only endpoint;
+  the patch falls through to the stored token, so CLI turns reach real
+  model replies). The web composer send has one remaining upstream layer —
+  the v4 createSession ACK — documented with the full debug trail in the
+  send-chain section above. When upstream ships their own fixes, the patch
+  scripts' anchors are expected to fail the build (or go inert), at which
+  point the patches get retired.

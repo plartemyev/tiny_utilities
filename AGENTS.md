@@ -3,13 +3,17 @@
   upstream 3.17.x–3.18.2 has a standalone-web defect (zai-org/feedback#1161;
   `zcode --web` session creation rejected with `project.remote-project-required`,
   folder picker with `project.host-offline`; desktop unaffected). Since
-  2026-11-17 the build carries our own assert-driven source patch
-  (`patch_standalone_web.py`; see the zcode_build README) — `--web` project
-  creation/sending works on patched builds; the nightly stops if upstream
-  moves the patched code (retire the patch once their fix lands). Full
-  write-up + links in `archinstaller/archinstaller/zcode_build/README.md`.
-  For any future --web debugging: verify the upstream issue state first, do
-  not re-debug the defect against local builds.
+  2026-11-17 the build carries three assert-driven source patches
+  (`patch_standalone_web.py` gates + storage parity + identity
+  presentation, `patch_coding_plan_auth.py` business-token reuse): the
+  web UI fully mirrors the desktop (same projects/tasks, creation works)
+  and CLI turns reach real models; the web composer send has ONE remaining
+  upstream layer (the v4 createSession ACK never reaches the runtime
+  child — strace-proven; see the zcode_build README send-chain section).
+  The nightly stops if upstream moves the patched code (retire the patches
+  once their fixes land). For any future --web debugging: verify the
+  upstream issue state first and use the README debug playbook — do not
+  re-derive the layer map from scratch.
 - On Arch Linux (`archlinux:latest`), `corepack` is a separate package from
   `nodejs`. To use Yarn 4 via Corepack, you must install both and then run
   `corepack enable`.
