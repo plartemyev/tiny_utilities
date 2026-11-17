@@ -3,17 +3,21 @@
   upstream 3.17.x–3.18.2 has a standalone-web defect (zai-org/feedback#1161;
   `zcode --web` session creation rejected with `project.remote-project-required`,
   folder picker with `project.host-offline`; desktop unaffected). Since
-  2026-11-17 the build carries three assert-driven source patches
+  2026-11-17 the build carries assert-driven source patches
   (`patch_standalone_web.py` gates + storage parity + identity
-  presentation, `patch_coding_plan_auth.py` business-token reuse): the
-  web UI fully mirrors the desktop (same projects/tasks, creation works)
-  and CLI turns reach real models; the web composer send has ONE remaining
-  upstream layer (the v4 createSession ACK never reaches the runtime
-  child — strace-proven; see the zcode_build README send-chain section).
-  The nightly stops if upstream moves the patched code (retire the patches
-  once their fixes land). For any future --web debugging: verify the
-  upstream issue state first and use the README debug playbook — do not
-  re-derive the layer map from scratch.
+  presentation, `patch_coding_plan_auth.py` business-token reuse,
+  `patch_web_secure_context.py` uuidv7 in the command factory): the web
+  UI fully mirrors the desktop (same projects/tasks, creation works),
+  CLI turns reach real models, and the browser composer send is E2E-VERIFIED
+  (2026-11-18: createSession → sendText → model reply rendered; journal
+  `sendConversationCommandV4 OK`). The former "v4 gateway drop" was actually
+  client-side: `crypto.randomUUID` is undefined on plain-HTTP LAN origins
+  (insecure context), so every createSession died in the browser before
+  any RPC — the fix swaps it for `uuidv7`. The nightly stops if upstream
+  moves the patched code (retire the patches once their fixes land). For
+  any future --web debugging: verify the upstream issue state first and
+  use the README debug playbook (incl. the served-bundle console patch
+  recipe) — do not re-derive the layer map from scratch.
 - On Arch Linux (`archlinux:latest`), `corepack` is a separate package from
   `nodejs`. To use Yarn 4 via Corepack, you must install both and then run
   `corepack enable`.
