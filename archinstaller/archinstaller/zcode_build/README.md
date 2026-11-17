@@ -218,6 +218,16 @@ The throw happens BEFORE any RPC leaves the page, so the server journal
 and the runtime child see nothing at all — which is exactly why the
 earlier deep-dive (below) mistook it for a server-side v4-gateway drop.
 
+Verified against the OFFICIAL desktop build too (2026-11-18, file-level
+inspection of `ZCode-3.18.2-linux-x64.rpm`, no install): the shipped
+renderer bundle inside `app.asar` carries the identical unguarded
+\`sess_\${crypto.randomUUID()}\` line — plus a guarded randomUUID site
+elsewhere (upload ids fall back to getRandomValues), so upstream knows
+the API can be missing but missed the command factory. The #1161 error
+gates (`remote-project-required` / `host-offline`) are present in the
+same official artifact. The desktop itself never trips either (secure
+context; its host is `local`).
+
 `patch_web_secure_context.py` (runs after the auth patch; disable with
 `ZCODE_WEB_SECURE_CONTEXT=0`) swaps the one call for the
 already-imported, context-independent `uuidv7()`. Only the send-blocking
