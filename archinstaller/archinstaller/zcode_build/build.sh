@@ -100,14 +100,27 @@ DEPTH="--depth 1"
 if [ ! -d "$SRC/.git" ]; then
     git clone $DEPTH "$UPSTREAM_URL" "$SRC"
 fi
-for attempt in 1 2 3; do
-    if git -C "$SRC" fetch $DEPTH --prune --prune-tags --tags origin; then break; fi
-    [ "$attempt" = 3 ] && die "git fetch of upstream failed 3 times"
-    sleep $((attempt * 20))
-done
+# stall guard: GitHub edges sometimes blackhole established connections from
+# this network (observed 2026-11-17: ref advertisement answered in 0.6s while
+# a minutes-old fetch socket sat ESTAB forever; api.github.com timed out
+# outright). Abort stalled transfers so the retry ladder below can open a
+# fresh connection instead of hanging the nightly forever. ZCODE_SKIP_FETCH=1
+# skips fetching entirely (degraded-network escape hatch: REF is then
+# resolved from already-fetched local tags — only sane when the previous run
+# fetched the wanted tag; the up-to-date stamp still guards correctness).
+GIT_STALL=(-c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30)
+if [ "${ZCODE_SKIP_FETCH:-0}" != 1 ]; then
+    for attempt in 1 2 3; do
+        if git -C "$SRC" "${GIT_STALL[@]}" fetch $DEPTH --prune --prune-tags --tags origin; then break; fi
+        [ "$attempt" = 3 ] && die "git fetch of upstream failed 3 times"
+        sleep $((attempt * 20))
+    done
+    if [ -n "$REF" ]; then
+        git -C "$SRC" "${GIT_STALL[@]}" fetch $DEPTH --prune origin "$REF"
+        REF_AT=FETCH_HEAD
+    fi
+fi
 if [ -n "$REF" ]; then
-    git -C "$SRC" fetch $DEPTH --prune origin "$REF"
-    REF_AT=FETCH_HEAD
     REF_LABEL=$REF
 else
     # latest version tag, version-sorted ("v3.18.0" > "v3.9.0"); pruned
@@ -129,6 +142,7 @@ log "checkout $REF_LABEL @ $COMMIT"
 #     tag"). ZCODE_FORCE=1 overrides (e.g. after wiping the cache).
 # ---------------------------------------------------------------------------
 TOOLS_SHA=$(cat "$DIR/build.sh" "$DIR/strip-telemetry.sh" "$DIR/strip_telemetry.py" \
+    "$DIR/patch_standalone_web.py" \
     "$DIR/verify-stripped.sh" "$DIR/packaging/zcode/PKGBUILD" "$DIR/packaging/zcode-wrapper" \
     "$DIR/packaging/zcode-desktop/PKGBUILD" \
     "$DIR/packaging/zcode-desktop/zcode-desktop.install" | sha256sum | cut -d' ' -f1)
@@ -152,6 +166,20 @@ fi
 # 2. Apply our customizations (telemetry strip)
 # ---------------------------------------------------------------------------
 bash "$DIR/strip-telemetry.sh" "$SRC"
+
+# ---------------------------------------------------------------------------
+# 2b. Standalone-web local-project patch (zai-org/feedback#1161): lets the
+#     browser of `zcode --web` create projects on this machine (route alias,
+#     saveProject hostId normalization + response rewrite). Assert-driven
+#     like the strip; the build stops when upstream moves the code (i.e.
+#     when their own fix lands). Disable with ZCODE_WEB_LOCAL_PROJECTS=0
+#     (a flip also needs ZCODE_FORCE=1, the stamp does not record it).
+# ---------------------------------------------------------------------------
+if [ "${ZCODE_WEB_LOCAL_PROJECTS:-1}" = 1 ]; then
+    python3 "$DIR/patch_standalone_web.py" "$SRC"
+else
+    log "standalone-web patch skipped (ZCODE_WEB_LOCAL_PROJECTS=0)"
+fi
 
 # Build only the pacman target on Linux: AppImage/deb/rpm would need extra
 # tooling (appimage tools, rpmbuild) and download artifacts for targets we

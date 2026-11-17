@@ -1,13 +1,15 @@
 ## Tooling notes
 - zcode (`archinstaller --zcode`, builds from `archinstaller/archinstaller/zcode_build/`):
-  `zcode --web` standalone web mode cannot start conversations on 3.17.x —
-  upstream defect (zai-org/feedback#1161; server rejects session creation
-  with `project.remote-project-required`, folder picker with
-  `project.host-offline`). Desktop from the same build is unaffected. Full
-  write-up + links in `archinstaller/archinstaller/zcode_build/README.md`
-  Caveats; fix arrives via the nightly `zcode-update.timer` once upstream
-  tags it. Do not re-debug this against the local build — verify the
-  upstream issue state first.
+  upstream 3.17.x–3.18.2 has a standalone-web defect (zai-org/feedback#1161;
+  `zcode --web` session creation rejected with `project.remote-project-required`,
+  folder picker with `project.host-offline`; desktop unaffected). Since
+  2026-11-17 the build carries our own assert-driven source patch
+  (`patch_standalone_web.py`; see the zcode_build README) — `--web` project
+  creation/sending works on patched builds; the nightly stops if upstream
+  moves the patched code (retire the patch once their fix lands). Full
+  write-up + links in `archinstaller/archinstaller/zcode_build/README.md`.
+  For any future --web debugging: verify the upstream issue state first, do
+  not re-debug the defect against local builds.
 - On Arch Linux (`archlinux:latest`), `corepack` is a separate package from
   `nodejs`. To use Yarn 4 via Corepack, you must install both and then run
   `corepack enable`.

@@ -73,6 +73,24 @@ if [ "$MODE" = cli ]; then
     # set -o pipefail would abort the script with no message.
     n=$({ grep -rlEi 'rum-electron|@arms/' packages/web/dist/assets packages/web/dist/index.html 2>/dev/null || true; } | wc -l)
     assert_zero "web dist free of ARMS references" "$n"
+
+    # standalone-web local-project patch (zai-org/feedback#1161): assert the
+    # patch state in the SOURCE the build compiled from — the artifact is
+    # minified, so the patch's comment markers only exist here. The patch
+    # script itself asserts each edit; this re-check catches ordering
+    # mistakes (e.g. the patch skipped while the verify expected it).
+    PATCHED=packages/services/src/project/index.ts
+    if [ "${ZCODE_WEB_LOCAL_PROJECTS:-1}" = 1 ]; then
+        n=$(grep -c 'zcode-build standalone-web patch' "$PATCHED" || true)
+        if [ "$n" -lt 3 ]; then
+            echo "[verify] FAIL: standalone-web patch missing from $PATCHED (found $n markers, need >= 3)" >&2
+            exit 1
+        fi
+        echo "[verify] ok: standalone-web patch present in the project service ($n markers)"
+    else
+        n=$(grep -c 'zcode-build standalone-web patch' "$PATCHED" || true)
+        assert_zero "standalone-web patch absent (ZCODE_WEB_LOCAL_PROJECTS=0)" "$n"
+    fi
     exit 0
 fi
 

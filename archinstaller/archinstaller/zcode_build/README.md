@@ -3,7 +3,9 @@
 Builds [ZCode](https://github.com/zai-org/ZCode) (Z.ai's open-source coding
 agent workspace) **on the target host itself**: checks out the latest
 upstream **tagged release**, **strips all telemetry** (assert-driven, see
-`strip-telemetry.sh`), builds `pacman` packages and publishes them into a
+`strip-telemetry.sh`), **patches the standalone-web project flow**
+(assert-driven, see `patch_standalone_web.py`), builds `pacman` packages and
+publishes them into a
 **local pacman repository** at `~/zcode-build/out`. The `[zcode]` repository
 registered in `/etc/pacman.conf` (`Server = file:///home/<user>/zcode-build/out`)
 makes a plain `pacman -Syu` pick up every rebuild — no external repo server,
@@ -21,8 +23,9 @@ Everything lives under `~/zcode-build/`:
 
 | Path | What |
 |---|---|
-| `build.sh` | orchestrator: checkout → strip → build → package → publish |
+| `build.sh` | orchestrator: checkout → strip → patch → build → package → publish |
 | `strip-telemetry.sh` + `strip_telemetry.py` | the telemetry removal (shell parts + manifest/source edits) |
+| `patch_standalone_web.py` | the standalone-web local-project patch (source-level, assert-driven) |
 | `verify-stripped.sh` | post-build artifact gate; any hit fails the run |
 | `packaging/` | PKGBUILDs, the `/usr/bin/zcode` wrapper, the desktop `.install` |
 | `out/` | the published pacman repo: packages + `zcode.db` + `build-stamp.txt` |
@@ -58,6 +61,10 @@ ZCODE_DESKTOP=1 ~/zcode-build/build.sh     # desktop too (default: baked
 ```
 
 Environment knobs: `ZCODE_REF`, `ZCODE_DESKTOP`, `ZCODE_ELECTRON_MIRROR`,
+`ZCODE_WEB_LOCAL_PROJECTS` (standalone-web project patch, default on; a
+flip also needs `ZCODE_FORCE=1` — the stamp does not record it),
+`ZCODE_SKIP_FETCH=1` (degraded-network escape hatch: resolve REF from
+already-fetched local tags, skip `git fetch` entirely),
 `ZCODE_CACHE`/`ZCODE_WORK`/`ZCODE_OUT` (paths, default alongside `build.sh`),
 `ZCODE_FORCE=1` (rebuild even when the up-to-date check passes),
 `ZCODE_SHALLOW=0` (full history fetch, for exotic refs like old commit
@@ -125,6 +132,66 @@ content free of ARMS/OTLP references).
 No third-party AUR packages or fork code are used anywhere — the
 `zcode-ce-bin` AUR and the Zcode-CE fork were reviewed as references only.
 
+## Standalone-web local-project patch
+
+Upstream defect [zai-org/feedback#1161](https://github.com/zai-org/feedback/issues/1161)
+(open, P2): `zcode --web` (standalone self-hosted server) cannot create
+projects or start conversations — the composer's every send fails with
+`project.remote-project-required` and the "Create project" folder picker
+with `project.host-offline`. Root cause: the standalone server assembles its
+services with a remote-style `ownerHostId`
+(`createServerHostServices`, `packages/services/src/node.ts`) while the web
+client addresses the machine it talks to as `local`; the standalone server
+has no `resolveHost`, so every `local` request dies.
+
+`patch_standalone_web.py` (runs after the strip, before the build; disable
+with `ZCODE_WEB_LOCAL_PROJECTS=0`) fixes the gates in
+`packages/services/src/project/index.ts`, at source level — the community
+workaround in the issue hand-edits the built `server/entry-http.js` instead,
+which we cannot do since we compile from source:
+
+1. `route()` resolves the browser's `local` to the server's own service
+   (folder picker and every host-scoped read work);
+2. `saveProject` drops the client `local` alias before the repository call,
+   so the `project.host-immutable` check passes and the row is stored under
+   the server's own host partition (`project-repository.ts` is NOT touched);
+3. every `VirtualProject` row leaving the service (saveProject response,
+   readProjects, readTree, restoreProject) is presented with
+   `hostId: "local"` via a `presentProject` helper — otherwise
+   `ProjectCreation.saved()` throws the false
+   `remote-project.host-removed` right after a successful save, and
+   composer pickers / automation lists filter the rows out as
+   foreign-host entries.
+
+Scope and lifecycle, by construction:
+
+- desktop remote hosts have `resolveHost` → `isStandaloneServer` is false
+  there and the alias never fires; the alias also goes inert the moment
+  upstream supplies a `resolveHost` of its own (their future proper fix);
+- the upstream policy is kept, not deleted: sessions on the standalone
+  server still require a project (`remote-project-required`), so the
+  composer needs a selected project — create/select one for the
+  `--workspace` directory (or any server directory) and send;
+- every edit asserts its anchor; when upstream fixes or reorganizes this
+  code the nightly stops and keeps serving the last good packages — at that
+  point delete the patch call (and this section) after confirming their fix;
+- `verify-stripped.sh` re-checks the patch state in the compiled-from
+  source (the artifacts are minified, the comment markers only exist in the
+  source tree): present when enabled, absent when disabled.
+
+Verified live on 2026-11-17 (v3.18.2, target code-factory-m): with the
+patched build, browser project creation via the folder picker, project
+selection (composer chip and picker after reload) and conversation send all
+pass; the server journal shows `project.readDirectory OK`,
+`project.saveProject OK` and `project.prepareSession OK` with ZERO
+`project.remote-project-required` / `project.host-offline` /
+`remote-project.host-removed` / `project.host-immutable` occurrences, where
+the unpatched 3.18.2 build reproduced the defect pair first (baseline). The
+remaining send failures on that target are the model layer: its stored z.ai
+OAuth token is stale (api.z.ai answers "Z.ai user information is invalid")
+— a fresh `/login zai` (CLI) or desktop re-login is needed for real model
+turns; that is target auth state, not patch-related.
+
 ## Caveats
 
 - The desktop package builds against the target's own glibc — a
@@ -149,7 +216,23 @@ No third-party AUR packages or fork code are used anywhere — the
   the identical error pair on 3.17.1; upstream's packaging notes say the web
   build is smoke-tested without a browser session. The desktop from the same
   build works (its host is `local`, exempt from the remote-project rules).
-  As of v3.18.0-source (synced to main 2026-11-11, `remote-policy.ts`
-  unchanged) there is still no fix. Once upstream tags a release containing
-  the fix, the nightly `zcode-update.timer` picks it up automatically — no
-  action needed. Until then use the desktop app.
+  Still no fix as of v3.18.2 (tagged 2026-11-13; re-checked 2026-11-17):
+  the v3.18.0→v3.18.2 sync commits touch 148 files but none of
+  `packages/server/` (entry-http), `packages/zcode-server-cli/`,
+  `packages/services/src/remote-projects/` or
+  `packages/services/src/project-storage/remote-policy.ts` — the policy
+  gate still throws `project.remote-project-required` for non-`local`
+  owners. A 2026-11-12 issue comment documents three more same-root-cause
+  gates (`readRemoteProjectDirectory` SQL hides the self-host →
+  `remote-project.host-removed` false error after save; the
+  `project.host-immutable` second gate; container `hostname()` serverId
+  drift — set `ZCODE_SERVER_ID` in containers) plus a verified temp patch
+  on the distributed `server/entry-http.js` (allow `local` in `route()`,
+  in the `host-immutable` check, and rewrite `saveProject` responses to
+  `hostId: "local"`) — project creation and directory browsing work after
+  it. No maintainer response on the issue yet. Since 2026-11-17 the build
+  carries our own source-level patch for exactly these gates — see the
+  standalone-web section above; the desktop from the same build was never
+  affected. When upstream ships their own fix, the patch script's anchors
+  are expected to fail the build (or go inert), at which point the patch
+  gets retired.
