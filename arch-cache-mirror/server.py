@@ -1156,6 +1156,7 @@ async def on_startup(app: web.Application) -> None:
     cfg: Config = app["cfg"]
     os.makedirs(os.path.join(cfg.cache_dir, TMP_SUBDIR), exist_ok=True)
     app["client"] = ClientSession(
+    trust_env=True,
         timeout=UPSTREAM_TIMEOUT,
         connector=TCPConnector(limit=32),
         # Accept-Encoding: identity - CDNs in front of repo mirrors (e.g.
