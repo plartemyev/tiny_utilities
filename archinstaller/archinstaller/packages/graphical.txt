@@ -1,5 +1,7 @@
 # Regular-use graphical packages: a typical office/desktop setup (browsing, office documents, mail and chat, media playback, imaging, phone file transfer, desktop infrastructure, Windows/32-bit compatibility).
+7zip
 android-file-transfer
+ark
 audacious
 audacity
 brltty
