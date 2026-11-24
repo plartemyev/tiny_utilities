@@ -31,6 +31,7 @@ container-diff
 corepack
 chntpw
 dive
+docker
 docker-buildx
 docker-compose
 drone-cli

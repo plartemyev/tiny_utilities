@@ -50,13 +50,35 @@ def test_grub_install_registers_entry_and_removable_fallback():
 
 
 def test_docker_group_added_only_with_devel():
-    # the docker group is created by the docker package, which is installed
-    # only through the devel lists; useradd exits 6 on a missing group
+    # the docker group is created by the docker package, which the devel
+    # list installs explicitly; useradd exits 6 on a missing group
     plain = build_install_script(make_cfg())
     assert "games,docker 'nameless'" not in plain
     devel = build_install_script(make_cfg(devel=True))
     assert ("useradd -m --groups video,scanner,optical,kvm,sys,wheel,uucp,games,"
             "docker 'nameless'") in devel
+
+
+def test_docker_service_enabled_only_with_devel():
+    # the docker package ships no preset and pacstrap never evaluates
+    # presets, so without this enable the daemon never starts at boot
+    plain = build_install_script(make_cfg())
+    assert "systemctl enable docker.service" not in plain
+    assert "systemctl enable docker.service" in build_install_script(make_cfg(devel=True))
+
+
+def test_timesyncd_enabled_except_on_virtualbox_targets():
+    # pacstrap never evaluates presets, so nothing else would sync the
+    # clock; VirtualBox targets keep the VBoxService host sync as the
+    # single clock authority
+    for virt in ("none", "kvm", "qemu", "vmware", "microsoft"):
+        script = build_install_script(make_cfg(virt=virt))
+        assert "systemctl enable systemd-timesyncd.service" in script
+        assert "0.arch.pool.ntp.org" in script
+    for virt in ("oracle",):
+        script = build_install_script(make_cfg(virt=virt))
+        assert "systemctl enable systemd-timesyncd.service" not in script
+        assert "timesyncd.conf" not in script
 
 
 def test_script_shells_out_passwords():

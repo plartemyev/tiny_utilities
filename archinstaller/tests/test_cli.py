@@ -154,6 +154,18 @@ def test_local_mirror_flag_parsing():
     assert cli._parse_args(argv).local_mirror is False
     assert cli._parse_args(argv + ["--local-mirror"]).local_mirror is True
     assert cli._parse_args(argv + ["--local_mirror"]).local_mirror is True
+    assert cli._parse_args(argv + ["--local-mirror",
+                                   "http://192.168.1.15:8282"]).local_mirror \
+        == "http://192.168.1.15:8282"
+    assert cli._parse_args(argv + ["--local_mirror",
+                                   "http://192.168.1.15:8282"]).local_mirror \
+        == "http://192.168.1.15:8282"
+    # the bare flag still works when another option follows it
+    assert cli._parse_args(argv + ["--local-mirror", "--graphical"]).local_mirror is True
+    # workbook shares the parser semantics
+    assert cli._parse_args(["workbook", "--local-mirror",
+                            "http://192.168.1.15:8282"]).local_mirror \
+        == "http://192.168.1.15:8282"
 
 
 def test_provision_flag_parsing():
@@ -405,6 +417,37 @@ def test_local_mirror_url_uses_primary_interface_and_mirror_port(monkeypatch, ca
     assert f"Local mirror: {url} (primary interface eth0)" in capsys.readouterr().out
 
 
+def test_local_mirror_url_explicit_value_used_verbatim(monkeypatch, capsys):
+    # a custom URL must not touch host-side derivation at all
+    def boom():
+        raise AssertionError("_primary_lan_address must not run for explicit URLs")
+    monkeypatch.setattr(cli, "_primary_lan_address", boom)
+    url = cli._local_mirror_url(make_args(local_mirror="http://192.168.1.15:8282"))
+    assert url == "http://192.168.1.15:8282"
+    assert "Local mirror: http://192.168.1.15:8282 (custom)" in capsys.readouterr().out
+
+
+def test_normalize_local_mirror_url_forms():
+    # bare base, trailing slash, pre-expanded form, path prefix, https
+    assert cli._normalize_local_mirror_url("http://192.168.1.15:8282") \
+        == "http://192.168.1.15:8282"
+    assert cli._normalize_local_mirror_url("http://192.168.1.15:8282/") \
+        == "http://192.168.1.15:8282"
+    assert cli._normalize_local_mirror_url("http://192.168.1.15:8282/$repo/os/$arch") \
+        == "http://192.168.1.15:8282"
+    assert cli._normalize_local_mirror_url("http://192.168.1.15:8282/$repo/os/$arch/") \
+        == "http://192.168.1.15:8282"
+    assert cli._normalize_local_mirror_url("https://mirror.example.net/arch") \
+        == "https://mirror.example.net/arch"
+
+
+def test_normalize_local_mirror_url_rejects_garbage():
+    for bad in ("192.168.1.15:8282", "ftp://x", "http://", "",
+                "http://h:8282/?q=1", "http://h:8282/#frag"):
+        with pytest.raises(SystemExit):
+            cli._normalize_local_mirror_url(bad)
+
+
 def test_local_mirror_preflight_probes_healthz(monkeypatch):
     captured = []
     monkeypatch.setattr(cli, "run_capture",
@@ -518,6 +561,39 @@ def test_run_installation_zcode_smoke(monkeypatch, capsys):
     assert "Uploading installation script" in capsys.readouterr().out
     assert "[zcode]" not in uploaded["text"]
     assert "zcode-repo" not in uploaded["text"]
+
+
+def test_run_installation_explicit_mirror_used_verbatim(monkeypatch, capsys):
+    """A user-supplied --local-mirror URL bypasses every host-side derivation:
+    no gateway rewrite, no LAN fallback probing — healthz alone decides."""
+    uploaded = {}
+
+    class FakeConn:
+        client = None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "run_capture", lambda client, cmd, **kw: (0, ""))
+    monkeypatch.setattr(cli, "upload_text",
+                        lambda client, text, path: uploaded.update(text=text))
+    monkeypatch.setattr(cli, "run_streaming", lambda client, cmd, **kw: 0)
+    monkeypatch.setattr(cli, "connect_target", lambda *a, **kw: FakeConn())
+
+    def boom(conn):
+        raise AssertionError("_target_gateway must not run for explicit URLs")
+    monkeypatch.setattr(cli, "_target_gateway", boom)
+
+    args = make_args(virt="kvm", discard=True,
+                     local_mirror="http://192.168.1.15:8282")
+    cli._run_installation(args, "testhost", None, "rootpw", "userpw", None,
+                          "key", jump=None, guest_reboot=False,
+                          local_mirror="http://192.168.1.15:8282",
+                          mirror_explicit=True)
+    out = capsys.readouterr().out
+    assert "Using the custom mirror URL verbatim." in out
+    assert "Server = http://192.168.1.15:8282/$repo/os/$arch" in uploaded["text"]
+    assert "Server = http://192.168.1.15:8282/xlibre/os/$arch" in uploaded["text"]
 
 
 def test_run_step_fails_fast_on_nonzero_exit(monkeypatch):

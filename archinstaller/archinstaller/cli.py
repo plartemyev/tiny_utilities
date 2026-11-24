@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.parse
 from datetime import datetime
 
 import paramiko
@@ -101,7 +102,8 @@ def _run_install(args: argparse.Namespace) -> None:
     clear_stale_host_key(args.target, args.target_port)
     _run_installation(args, hostname, login_password, root_password, user_password,
                       opencode_password, public_key, jump,
-                      guest_reboot=args.vbox_vm is None, local_mirror=local_mirror)
+                      guest_reboot=args.vbox_vm is None, local_mirror=local_mirror,
+                      mirror_explicit=isinstance(args.local_mirror, str))
 
     state_path = _state_path(hostname)
     _save_state(state_path, _state_object(args, hostname, root_password, user_password,
@@ -166,11 +168,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              " desktop app additionally with --graphical) and start its"
                              f" web service on port {ZCODE_WEB_PORT}; a nightly timer"
                              " rebuilds, so pacman -Syu keeps zcode current")
-    common.add_argument("--local-mirror", "--local_mirror", action="store_true",
-                        help="point pacman at the local arch-cache-mirror on this host "
-                             f"(http://<host-ip>:{LOCAL_MIRROR_PORT}/$repo/os/$arch) for both "
-                             "the live install and the installed system; the mirror must "
-                             "answer from the target or the install aborts")
+    common.add_argument("--local-mirror", "--local_mirror", nargs="?", const=True, default=False,
+                        help="point pacman at the local arch-cache-mirror for both the live "
+                             "install and the installed system; the mirror must answer from "
+                             "the target or the install aborts. Bare flag: derived from this "
+                             f"host (http://<host-ip>:{LOCAL_MIRROR_PORT}/$repo/os/$arch). With "
+                             "a value: use that base URL verbatim, e.g. "
+                             "--local-mirror http://192.168.1.15:8282 (internally expanded "
+                             "with /$repo/os/$arch; an already-expanded value is accepted "
+                             "too; the mirror must serve the arch-cache-mirror layout)")
     common.add_argument("--virt", choices=("none", "kvm", "qemu", "oracle", "vmware", "microsoft"),
                         help="pin the hypervisor kind instead of probing the target with "
                              "systemd-detect-virt (workbook: default none)")
@@ -348,16 +354,19 @@ def _run_provisioned(args: argparse.Namespace) -> None:
         args.target = guest_addresses[0]
         args.target_port = ssh_port
     lan_mirror = _local_mirror_url(args)
-    if hostonly is not None and lan_mirror is not None:
+    mirror_explicit = isinstance(args.local_mirror, str)
+    if hostonly is not None and lan_mirror is not None and not mirror_explicit:
         # NIC2's gateway is the host itself at a forever-static address;
         # the LAN-IP URL stays as the (slower, NAT-hairpin) fallback for
-        # hosts without the one-time firewall exception.
+        # hosts without the one-time firewall exception. A user-supplied
+        # mirror URL is used verbatim instead — no gateway rewrite.
         mirror_override = f"http://{hostonly.gateway}:{LOCAL_MIRROR_PORT}"
         mirror_hint = _hostonly_mirror_hint()
     _run_installation(args, hostname, login_password, root_password, user_password,
                       opencode_password, public_key, jump=None, guest_reboot=False,
                       local_mirror=lan_mirror, mirror_override=mirror_override,
-                      mirror_hint=mirror_hint, hostonly=hostonly)
+                      mirror_hint=mirror_hint, mirror_explicit=mirror_explicit,
+                      hostonly=hostonly)
     if args.provision == "vbox":
         # Stage two waits at the pinned address: the installed system's
         # static NM profile owns it, while the live environment's host-only
@@ -604,12 +613,42 @@ def _primary_lan_address() -> tuple[str, str]:
 
 
 def _local_mirror_url(args: argparse.Namespace) -> str | None:
-    """Base URL of the host's arch-cache-mirror when --local-mirror is set."""
+    """Base URL of the arch-cache-mirror when --local-mirror is set.
+
+    Bare flag: derived from this host's primary interface. With a value: the
+    user-supplied base URL, used verbatim (no host/gateway derivation, no
+    fallback probing).
+    """
     if not args.local_mirror:
         return None
-    iface, ip = _primary_lan_address()
-    url = f"http://{ip}:{LOCAL_MIRROR_PORT}"
-    print(f"Local mirror: {url} (primary interface {iface})")
+    if args.local_mirror is True:
+        iface, ip = _primary_lan_address()
+        url = f"http://{ip}:{LOCAL_MIRROR_PORT}"
+        print(f"Local mirror: {url} (primary interface {iface})")
+        return url
+    url = _normalize_local_mirror_url(args.local_mirror)
+    print(f"Local mirror: {url} (custom)")
+    return url
+
+
+def _normalize_local_mirror_url(value: str) -> str:
+    """Canonical base URL from a user-supplied --local-mirror value.
+
+    The renderers append the repo segments themselves ($repo/os/$arch,
+    /xlibre/os/$arch, /sonicde/os/$arch), so the stored form is the bare
+    base: a trailing slash and an already-expanded /$repo/os/$arch suffix
+    are stripped. A path prefix is kept (e.g. a reverse-proxied mirror);
+    query strings and fragments have no meaning for a pacman server.
+    """
+    url = value.strip().rstrip("/")
+    expanded = "/$repo/os/$arch"
+    if url.endswith(expanded):
+        url = url[: -len(expanded)]
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        sys.exit(f"--local-mirror: {value!r} is not a http(s)://host[:port] URL")
+    if parsed.query or parsed.fragment:
+        sys.exit(f"--local-mirror: {value!r} must not carry a query or fragment")
     return url
 
 
@@ -845,6 +884,7 @@ def _run_installation(
     local_mirror: str | None = None,
     mirror_override: str | None = None,
     mirror_hint: str | None = None,
+    mirror_explicit: bool = False,
     hostonly: "provision_vbox.HostonlyConfig | None" = None,
 ) -> None:
     print(f"Connecting to live environment {args.target}:{args.target_port} ...")
@@ -873,7 +913,11 @@ def _run_installation(
                   "enabling guest discard support.")
             discard = True
         lan_mirror = None
-        if local_mirror is not None and mirror_override is not None:
+        if local_mirror is not None and mirror_explicit:
+            # User-supplied URL: authoritative, no gateway rewrite and no
+            # fallback probing — the healthz check below decides alone.
+            print("Using the custom mirror URL verbatim.")
+        elif local_mirror is not None and mirror_override is not None:
             # Provisioned VirtualBox: NIC2's gateway is the host itself at
             # a forever-static address (the LAN-IP URL would roam); the
             # NAT-hairpin LAN URL remains the slower fallback.
@@ -904,7 +948,8 @@ def _run_installation(
         if local_mirror is not None:
             local_mirror = _ensure_local_mirror(conn.client, local_mirror,
                                                 fallback_url=lan_mirror,
-                                                hint=mirror_hint)
+                                                hint=mirror_hint,
+                                                derived=not mirror_explicit)
         cfg = InstallConfig(
             disk=args.disk,
             hostname=hostname,
@@ -1010,7 +1055,8 @@ def _target_gateway(conn: SshConnection) -> str | None:
 
 def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
                          fallback_url: str | None = None,
-                         hint: str | None = None) -> str:
+                         hint: str | None = None,
+                         derived: bool = True) -> str:
     """Verify the live environment can reach the local arch-cache-mirror.
 
     With --local-mirror the mirror is the only pacman source (the
@@ -1034,9 +1080,10 @@ def _ensure_local_mirror(client: paramiko.SSHClient, base_url: str,
             print(f"WARNING: continuing over the slower NAT-hairpin path."
                   + (f" {hint}" if hint else ""))
             return fallback_url
-    message = (f"the local mirror {base_url} is not reachable from the target "
-               "(is the arch-cache-mirror container running and publishing port "
-               f"{LOCAL_MIRROR_PORT} on the primary interface?)")
+    message = f"the local mirror {base_url} is not reachable from the target"
+    if derived:
+        message += (" (is the arch-cache-mirror container running and publishing "
+                    f"port {LOCAL_MIRROR_PORT} on the primary interface?)")
     if hint:
         message += f"; {hint}"
     sys.exit(message + "; rerun with a working mirror or without --local-mirror")

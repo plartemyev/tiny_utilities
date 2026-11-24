@@ -29,6 +29,11 @@ the same run as a copy-paste markdown runbook. Both render from one step model
 - **Self-healing DNS**: lease DNS servers are used while any of them answers;
   when none does, systemd-resolved's public fallbacks take over, reverting
   automatically when the network heals.
+- **Clock kept on time**: NTP via systemd-timesyncd (explicit servers) on
+  every target except VirtualBox, where the enabled VBoxService keeps the
+  guest clock on the host clock (hard-set past a 20-minute drift). After a
+  host hibernate both hypervisors recover the guest clock on their own; NTP
+  additionally steps physical machines to true UTC.
 - **Sane baseline**: NetworkManager + systemd-resolved, firewalld enabled on
   every install.
 - **VM-aware tuning**: guest agents per hypervisor, VirtualBox HDA fix,
@@ -79,7 +84,9 @@ cache hits instead of public-mirror downloads.
 - `--provision vbox`: VirtualBox on this host (Extension Pack optional, for
   USB 3.0); `--provision libvirt`: `virsh` with access to `qemu:///system`.
 - `--local-mirror`: the `arch-cache-mirror` container reachable from the
-  target; verified via `/healthz` before anything destructive.
+  target (bare flag: on this host at the derived address; or any mirror
+  base URL passed to the flag); verified via `/healthz` before anything
+  destructive.
 
 ## How an install proceeds
 
@@ -110,11 +117,11 @@ Guest adaptation by detected hypervisor:
 
 | Target | Adaptation |
 |---|---|
-| physical | none |
-| kvm / qemu | `qemu-guest-agent` enabled; graphical installs also enable the SPICE agent daemon (`spice-vdagentd.socket` has no `[Install]` section, so `systemctl add-wants` is used) and pin the GPU to DRM card0 (`initcall_blacklist=sysfb_init` in the kernel cmdline) so spice-vdagent's card-enumeration finds it and maps server displays to X outputs by PCI address |
-| oracle (VirtualBox) | `virtualbox-guest-utils` (graphical) or `-nox` (console), `vboxservice` enabled, HDA `position_fix=1` pin |
-| vmware | `open-vm-tools` on graphical installs |
-| everything else | `hyperv` / `qemu-guest-agent` sit in the base list, inert |
+| physical | NTP via `systemd-timesyncd` (explicit `arch.pool.ntp.org` servers — pacstrap never evaluates systemd presets, so it would otherwise ship disabled) |
+| kvm / qemu | `qemu-guest-agent` enabled; NTP via `systemd-timesyncd` on top of the kvm-clock host-following clock; graphical installs also enable the SPICE agent daemon (`spice-vdagentd.socket` has no `[Install]` section, so `systemctl add-wants` is used) and pin the GPU to DRM card0 (`initcall_blacklist=sysfb_init` in the kernel cmdline) so spice-vdagent's card-enumeration finds it and maps server displays to X outputs by PCI address |
+| oracle (VirtualBox) | `virtualbox-guest-utils` (graphical) or `-nox` (console), `vboxservice` enabled (its timesync module keeps the guest clock on the host clock, hard-set past a 20-minute drift — NTP is deliberately left off), HDA `position_fix=1` pin |
+| vmware | `open-vm-tools` on graphical installs; NTP via `systemd-timesyncd` |
+| everything else | `hyperv` / `qemu-guest-agent` sit in the base list, inert; NTP via `systemd-timesyncd` |
 
 Every VM target also gets `/etc/sysctl.d/90-small-cache.conf`
 (`vm.watermark_scale_factor = 500`, `vm.vfs_cache_pressure = 20`): kswapd
@@ -140,10 +147,10 @@ System configuration — shared by `install` and `workbook`:
 | `--timezone` | `Asia/Bangkok` | applied after first boot |
 | `--root-password`, `--user-password` | generated, printed in the summary | credentials for the installed system |
 | `--graphical` | off | Xlibre + Sonic DE desktop; see *Graphical installs* below |
-| `--devel` | off | append the development package lists (console always; graphical too with `--graphical`) |
+| `--devel` | off | append the development package lists (console always; graphical too with `--graphical`); the docker daemon is installed explicitly and `docker.service` enabled |
 | `--opencode` | off | deploy the opencode web service; see *opencode service* below |
 | `--zcode` | off | build ZCode on the target (telemetry-stripped) + its web service; see *ZCode* below |
-| `--local-mirror` | off | pacman via the LAN cache mirror; see *local mirror* below |
+| `--local-mirror` | off | pacman via the LAN cache mirror — bare flag derives the host address, or pass a custom base URL (`--local-mirror http://192.168.1.15:8282`, expanded internally with `/$repo/os/$arch`); see *local mirror* below |
 | `--virt` | probe | pin `none\|kvm\|qemu\|oracle\|vmware\|microsoft` instead of probing |
 | `--discard` | probe (off in workbook mode) | force TRIM/discard enablement |
 
@@ -306,24 +313,34 @@ extra repos are rewritten to the mirror's own repo segments
 after the pacman.conf section, so these cannot reuse the mirrorlist's `$repo`
 template). Signing keys still come from their upstream `.asc` homes.
 
-The mirror host is the guest's default gateway for VM targets (the hypervisor
-host, static per backend — the URL survives host network roams) and the
-host's primary-interface IPv4 for physical targets. Provisioned VirtualBox
-targets instead use the host-only gateway (NIC2's `192.168.56.1` — the host
-itself at a forever-static address): the mirror traffic rides the fast
-host-only path instead of the capped NAT engine. That path ingresses on the
-host-only interface, so the host firewall needs a one-time exception (the
-tool falls back to the slower NAT-hairpin URL with a warning until it is
-in place); the opened port also serves physical LAN targets, which reach
-the same mirror on the host's LAN address:
+With the bare flag, `<mirror-host>` is derived: the guest's default gateway
+for VM targets (the hypervisor host, static per backend — the URL survives
+host network roams), the host-only gateway for provisioned VirtualBox
+targets, and the host's primary-interface IPv4 for physical targets. Passing
+a value instead (`--local-mirror http://192.168.1.15:8282`) uses that base
+URL verbatim — no host-side derivation, no gateway rewrite, no fallback
+probing; only the target-side `/healthz` reachability check still gates the
+install. A trailing `/$repo/os/$arch` or `/` on the value is stripped (the
+repo segments are appended internally). The mirror must serve the
+arch-cache-mirror layout: `/$repo/os/$arch` plus the `/xlibre/os/$arch` and
+`/sonicde/os/$arch` segments, or those repos 404.
+
+Provisioned VirtualBox targets (bare flag) use the host-only gateway (NIC2's
+`192.168.56.1` — the host itself at a forever-static address): the mirror
+traffic rides the fast host-only path instead of the capped NAT engine. That
+path ingresses on the host-only interface, so the host firewall needs a
+one-time exception (the tool falls back to the slower NAT-hairpin URL with a
+warning until it is in place); the opened port also serves physical LAN
+targets, which reach the same mirror on the host's LAN address:
 
 ```bash
 firewall-cmd --permanent --add-port=8282/tcp
 firewall-cmd --reload
 ```
 
-Reachability is verified via `/healthz` before anything destructive; there
-is no public fallback, so a mirror that dies mid-install fails the install.
+Either way, reachability is verified via `/healthz` before anything
+destructive; there is no public fallback, so a mirror that dies mid-install
+fails the install.
 
 ## opencode service (`--opencode`)
 

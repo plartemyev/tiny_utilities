@@ -130,6 +130,10 @@ _EXACT: dict[str, str] = {
         "Отключение парольной аутентификации sshd",
     "Enabling network services":
         "Включение сетевых служб",
+    "Enabling the docker service":
+        "Включение службы docker",
+    "Enabling network time synchronization":
+        "Включение сетевой синхронизации времени",
     "Enabling weekly batch TRIM (fstrim.timer)":
         "Включение еженедельной пакетной очистки TRIM (fstrim.timer)",
     "Tuning guest memory pressure (small page cache)":
@@ -318,6 +322,17 @@ _EXACT: dict[str, str] = {
         " средства обратной разработки и безопасности поверх консольного"
         " арсенала.",
 
+    "Requested with --devel: docker ships its unit without a preset"
+    " and nothing evaluates presets during pacstrap, so the daemon"
+    " would otherwise never start at boot. docker.socket stays off —"
+    " the service creates the socket itself, so socket activation"
+    " would be redundant.":
+        "Запрошено параметром --devel: docker поставляет свой unit-файл без"
+        " preset, и во время pacstrap preset никто не выполняет, поэтому демон"
+        " иначе никогда не запускался бы при загрузке. docker.socket остаётся"
+        " выключенным — служба сама создаёт сокет, и активация по сокету была"
+        " бы избыточной.",
+
     "Installed before the sonic packages: xlibre-xserver Provides:"
     " xorg-server, and sonic-login-manager Requires: xorg-server — with the"
     " server installed first that dependency resolves to the xlibre build"
@@ -440,6 +455,30 @@ _EXACT: dict[str, str] = {
         "NetworkManager и systemd-resolved заменяют сетевой стек ISO;"
         " без vboxservice хост никогда не передаёт подсказки о видеорежиме,"
         " и VBoxClient гасит экран на VirtualBox.",
+
+    "Nothing on a pacstrap install keeps the clock on time:"
+    " pacstrap never evaluates systemd presets, so"
+    " systemd-timesyncd ships disabled, and Arch's compiled-in"
+    " fallback server list would stay invisible config. The server"
+    " list is therefore written out explicitly. The daemon steps"
+    " the clock to true UTC and recovers it after long host"
+    " hibernations; on kvm/qemu the kvm-clock guest clock follows"
+    " the hypervisor host and NTP disciplines it to true time on"
+    " top. VirtualBox targets are excluded: the enabled VBoxService"
+    " periodically syncs the guest clock to the host itself"
+    " (hard-set beyond a 20-minute drift), and NTP would fight it.":
+        "При установке через pacstrap время никто не поддерживает:"
+        " pacstrap никогда не выполняет systemd-preset, поэтому"
+        " systemd-timesyncd поставляется выключенным, а вшитый в Arch"
+        " резервный список серверов остался бы невидимой настройкой."
+        " Поэтому список серверов выписывается явно. Демон ступенчато"
+        " подводит часы к истинному UTC и восстанавливает их после долгой"
+        " гибернации хоста; на kvm/qemu часы гостя kvm-clock следуют за"
+        " часами хоста гипервизора, а NTP дополнительно дисциплинирует их"
+        " к истинному времени. Цели VirtualBox исключены: включённый"
+        " VBoxService сам периодически синхронизирует часы гостя с хостом"
+        " (жёсткая установка при расхождении более 20 минут), и NTP стал"
+        " бы с ним конфликтовать.",
 
     "Low wear and no per-delete latency on real SSDs; on VM disks it still"
     " unmaps free space (compacting the drive image) on top of the"

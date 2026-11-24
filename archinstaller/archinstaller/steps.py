@@ -73,9 +73,10 @@ SONICDE_KEY_ID = "3B87898C73F11DF5"
 # sysusers.d defaults of the base meta-package's own packages (systemd:
 # basic.conf — wheel, kvm, optical, uucp, video; filesystem: arch.conf —
 # sys, games, scanner), so none of them can be missing. docker is appended
-# only with --devel: its group is created by the docker package, which
-# enters the install only through the devel lists (docker-compose/buildx
-# dependencies), and useradd exits 6 on a missing group.
+# only with --devel: its group is created by the docker package, which the
+# devel list installs explicitly (docker-compose/buildx carry no dependency
+# on it — only drone-runner-docker did, transitively), and useradd exits 6
+# on a missing group.
 USER_GROUPS = "video,scanner,optical,kvm,sys,wheel,uucp,games"
 OPENCODE_PORT = 49374
 OPENCODE_UNIT_PATH = ".config/systemd/user/opencode.service"
@@ -552,6 +553,17 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
                 " engineering and security tooling on top of the console toolbox."
             )),
         )
+        steps.append(
+            Step("Enabling the docker service", (
+                "systemctl enable docker.service",
+            ), rationale=(
+                "Requested with --devel: docker ships its unit without a preset"
+                " and nothing evaluates presets during pacstrap, so the daemon"
+                " would otherwise never start at boot. docker.socket stays off —"
+                " the service creates the socket itself, so socket activation"
+                " would be redundant."
+            )),
+        )
     if cfg.opencode and not cfg.devel:
         # opencode sits in CONSOLE_DEVEL_PACKAGES; without this step
         # --opencode would still create the user unit in stage two, whose
@@ -746,6 +758,27 @@ def _chroot_steps(cfg: InstallConfig) -> list[Step]:
             "retry pacman -S --needed --noconfirm firewalld",
             "systemctl enable firewalld",
         )),
+        *([
+            Step("Enabling network time synchronization", (
+                ("printf '%s\\n' '[Time]'"
+                 " 'NTP=0.arch.pool.ntp.org 1.arch.pool.ntp.org'"
+                 " '2.arch.pool.ntp.org 3.arch.pool.ntp.org'"
+                 " > /etc/systemd/timesyncd.conf"),
+                "systemctl enable systemd-timesyncd.service",
+            ), rationale=(
+                "Nothing on a pacstrap install keeps the clock on time:"
+                " pacstrap never evaluates systemd presets, so"
+                " systemd-timesyncd ships disabled, and Arch's compiled-in"
+                " fallback server list would stay invisible config. The server"
+                " list is therefore written out explicitly. The daemon steps"
+                " the clock to true UTC and recovers it after long host"
+                " hibernations; on kvm/qemu the kvm-clock guest clock follows"
+                " the hypervisor host and NTP disciplines it to true time on"
+                " top. VirtualBox targets are excluded: the enabled VBoxService"
+                " periodically syncs the guest clock to the host itself"
+                " (hard-set beyond a 20-minute drift), and NTP would fight it."
+            )),
+        ] if cfg.virt != "oracle" else []),
     ])
     return [dataclasses.replace(step, context=CHROOT) for step in steps]
 
